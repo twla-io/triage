@@ -1,0 +1,40 @@
+cabal-version:      2.4
+name:                triage
+version:             0.1.0.0
+synopsis:            A priority-based medical appointment scheduling domain model
+description:
+  Domain model for a medical appointment scheduling system, built around a
+  priority-ordered waitlist protocol instead of reserved emergency capacity.
+  Slot lifecycle, waitlist matching, and appointment state are all encoded
+  as types, with total transition functions and no runtime guards.
+homepage:            https://github.com/twla-io/triage
+author:              Niko
+maintainer:          Niko
+license:             MIT
+license-file:        LICENSE
+build-type:          Simple
+extra-source-files:  README.md
+
+library
+  hs-source-dirs:      src
+  exposed-modules:     Domain
+  build-depends:
+      base       >=4.14 && <5
+    , aeson
+    , containers
+    , text
+    , time
+    , uuid
+  default-language:    Haskell2010
+  ghc-options:          -Wall
+
+test-suite triage-test
+  type:                 exitcode-stdio-1.0
+  main-is:              Spec.hs
+  hs-source-dirs:       test
+  build-depends:
+      base
+    , triage
+    , hspec
+  default-language:     Haskell2010
+  ghc-options:          -Wall
