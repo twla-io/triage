@@ -7,7 +7,7 @@ A priority-based medical appointment scheduling domain model in Haskell.
 `triage` models a medical practice's appointment scheduling system around one
 core idea: instead of reserving dedicated emergency slots (which sit idle on
 quiet days and waste capacity), every slot is offered to the
-highest-priority matching patient on a waitlist, ordered by an `Ord`
+highest-priority matching request on the waitlist, ordered by an `Ord`
 instance — `Emergency < Urgent < Routine`, FIFO within each tier.
 
 The slot lifecycle is encoded as separate types rather than a status field —
@@ -17,9 +17,9 @@ function is total.
 
 ## The Model
 
-Five core entities: `Service`, `Slot`, `Appointment`, `WaitlistEntry`,
-and `Patient` (identified only by `PatientId` — created through a booking,
-never in isolation).
+Five core entities: `Service`, `Slot`, `Appointment`, `AppointmentRequest`
+(a waitlist registration), and `Patient` (identified only by `PatientId` —
+created through a booking, never in isolation).
 
 ```haskell
 data Slot
@@ -28,16 +28,16 @@ data Slot
   | Available AvailableSlot
   | Booked    BookedSlot
 
-data WaitlistEntry
-  = EmergencyEntry WaitlistDetails
-  | UrgentEntry    WaitlistDetails (Maybe DoctorId)
-  | RoutineEntry   WaitlistDetails (Maybe DoctorId) DueAt
+data AppointmentRequest
+  = EmergencyRequest AppointmentRequestDetails
+  | UrgentRequest    AppointmentRequestDetails
+  | RoutineRequest   AppointmentRequestDetails (Maybe DoctorId) DueAt
 ```
 
 The core protocol:
 
 ```haskell
-checkWaitlist :: PendingSlot -> [WaitlistEntry] -> UTCTime -> WaitlistResult
+checkWaitlist :: PendingSlot -> [AppointmentRequest] -> UTCTime -> MatchAppointmentRequestResult
 ```
 
 A pure function — no IO, no DB — that decides who gets a freed slot next.
