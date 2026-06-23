@@ -17,7 +17,7 @@ module Domain
   , ServiceId (..)
   , SlotId (..)
   , AppointmentId (..)
-  , WaitlistEntryId (..)
+  , AppointmentRequestId (..)
 
   -- ── Duration ─────────────────────────────────────────────────────────────
   , Minutes           -- type exported, constructor hidden — use mkMinutes
@@ -60,20 +60,23 @@ module Domain
   , Appointment (..)
 
   -- ── Waitlist ─────────────────────────────────────────────────────────────
-  , WaitlistEntryStatus (..)
-  , WaitlistDetails (..)
-  , WaitlistEntry (..)
+  , AppointmentRequestDetails (..)
+  , AppointmentRequest (..)
+  , OfferedAppointmentRequest (..)
+  , WaitlistRecord (..)
   -- Commands (state transitions)
-  , setSlotOffered
+  , offerRequest
+  , backToWaiting
   -- Queries (pure, read-only)
   , sortWaitlist
-  , entryId
+  , requestId
   , detailsOf
   , priorityOf
 
   -- ── Protocol ─────────────────────────────────────────────────────────────
-  , WaitlistResult (..)
-  -- Commands (produces a multi-aggregate result — see GENERATION CONTRACT #5)
+  , MatchAppointmentRequestResult (..)
+  -- Commands (spans two aggregates — both halves of the result must be
+  -- persisted together)
   , checkWaitlist
   -- Queries (pure, read-only)
   , matches
@@ -97,7 +100,7 @@ newtype PatientId       = PatientId       UUID deriving (Show, Eq, Ord, Generic,
 newtype ServiceId       = ServiceId       UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
 newtype SlotId          = SlotId          UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
 newtype AppointmentId   = AppointmentId   UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
-newtype WaitlistEntryId = WaitlistEntryId UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+newtype AppointmentRequestId = AppointmentRequestId UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DURATION
@@ -152,12 +155,8 @@ data AppointmentPriority
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DUE AT
---
--- When a Routine entry's slot is expected to occur. Four cases rather than
--- Maybe (UTCTime, UTCTime): NotBefore and NotAfter are each genuinely
--- one-sided constraints, not a window with one end stretched to infinity.
--- A six-month follow-up with no fixed deadline is NotBefore, not a fake
--- window; a "must be seen by Friday" routine check is NotAfter.
+-- When a Routine entry's slot is expected to occur. NotBefore and NotAfter
+-- are one-sided constraints, not a window with one end at infinity.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data DueAt
@@ -173,24 +172,12 @@ satisfiesDueAt t (NotBefore lo) = t >= lo
 satisfiesDueAt t (NotAfter  hi) = t <= hi
 satisfiesDueAt t (Within lo hi) = t >= lo && t <= hi
 
--- NormalPriority is gone — Urgent and Routine are now top-level WaitlistEntry
--- constructors (see WAITLIST section below), each carrying exactly what it
--- needs. DueAt lives directly on Routine.
-
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SLOT
---
--- Lifecycle encoded in separate types — no status field, no guards.
--- Each constructor carries exactly the payload its state requires.
--- Transition functions are total: wrong state = type error, not runtime error.
---
--- Lifecycle: PendingSlot → OfferedSlot | AvailableSlot → BookedSlot
---            BookedSlot  → PendingSlot (on cancellation)
---            OfferedSlot → PendingSlot (on decline)
---
--- No EmergencyOnly variant: emergency patients are served via priority
--- ordering in the waitlist, not by reserving dedicated slots.
--- Reserved emergency slots waste capacity on quiet days; this design does not.
+-- Lifecycle encoded as separate types, not a status field — each state
+-- carries only the payload it needs, and transitions are total functions.
+-- There is no EmergencyOnly slot: emergency patients are served via
+-- waitlist priority, not reserved capacity (see WAITLIST).
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data SlotDetails = SlotDetails
@@ -202,24 +189,23 @@ data SlotDetails = SlotDetails
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
--- PendingSlot carries the offer-cycle history: which entries have already declined
--- this slot in the current cycle. Belongs here, not on SlotDetails — it is not a
--- fact about the slot, it is state specific to the pending phase.
+-- declinedBy tracks who has already declined this slot in the current
+-- offer cycle. Lives here, not on SlotDetails, since it's specific to the
+-- pending phase, not a fact true of the slot in every state.
 data PendingSlot = PendingSlot
   { details    :: SlotDetails
-  , declinedBy :: Set WaitlistEntryId
+  , declinedBy :: Set AppointmentRequestId
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
 newtype AvailableSlot = AvailableSlot SlotDetails
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
--- OfferedSlot IS a PendingSlot with a claim placed on it.
--- Embedding PendingSlot (rather than repeating its fields) makes the relationship
--- explicit and carries declinedBy for free — expireOffer is a pure unwrap.
+-- An OfferedSlot IS a PendingSlot with a claim placed on it — embedding
+-- carries declinedBy for free, and expireOffer becomes a pure unwrap.
 data OfferedSlot = OfferedSlot
   { slot      :: PendingSlot
-  , offeredTo :: WaitlistEntryId
+  , offeredTo :: AppointmentRequestId
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
@@ -244,7 +230,7 @@ freeSlot :: BookedSlot -> PendingSlot
 freeSlot (BookedSlot d _) = PendingSlot { details = d, declinedBy = mempty }
 
 -- Waitlist match found: offer the pending slot as-is (declinedBy carried inside)
-offerSlot :: PendingSlot -> WaitlistEntryId -> OfferedSlot
+offerSlot :: PendingSlot -> AppointmentRequestId -> OfferedSlot
 offerSlot ps eid = OfferedSlot { slot = ps, offeredTo = eid }
 
 -- No waitlist match: slot opens for regular booking
@@ -276,12 +262,8 @@ getSlotDetails (Booked    (BookedSlot d _))  = d
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- APPOINTMENT
---
--- Open | Closed: lifecycle encoded structurally, not as a status field.
--- Operations on Open appointments cannot receive Closed ones — type error.
--- CloseReason carries who initiated the close, enabling billing and audit.
--- Emergency appointments are never rescheduling candidates — enforced
--- by filtering on AppointmentDetails.priority at the application layer.
+-- Open | Closed encoded structurally, not as a status field. CloseReason
+-- records who initiated the close, for billing and audit.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data AppointmentDetails = AppointmentDetails
@@ -311,132 +293,108 @@ data Appointment
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- WAITLIST
+-- Doctor preference and DueAt are exclusive to RoutineRequest: choosing a
+-- specific doctor means accepting a longer wait, safe only when there's no
+-- urgent time pressure.
 --
--- One flat sum type, three constructors, each carrying exactly what that
--- tier needs — no nested priority type, no separate Emergency/Normal record
--- pair. The structural guarantee survives the flattening:
---
---   EmergencyEntry WaitlistDetails                       — no doctor preference possible
---   UrgentEntry    WaitlistDetails (Maybe DoctorId)       — optional doctor preference
---   RoutineEntry   WaitlistDetails (Maybe DoctorId) DueAt — preference + due date
---
--- EmergencyEntry has no DoctorId parameter at all — not Nothing, structurally
--- absent. It is impossible to construct an emergency entry with a doctor
--- preference.
---
--- Ord instance: EmergencyEntry < UrgentEntry < RoutineEntry, FIFO by createdAt
--- within tier. DueAt never affects ranking — it only affects which slots an
--- entry matches (see `matches`), never who is served first among already-
--- eligible entries.
---
--- WaitlistEntryStatus: bidirectional reference with Slot. When a slot is
--- offered, Slot carries WaitlistEntryId and WaitlistEntry carries SlotId —
--- both updated atomically.
+-- No status field — a bare AppointmentRequest IS waiting. A request with an
+-- outstanding offer is an OfferedAppointmentRequest instead.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data WaitlistEntryStatus
-  = WaitingForSlot
-  | SlotOffered SlotId UTCTime   -- which slot, when offered (for expiry tracking)
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
-
-data WaitlistDetails = WaitlistDetails
-  { id        :: WaitlistEntryId
+data AppointmentRequestDetails = AppointmentRequestDetails
+  { id        :: AppointmentRequestId
   , patientId :: PatientId
   , serviceId :: ServiceId
-  , status    :: WaitlistEntryStatus
   , createdAt :: UTCTime
   }
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
-data WaitlistEntry
-  = EmergencyEntry WaitlistDetails
-  | UrgentEntry    WaitlistDetails (Maybe DoctorId)
-  | RoutineEntry   WaitlistDetails (Maybe DoctorId) DueAt
+data AppointmentRequest
+  = EmergencyRequest AppointmentRequestDetails
+  | UrgentRequest    AppointmentRequestDetails
+  | RoutineRequest   AppointmentRequestDetails (Maybe DoctorId) DueAt
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
--- priorityOf and detailsOf are projected once and compared together, rather
--- than writing out every pairwise constructor combination by hand. Reusing
--- AppointmentPriority here (instead of an arbitrary Int) means this function
--- does double duty: it's also exactly what's needed to populate
--- AppointmentDetails.priority when a waitlist match becomes a booked
--- appointment — one fact, not two parallel encodings of the same ranking.
-priorityOf :: WaitlistEntry -> AppointmentPriority
-priorityOf (EmergencyEntry _)   = Emergency
-priorityOf (UrgentEntry    _ _) = Urgent
-priorityOf (RoutineEntry _ _ _) = Routine
+-- An AppointmentRequest with an outstanding offer on a specific slot. Embeds
+-- the request rather than duplicating its fields, mirroring OfferedSlot/PendingSlot.
+data OfferedAppointmentRequest = OfferedAppointmentRequest
+  { request     :: AppointmentRequest
+  , offeredSlot :: SlotId
+  , offeredAt   :: UTCTime
+  }
+  deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
-detailsOf :: WaitlistEntry -> WaitlistDetails
-detailsOf (EmergencyEntry d)   = d
-detailsOf (UrgentEntry    d _) = d
-detailsOf (RoutineEntry d _ _) = d
+-- A request, in whichever state it's currently in. The waitlist is the
+-- collection of these — each record is either still waiting, or holds
+-- an outstanding offer.
+data WaitlistRecord
+  = Waiting  AppointmentRequest
+  | HasOffer OfferedAppointmentRequest
+  deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
-instance Ord WaitlistEntry where
+-- Reuses AppointmentPriority rather than an arbitrary ranking — this is also
+-- exactly the value needed for AppointmentDetails.priority once a match
+-- becomes a booked appointment.
+priorityOf :: AppointmentRequest -> AppointmentPriority
+priorityOf (EmergencyRequest _)   = Emergency
+priorityOf (UrgentRequest    _)   = Urgent
+priorityOf (RoutineRequest _ _ _) = Routine
+
+detailsOf :: AppointmentRequest -> AppointmentRequestDetails
+detailsOf (EmergencyRequest d)   = d
+detailsOf (UrgentRequest    d)   = d
+detailsOf (RoutineRequest d _ _) = d
+
+instance Ord AppointmentRequest where
   compare a b = compare (priorityOf a) (priorityOf b)
              <> compare (detailsOf a).createdAt (detailsOf b).createdAt
 
-sortWaitlist :: [WaitlistEntry] -> [WaitlistEntry]
+sortWaitlist :: [AppointmentRequest] -> [AppointmentRequest]
 sortWaitlist = sort
 
-entryId :: WaitlistEntry -> WaitlistEntryId
-entryId e = (detailsOf e).id
+requestId :: AppointmentRequest -> AppointmentRequestId
+requestId e = (detailsOf e).id
 
-setSlotOffered :: WaitlistEntry -> SlotId -> UTCTime -> WaitlistEntry
-setSlotOffered (EmergencyEntry d)        sid t = EmergencyEntry (d { status = SlotOffered sid t })
-setSlotOffered (UrgentEntry    d mDoc)   sid t = UrgentEntry    (d { status = SlotOffered sid t }) mDoc
-setSlotOffered (RoutineEntry   d mDoc w) sid t = RoutineEntry   (d { status = SlotOffered sid t }) mDoc w
+-- Match found: wrap the request as an outstanding offer.
+offerRequest :: AppointmentRequest -> SlotId -> UTCTime -> OfferedAppointmentRequest
+offerRequest e sid t = OfferedAppointmentRequest { request = e, offeredSlot = sid, offeredAt = t }
 
--- isOverdue and escalateToUrgent were removed: they encoded a plausible-
--- sounding rule ("a Routine patient past their DueAt becomes Urgent") that
--- was never actually validated with the doctor. DueAt's eligibility-filtering
--- role (in `matches`) came from a real conversation; the escalation behavior
--- did not. If the doctor confirms this rule is needed, reintroduce it then —
--- cheaper to add later than to carry unvalidated complexity now.
+-- Declined or expired: unwrap back to a waiting request.
+backToWaiting :: OfferedAppointmentRequest -> AppointmentRequest
+backToWaiting o = o.request
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- PROTOCOL
---
--- checkWaitlist is the core scheduling protocol:
---   When a slot enters PendingOffer state, the waitlist is checked.
---   The highest-priority matching patient (Emergency → Urgent → Routine, FIFO)
---   receives the offer before the slot is released to regular booking.
---
--- This replaces the EmergencyOnly slot reservation mechanism:
---   No capacity is locked away for demand that may not arrive.
---   Emergency patients always get the next available slot via priority.
---   Slot utilisation approaches 100%.
+-- When a slot becomes pending, the waitlist is checked: the highest-priority
+-- matching request (Emergency → Urgent → Routine, FIFO) is offered the slot
+-- before it's released to regular booking.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data WaitlistResult
-  = NoMatch AvailableSlot               -- no eligible entry; slot released to regular booking
-  | Matched OfferedSlot WaitlistEntry   -- offer made; both slot and entry updated
+data MatchAppointmentRequestResult
+  = NoMatch AvailableSlot                          -- no eligible request; slot released to regular booking
+  | Matched OfferedSlot OfferedAppointmentRequest  -- offer made; both slot and request updated
   deriving (Show, Eq)
 
-checkWaitlist :: PendingSlot -> [WaitlistEntry] -> UTCTime -> WaitlistResult
-checkWaitlist ps entries now =
-  case sortWaitlist (filter (matches ps) entries) of
-    []        -> NoMatch (releaseSlot ps)
-    (entry:_) -> Matched (offerSlot ps (entryId entry))
-                         (setSlotOffered entry ps.details.id now)
+checkWaitlist :: PendingSlot -> [AppointmentRequest] -> UTCTime -> MatchAppointmentRequestResult
+checkWaitlist ps reqs now =
+  case sortWaitlist (filter (matches ps) reqs) of
+    []      -> NoMatch (releaseSlot ps)
+    (req:_) -> Matched (offerSlot ps (requestId req))
+                       (offerRequest req ps.details.id now)
 
--- An entry matches a slot when:
---   1. The entry is still waiting (not already holding another offer)
---   2. The service matches
---   3. The doctor preference is satisfied (EmergencyEntry accepts any doctor)
---   4. The entry has not already declined this slot in the current offer cycle
---   5. The slot's start time satisfies the entry's DueAt constraint, if any
---      (e.g. a routine follow-up booked in June for "no earlier than December")
-matches :: PendingSlot -> WaitlistEntry -> Bool
-matches ps (EmergencyEntry d) =
-  d.status    == WaitingForSlot        &&
+-- Matches when: the service matches; the doctor preference is satisfied
+-- (only RoutineRequest has one); the request hasn't already declined this
+-- slot this cycle; and the slot's start time satisfies its DueAt, if any.
+-- No "is this waiting" check — the list passed in is, by its type, the
+-- waiting list; an offered request is an OfferedAppointmentRequest, not a candidate here.
+matches :: PendingSlot -> AppointmentRequest -> Bool
+matches ps (EmergencyRequest d) =
   d.serviceId == ps.details.serviceId  &&
   d.id `notMember` ps.declinedBy
-matches ps (UrgentEntry d mDoc) =
-  d.status    == WaitingForSlot                    &&
-  d.serviceId == ps.details.serviceId              &&
-  maybe True (== ps.details.doctorId) mDoc         &&
+matches ps (UrgentRequest d) =
+  d.serviceId == ps.details.serviceId  &&
   d.id `notMember` ps.declinedBy
-matches ps (RoutineEntry d mDoc dueAt) =
-  d.status    == WaitingForSlot                    &&
+matches ps (RoutineRequest d mDoc dueAt) =
   d.serviceId == ps.details.serviceId              &&
   maybe True (== ps.details.doctorId) mDoc         &&
   d.id `notMember` ps.declinedBy                   &&
