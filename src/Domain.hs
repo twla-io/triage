@@ -2,7 +2,6 @@
 {-# LANGUAGE DeriveGeneric         #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
-{-# LANGUAGE OverloadedStrings     #-}
 
 -- For conventions on generating downstream layers from these types, see:
 --   triage-db-codegen  — database schema generation
@@ -62,13 +61,12 @@ module Domain
   -- ── Waitlist ─────────────────────────────────────────────────────────────
   , AppointmentRequestDetails (..)
   , AppointmentRequest (..)
-  , OfferedAppointmentRequest (..)
+  , AppointmentRequestWithOffer (..)
   , WaitlistRecord (..)
   -- Commands (state transitions)
-  , offerRequest
+  , giveOffer
   , backToWaiting
   -- Queries (pure, read-only)
-  , sortWaitlist
   , requestId
   , detailsOf
   , priorityOf
@@ -298,7 +296,7 @@ data Appointment
 -- urgent time pressure.
 --
 -- No status field — a bare AppointmentRequest IS waiting. A request with an
--- outstanding offer is an OfferedAppointmentRequest instead.
+-- outstanding offer is an AppointmentRequestWithOffer instead.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data AppointmentRequestDetails = AppointmentRequestDetails
@@ -317,7 +315,7 @@ data AppointmentRequest
 
 -- An AppointmentRequest with an outstanding offer on a specific slot. Embeds
 -- the request rather than duplicating its fields, mirroring OfferedSlot/PendingSlot.
-data OfferedAppointmentRequest = OfferedAppointmentRequest
+data AppointmentRequestWithOffer = AppointmentRequestWithOffer
   { request     :: AppointmentRequest
   , offeredSlot :: SlotId
   , offeredAt   :: UTCTime
@@ -329,16 +327,16 @@ data OfferedAppointmentRequest = OfferedAppointmentRequest
 -- an outstanding offer.
 data WaitlistRecord
   = Waiting  AppointmentRequest
-  | HasOffer OfferedAppointmentRequest
+  | HasOffer AppointmentRequestWithOffer
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
 -- Reuses AppointmentPriority rather than an arbitrary ranking — this is also
 -- exactly the value needed for AppointmentDetails.priority once a match
 -- becomes a booked appointment.
 priorityOf :: AppointmentRequest -> AppointmentPriority
-priorityOf (EmergencyRequest _)   = Emergency
-priorityOf (UrgentRequest    _)   = Urgent
-priorityOf (RoutineRequest _ _ _) = Routine
+priorityOf EmergencyRequest{} = Emergency
+priorityOf UrgentRequest{}    = Urgent
+priorityOf RoutineRequest{}   = Routine
 
 detailsOf :: AppointmentRequest -> AppointmentRequestDetails
 detailsOf (EmergencyRequest d)   = d
@@ -349,18 +347,15 @@ instance Ord AppointmentRequest where
   compare a b = compare (priorityOf a) (priorityOf b)
              <> compare (detailsOf a).createdAt (detailsOf b).createdAt
 
-sortWaitlist :: [AppointmentRequest] -> [AppointmentRequest]
-sortWaitlist = sort
-
 requestId :: AppointmentRequest -> AppointmentRequestId
 requestId e = (detailsOf e).id
 
--- Match found: wrap the request as an outstanding offer.
-offerRequest :: AppointmentRequest -> SlotId -> UTCTime -> OfferedAppointmentRequest
-offerRequest e sid t = OfferedAppointmentRequest { request = e, offeredSlot = sid, offeredAt = t }
+-- Match found: give the request an offer on this slot.
+giveOffer :: AppointmentRequest -> SlotId -> UTCTime -> AppointmentRequestWithOffer
+giveOffer e sid t = AppointmentRequestWithOffer { request = e, offeredSlot = sid, offeredAt = t }
 
 -- Declined or expired: unwrap back to a waiting request.
-backToWaiting :: OfferedAppointmentRequest -> AppointmentRequest
+backToWaiting :: AppointmentRequestWithOffer -> AppointmentRequest
 backToWaiting o = o.request
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -372,21 +367,21 @@ backToWaiting o = o.request
 
 data MatchAppointmentRequestResult
   = NoMatch AvailableSlot                          -- no eligible request; slot released to regular booking
-  | Matched OfferedSlot OfferedAppointmentRequest  -- offer made; both slot and request updated
+  | Matched OfferedSlot AppointmentRequestWithOffer  -- offer made; both slot and request updated
   deriving (Show, Eq)
 
 checkWaitlist :: PendingSlot -> [AppointmentRequest] -> UTCTime -> MatchAppointmentRequestResult
 checkWaitlist ps reqs now =
-  case sortWaitlist (filter (matches ps) reqs) of
+  case sort (filter (matches ps) reqs) of
     []      -> NoMatch (releaseSlot ps)
     (req:_) -> Matched (offerSlot ps (requestId req))
-                       (offerRequest req ps.details.id now)
+                       (giveOffer req ps.details.id now)
 
 -- Matches when: the service matches; the doctor preference is satisfied
 -- (only RoutineRequest has one); the request hasn't already declined this
 -- slot this cycle; and the slot's start time satisfies its DueAt, if any.
 -- No "is this waiting" check — the list passed in is, by its type, the
--- waiting list; an offered request is an OfferedAppointmentRequest, not a candidate here.
+-- waiting list; an offered request is an AppointmentRequestWithOffer, not a candidate here.
 matches :: PendingSlot -> AppointmentRequest -> Bool
 matches ps (EmergencyRequest d) =
   d.serviceId == ps.details.serviceId  &&
