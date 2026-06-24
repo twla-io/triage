@@ -20,14 +20,14 @@ CREATE TABLE pending_slots (
 );
 
 CREATE TABLE pending_slot_declines (
-  slot_id           UUID NOT NULL REFERENCES pending_slots(slot_id),
-  waitlist_entry_id UUID NOT NULL REFERENCES waitlist_entries(id),
-  PRIMARY KEY (slot_id, waitlist_entry_id)
+  slot_id                UUID NOT NULL REFERENCES pending_slots(slot_id),
+  appointment_request_id UUID NOT NULL REFERENCES appointment_requests(id),
+  PRIMARY KEY (slot_id, appointment_request_id)
 );
 
 CREATE TABLE offered_slots (
-  slot_id   UUID PRIMARY KEY REFERENCES slot_details(id),
-  offered_to UUID NOT NULL REFERENCES waitlist_entries(id)
+  slot_id    UUID PRIMARY KEY REFERENCES slot_details(id),
+  offered_to UUID NOT NULL REFERENCES appointment_requests(id)
 );
 
 CREATE TABLE available_slots (
@@ -47,7 +47,7 @@ A transition like `bookSlot` becomes: `DELETE FROM available_slots WHERE slot_id
 **Pros:**
 - No nullable columns — a column existing means the value is always meaningful.
 - Schema directly mirrors the sum type's shape; reading the schema tells you the domain model.
-- `declinedBy :: Set WaitlistEntryId` becomes a natural join table (`pending_slot_declines`), not a JSON blob.
+- `declinedBy :: Set AppointmentRequestId` becomes a natural join table (`pending_slot_declines`), not a JSON blob.
 
 **Cons:**
 - More joins to assemble a full picture of one slot.

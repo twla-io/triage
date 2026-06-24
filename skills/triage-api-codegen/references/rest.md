@@ -9,8 +9,8 @@ Commands map to mutating HTTP verbs; Queries map to `GET`. The Command/Query spl
 | `bookSlot :: AvailableSlot -> AppointmentId -> BookedSlot` | `POST` | `/slots/:id/book` |
 | `declineOffer :: OfferedSlot -> PendingSlot` | `POST` | `/slots/:id/decline` |
 | `freeSlot :: BookedSlot -> PendingSlot` (via appointment cancellation) | `POST` | `/appointments/:id/cancel` |
-| `matches :: PendingSlot -> WaitlistEntry -> Bool` | `GET` (internal use, not usually its own endpoint) | — |
-| `entryId`, `detailsOf`, `priorityOf` | (used internally to build response bodies, not endpoints themselves) | — |
+| `matches :: PendingSlot -> AppointmentRequest -> Bool` | `GET` (internal use, not usually its own endpoint) | — |
+| `requestId`, `detailsOf`, `priorityOf` | (used internally to build response bodies, not endpoints themselves) | — |
 
 Notice that `checkWaitlist` does **not** get its own route — per the invariant in `SKILL.md`, it's the body of whatever handler responds to "a slot just became free":
 

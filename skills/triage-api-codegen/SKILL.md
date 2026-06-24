@@ -11,11 +11,11 @@ description: Conventions for generating a REST, GraphQL, or RPC API from triage'
 
 ### Functions are either Commands or Queries — never both, never ambiguous
 
-`Domain.hs`'s export list groups every function under `-- Commands` (state transitions: `freeSlot`, `offerSlot`, `bookSlot`, ...) or `-- Queries` (pure, read-only: `matches`, `satisfiesDueAt`, `entryId`, `priorityOf`, ...). A Command always returns a new domain value, never `Bool` or a primitive. Map Commands to mutating operations and Queries to read operations — never the reverse, regardless of which API style is chosen below.
+`Domain.hs`'s export list groups every function under `-- Commands` (state transitions: `freeSlot`, `offerSlot`, `bookSlot`, `giveOffer`, ...) or `-- Queries` (pure, read-only: `matches`, `satisfiesDueAt`, `requestId`, `priorityOf`, ...). A Command always returns a new domain value, never `Bool` or a primitive. Map Commands to mutating operations and Queries to read operations — never the reverse, regardless of which API style is chosen below.
 
 ### `checkWaitlist` is a protocol decision, not an endpoint
 
-`checkWaitlist :: PendingSlot -> [WaitlistEntry] -> UTCTime -> WaitlistResult` belongs inside the handler for "a slot just became free" — never exposed as a public endpoint on its own. Expose the *event* that triggers it (slot created, appointment cancelled), and run the protocol plus its atomic write inside that handler.
+`checkWaitlist :: PendingSlot -> [AppointmentRequest] -> UTCTime -> MatchAppointmentRequestResult` belongs inside the handler for "a slot just became free" — never exposed as a public endpoint on its own. Expose the *event* that triggers it (slot created, appointment cancelled), and run the protocol plus its atomic write inside that handler.
 
 ### IDs are opaque UUID strings on the wire
 

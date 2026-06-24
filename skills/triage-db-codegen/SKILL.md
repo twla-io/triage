@@ -16,7 +16,7 @@ data Slot = Pending PendingSlot | Offered OfferedSlot
           | Available AvailableSlot | Booked BookedSlot
 ```
 
-This is **not** "one `Slot` table plus a `status` enum column." Each constructor is a distinct state with its own payload — the constructor **is** the status. Never add a separate `status` column alongside whichever encoding you choose below. The same pattern applies to `WaitlistEntry` (`EmergencyEntry | UrgentEntry | RoutineEntry`) and `Appointment` (`Open | Closed`).
+This is **not** "one `Slot` table plus a `status` enum column." Each constructor is a distinct state with its own payload — the constructor **is** the status. Never add a separate `status` column alongside whichever encoding you choose below. The same pattern applies to `AppointmentRequest` (`EmergencyRequest | UrgentRequest | RoutineRequest`) and `Appointment` (`Open | Closed`).
 
 ### Newtype ID wrappers are opaque UUIDs
 
@@ -24,15 +24,15 @@ This is **not** "one `Slot` table plus a `status` enum column." Each constructor
 
 ### `Maybe a` is nullable; `[a]` / `Set a` is multi-valued storage
 
-`doctorId :: Maybe DoctorId` is a nullable foreign key column. `declinedBy :: Set WaitlistEntryId` is never modeled as repeated rows of the same entity — it's a join table or an array/JSON column (the exact shape depends on which schema strategy below is chosen).
+`doctorId :: Maybe DoctorId` is a nullable foreign key column. `declinedBy :: Set AppointmentRequestId` is never modeled as repeated rows of the same entity — it's a join table or an array/JSON column (the exact shape depends on which schema strategy below is chosen).
 
 ### Multi-aggregate writes are atomic, always
 
 ```haskell
-data WaitlistResult = NoMatch AvailableSlot | Matched OfferedSlot WaitlistEntry
+data MatchAppointmentRequestResult = NoMatch AvailableSlot | Matched OfferedSlot AppointmentRequestWithOffer
 ```
 
-Both values inside `Matched` must be written in a single transaction. If only one half is written, the invariant "the slot's `offeredTo` agrees with the waitlist entry's `SlotOffered` status" breaks. Any domain function returning more than one value follows this same rule — never commit one half and defer the other.
+Both values inside `Matched` must be written in a single transaction. If only one half is written, the invariant "`OfferedSlot.offeredTo` agrees with which `AppointmentRequest` holds the matching `AppointmentRequestWithOffer`" breaks. Any domain function returning more than one value follows this same rule — never commit one half and defer the other.
 
 ## Strategy choices — pick one, or ask the user
 

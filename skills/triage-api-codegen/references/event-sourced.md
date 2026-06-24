@@ -11,17 +11,17 @@ Each Command in `Domain.hs`'s exports corresponds to one application-layer comma
 | Domain function | Command | Event(s) emitted |
 |---|---|---|
 | `bookSlot` | `BookSlot SlotId AppointmentId` | `SlotBooked`, `AppointmentOpened` |
-| `declineOffer` | `DeclineOffer SlotId WaitlistEntryId` | `OfferDeclined` |
-| `checkWaitlist`'s `Matched` result | (internal to the `SlotCreated`/`SlotFreed` handler) | `SlotOffered`, `WaitlistEntryOffered` — **emitted together, same transaction** (this is the atomicity invariant from `SKILL.md`, expressed as "these events are always written in the same append") |
+| `declineOffer` | `DeclineOffer SlotId AppointmentRequestId` | `OfferDeclined` |
+| `checkWaitlist`'s `Matched` result | (internal to the `SlotCreated`/`SlotFreed` handler) | `SlotOffered`, `AppointmentRequestOffered` — **emitted together, same transaction** (this is the atomicity invariant from `SKILL.md`, expressed as "these events are always written in the same append") |
 | `checkWaitlist`'s `NoMatch` result | (internal) | `SlotReleased` |
 
 ## Read side
 
-Queries (`matches`, `entryId`, `priorityOf`, etc.) are not exposed as commands — they either run inside a command handler's decision logic, or back a **projection**: a denormalized read model rebuilt from the event stream, queried directly by API read endpoints. E.g. an `AvailableSlotsProjection` table, updated by a handler listening for `SlotReleased`/`SlotBooked`, queried directly by `GET /slots?status=available` without touching the event log per-request.
+Queries (`matches`, `requestId`, `priorityOf`, etc.) are not exposed as commands — they either run inside a command handler's decision logic, or back a **projection**: a denormalized read model rebuilt from the event stream, queried directly by API read endpoints. E.g. an `AvailableSlotsProjection` table, updated by a handler listening for `SlotReleased`/`SlotBooked`, queried directly by `GET /slots?status=available` without touching the event log per-request.
 
 ## Atomicity
 
-The invariant "both halves of `Matched` must persist together" is naturally satisfied here: events from one command handler invocation are appended to the event store in one batch, in one transaction, by construction — there's no way to write `SlotOffered` without `WaitlistEntryOffered` in the same handler call. This is one of the reasons CQRS/ES was originally a good fit for this domain's atomicity requirements.
+The invariant "both halves of `Matched` must persist together" is naturally satisfied here: events from one command handler invocation are appended to the event store in one batch, in one transaction, by construction — there's no way to write `SlotOffered` without `AppointmentRequestOffered` in the same handler call. This is one of the reasons CQRS/ES was originally a good fit for this domain's atomicity requirements.
 
 ## When to choose this
 

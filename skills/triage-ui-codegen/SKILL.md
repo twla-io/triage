@@ -13,7 +13,7 @@ description: Conventions for generating a frontend UI or UX flow from triage's D
 
 This is the most important rule in this skill, and the one most likely to be silently violated. If a `Slot` is `Available`, the only valid action is `bookSlot` — never show a "decline" or "cancel" control, because no domain function accepts an `AvailableSlot` for those operations. If a `Slot` is `Booked`, the relevant actions come from `Appointment`'s lifecycle (`Cancelled`, `Rescheduled`, `NoShow`, `Completed`), not from any Slot-level transition.
 
-Concretely: **build the set of enabled controls from the current state's type, not from a general-purpose "what can a slot do" menu with conditions sprinkled on top.** A `case` over the `Slot`/`Appointment`/`WaitlistEntry` constructor should produce the exact list of valid actions — if a new constructor is added to a domain type later, the UI should fail to compile (in a typed frontend) or at minimum visibly need updating, not silently render a stale action list.
+Concretely: **build the set of enabled controls from the current state's type, not from a general-purpose "what can a slot do" menu with conditions sprinkled on top.** A `case` over the `Slot`/`Appointment`/`AppointmentRequest` constructor should produce the exact list of valid actions — if a new constructor is added to a domain type later, the UI should fail to compile (in a typed frontend) or at minimum visibly need updating, not silently render a stale action list.
 
 ### Client-side state mirrors the domain's sum types directly
 
@@ -21,7 +21,7 @@ Don't model a `Slot`'s state in the frontend as independent booleans (`isPending
 
 ### Structural absence stays absent in the UI, not just hidden
 
-`EmergencyEntry` has no doctor-preference field — not `Nothing`, structurally absent. The UI for registering an emergency waitlist entry should not display a disabled or empty doctor-preference selector; the control shouldn't exist on that form at all. If a form is shared across `Urgent`/`Routine`/`Emergency` registration, the doctor-preference field should be conditionally rendered based on which entry type is selected, not present-but-disabled.
+`EmergencyRequest` has no doctor-preference field — not `Nothing`, structurally absent. The UI for registering an emergency appointment request should not display a disabled or empty doctor-preference selector; the control shouldn't exist on that form at all. If a form is shared across `Urgent`/`Routine`/`Emergency` registration, the doctor-preference field should be conditionally rendered based on which request type is selected, not present-but-disabled.
 
 ### `DueAt`'s four cases are a mode choice, not two independent date pickers
 
@@ -42,7 +42,7 @@ Present this as an explicit choice (e.g. a select: "Anytime / Not before / Not a
 
 ## Reference
 
-- `references/state-to-affordance-mapping.md` — a complete table of every `Slot`/`Appointment`/`WaitlistEntry` state and the actions valid in that state, derived directly from `Domain.hs`'s Commands. Use this as the source for any "what buttons should this screen show" question rather than re-deriving it ad hoc.
+- `references/state-to-affordance-mapping.md` — a complete table of every `Slot`/`Appointment`/`AppointmentRequest` state and the actions valid in that state, derived directly from `Domain.hs`'s Commands. Use this as the source for any "what buttons should this screen show" question rather than re-deriving it ad hoc.
 
 ## When unsure
 
