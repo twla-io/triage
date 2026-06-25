@@ -37,13 +37,12 @@ module Domain
   , SlotDetails (..)
   , PendingSlot (..)
   , AvailableSlot (..)
-  , OfferedSlot (..)
+  , OfferedSlot           -- constructor hidden; produced only by giveOffer, paired with AppointmentRequestWithOffer
   , BookedSlot (..)
   , Slot (..)
   -- Commands (state transitions)
   , mkPendingSlot
   , freeSlot
-  , offerSlot
   , releaseSlot
   , bookSlot
   , declineOffer
@@ -61,10 +60,9 @@ module Domain
   -- ── Waitlist ─────────────────────────────────────────────────────────────
   , AppointmentRequestDetails (..)
   , AppointmentRequest (..)
-  , AppointmentRequestWithOffer (..)
+  , AppointmentRequestWithOffer   -- constructor hidden; produced only by giveOffer, paired with OfferedSlot
   , WaitlistRecord (..)
   -- Commands (state transitions)
-  , giveOffer
   , backToWaiting
   -- Queries (pure, read-only)
   , requestId
@@ -73,15 +71,17 @@ module Domain
 
   -- ── Protocol ─────────────────────────────────────────────────────────────
   , MatchAppointmentRequestResult (..)
-  -- Commands (spans two aggregates — both halves of the result must be
-  -- persisted together)
+  -- Commands (spans two aggregates — both halves must be persisted together)
+  , giveOffer
   , checkWaitlist
   -- Queries (pure, read-only)
+  , bestMatch
   , matches
   ) where
 
 import Data.Aeson   (FromJSON, ToJSON)
 import Data.List    (sort)
+import Data.Maybe   (listToMaybe)
 import Data.Set     (Set, insert, notMember)
 import Data.Text    (Text)
 import Data.Time    (NominalDiffTime, UTCTime, addUTCTime)
@@ -227,10 +227,6 @@ mkPendingSlot d = PendingSlot { details = d, declinedBy = mempty }
 freeSlot :: BookedSlot -> PendingSlot
 freeSlot (BookedSlot d _) = PendingSlot { details = d, declinedBy = mempty }
 
--- Waitlist match found: offer the pending slot as-is (declinedBy carried inside)
-offerSlot :: PendingSlot -> AppointmentRequestId -> OfferedSlot
-offerSlot ps eid = OfferedSlot { slot = ps, offeredTo = eid }
-
 -- No waitlist match: slot opens for regular booking
 releaseSlot :: PendingSlot -> AvailableSlot
 releaseSlot ps = AvailableSlot ps.details
@@ -350,10 +346,6 @@ instance Ord AppointmentRequest where
 requestId :: AppointmentRequest -> AppointmentRequestId
 requestId e = (detailsOf e).id
 
--- Match found: give the request an offer on this slot.
-giveOffer :: AppointmentRequest -> SlotId -> UTCTime -> AppointmentRequestWithOffer
-giveOffer e sid t = AppointmentRequestWithOffer { request = e, offeredSlot = sid, offeredAt = t }
-
 -- Declined or expired: unwrap back to a waiting request.
 backToWaiting :: AppointmentRequestWithOffer -> AppointmentRequest
 backToWaiting o = o.request
@@ -370,12 +362,25 @@ data MatchAppointmentRequestResult
   | Matched OfferedSlot AppointmentRequestWithOffer  -- offer made; both slot and request updated
   deriving (Show, Eq)
 
+-- Highest-priority eligible request for this slot, without committing any change.
+bestMatch :: PendingSlot -> [AppointmentRequest] -> Maybe AppointmentRequest
+bestMatch ps reqs = listToMaybe (sort (filter (matches ps) reqs))
+
+-- Sole constructor for both OfferedSlot and AppointmentRequestWithOffer —
+-- constructors are hidden, so this is the only path to produce either. Call
+-- directly to offer a specific request, bypassing bestMatch.
+giveOffer :: PendingSlot -> AppointmentRequest -> UTCTime
+          -> (OfferedSlot, AppointmentRequestWithOffer)
+giveOffer ps req now =
+  ( OfferedSlot { slot = ps, offeredTo = requestId req }
+  , AppointmentRequestWithOffer { request = req, offeredSlot = ps.details.id, offeredAt = now }
+  )
+
 checkWaitlist :: PendingSlot -> [AppointmentRequest] -> UTCTime -> MatchAppointmentRequestResult
 checkWaitlist ps reqs now =
-  case sort (filter (matches ps) reqs) of
-    []      -> NoMatch (releaseSlot ps)
-    (req:_) -> Matched (offerSlot ps (requestId req))
-                       (giveOffer req ps.details.id now)
+  case bestMatch ps reqs of
+    Nothing  -> NoMatch (releaseSlot ps)
+    Just req -> let (os, withReq) = giveOffer ps req now in Matched os withReq
 
 -- Matches when: the service matches; the doctor preference is satisfied
 -- (only RoutineRequest has one); the request hasn't already declined this

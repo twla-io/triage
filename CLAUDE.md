@@ -40,6 +40,10 @@ These are non-negotiable when touching `src/Domain.hs`:
    E.g. `OfferedSlot { slot :: PendingSlot, ... }` — an `OfferedSlot` IS a
    `PendingSlot` with a claim placed on it. Carries history for free; the
    reverse transition becomes a pure unwrap.
+   When two types must always be produced as a pair, reinforce this at the
+   module boundary: hide both constructors and expose a single function that
+   produces both. `OfferedSlot` and `AppointmentRequestWithOffer` are the
+   example — `giveOffer` is the only way to produce either.
 
 3. **Possession framing over identity framing**, when a type wraps something
    that hasn't changed identity. `AppointmentRequestWithOffer` and `HasOffer`
