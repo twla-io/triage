@@ -35,16 +35,15 @@ module Domain
 
   -- ── Slot ─────────────────────────────────────────────────────────────────
   , SlotDetails (..)
-  , PendingSlot (..)
-  , AvailableSlot (..)
-  , OfferedSlot           -- constructor hidden; produced only by giveOffer, paired with AppointmentRequestWithOffer
-  , BookedSlot (..)
+  , PendingSlot           -- constructor hidden — use mkPendingSlot, freeSlot, declineOffer, or expireOffer
+  , AvailableSlot         -- constructor hidden — use releaseSlot; existence proves a PendingSlot was released
+  , OfferedSlot           -- constructor hidden — only giveOffer creates one
+  , BookedSlot            -- constructor hidden — use bookAppointment; existence proves Pending -> Available -> Booked, with a matching Appointment
   , Slot (..)
   -- Commands (state transitions)
   , mkPendingSlot
   , freeSlot
   , releaseSlot
-  , bookSlot
   , declineOffer
   , expireOffer
   -- Queries (pure, read-only)
@@ -56,26 +55,30 @@ module Domain
   , AppointmentParty (..)
   , CloseReason (..)
   , Appointment (..)
+  -- Commands (spans two aggregates — both halves must be persisted together)
+  , bookAppointment
+  , tryAccept
 
   -- ── Waitlist ─────────────────────────────────────────────────────────────
   , AppointmentRequestDetails (..)
   , AppointmentRequest (..)
-  , AppointmentRequestWithOffer   -- constructor hidden; produced only by giveOffer, paired with OfferedSlot
+  , AppointmentRequestWithOffer    -- constructor hidden — only giveOffer creates one
   , WaitlistRecord (..)
   -- Commands (state transitions)
+  , giveOffer
   , backToWaiting
   -- Queries (pure, read-only)
   , requestId
   , detailsOf
   , priorityOf
+  , bestMatch
 
   -- ── Protocol ─────────────────────────────────────────────────────────────
   , MatchAppointmentRequestResult (..)
-  -- Commands (spans two aggregates — both halves must be persisted together)
-  , giveOffer
+  -- Commands (spans two aggregates — both halves of the result must be
+  -- persisted together)
   , checkWaitlist
   -- Queries (pure, read-only)
-  , bestMatch
   , matches
   ) where
 
@@ -231,10 +234,6 @@ freeSlot (BookedSlot d _) = PendingSlot { details = d, declinedBy = mempty }
 releaseSlot :: PendingSlot -> AvailableSlot
 releaseSlot ps = AvailableSlot ps.details
 
--- Regular or priority booking: slot is claimed
-bookSlot :: AvailableSlot -> AppointmentId -> BookedSlot
-bookSlot (AvailableSlot d) = BookedSlot d
-
 -- Active decline: record the decliner, return to pending for next candidate
 declineOffer :: OfferedSlot -> PendingSlot
 declineOffer o = o.slot { declinedBy = insert o.offeredTo o.slot.declinedBy }
@@ -284,6 +283,54 @@ data Appointment
   = Open   AppointmentDetails
   | Closed AppointmentDetails CloseReason
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+-- Commits a direct, self-service booking: a patient claims a publicly
+-- available slot with no triage step involved — no AppointmentRequest, no
+-- classification, just "this open time matches what I want." Priority is
+-- always Routine here, not a parameter: claiming Urgent or Emergency
+-- requires going through the waitlist's triage (see AppointmentRequest),
+-- which this path skips entirely. Letting a caller assert any priority
+-- here would let a self-service booking claim urgency with nothing backing
+-- the claim. The slot and the appointment transition together, sharing the
+-- same AppointmentId — BookedSlot's constructor is applied only here and
+-- in tryAccept (the waitlist-acceptance path below), so a BookedSlot can
+-- never exist without a matching Appointment, regardless of which path
+-- created it.
+bookAppointment :: AvailableSlot -> AppointmentId -> PatientId -> (BookedSlot, Appointment)
+bookAppointment (AvailableSlot d) aid pid =
+  ( BookedSlot d aid
+  , Open AppointmentDetails { id = aid, patientId = pid, slotId = d.id, priority = Routine }
+  )
+
+-- Accepting a waitlist offer: unlike giveOffer and bookAppointment, the two
+-- inputs here weren't produced together by one call — they were created as
+-- a pair by giveOffer, then independently persisted and re-fetched, so
+-- nothing at the type level guarantees they're still the matching pair.
+-- Two UUIDs being equal is a runtime fact about which values someone
+-- handed this function, not something a type signature can express.
+--
+-- So this checks both directions of the bidirectional reference before
+-- committing: the slot's offeredTo must name this request, and the
+-- request's offeredSlot must name this slot. Nothing is checked elsewhere
+-- in this file (bookAppointment trusts its patientId, for instance) — this
+-- is the one place a mismatch is actually possible, because it's the one
+-- place two independently-fetched values are required to agree.
+--
+-- Still total: Maybe doesn't mean "this can crash," it means "not every
+-- pair of inputs is a valid pair," which is the honest fact established
+-- above, made explicit instead of assumed.
+tryAccept :: OfferedSlot -> AppointmentRequestWithOffer -> AppointmentId -> Maybe (BookedSlot, Appointment)
+tryAccept os awo aid
+  | os.offeredTo == requestId awo.request && awo.offeredSlot == os.slot.details.id =
+      Just ( BookedSlot os.slot.details aid
+           , Open AppointmentDetails
+               { id        = aid
+               , patientId = (detailsOf awo.request).patientId
+               , slotId    = os.slot.details.id
+               , priority  = priorityOf awo.request
+               }
+           )
+  | otherwise = Nothing
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- WAITLIST
@@ -358,19 +405,25 @@ backToWaiting o = o.request
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data MatchAppointmentRequestResult
-  = NoMatch AvailableSlot                          -- no eligible request; slot released to regular booking
+  = NoMatch AvailableSlot                            -- no eligible request; slot released to regular booking
   | Matched OfferedSlot AppointmentRequestWithOffer  -- offer made; both slot and request updated
   deriving (Show, Eq)
 
--- Highest-priority eligible request for this slot, without committing any change.
+-- The highest-priority request, among those given, that's eligible for this
+-- slot — or Nothing if none are. Pure selection only: filter then sort,
+-- no transition happens here. Separated from giveOffer so the priority
+-- scan and the act of committing an offer can be used independently — e.g.
+-- a doctor overriding the scan entirely to hand a slot to a specific
+-- patient still goes through giveOffer, just skipping this function.
 bestMatch :: PendingSlot -> [AppointmentRequest] -> Maybe AppointmentRequest
 bestMatch ps reqs = listToMaybe $ sort $ filter (matches ps) reqs
 
--- Sole constructor for both OfferedSlot and AppointmentRequestWithOffer —
--- constructors are hidden, so this is the only path to produce either. Call
--- directly to offer a specific request, bypassing bestMatch.
-giveOffer :: PendingSlot -> AppointmentRequest -> UTCTime
-          -> (OfferedSlot, AppointmentRequestWithOffer)
+-- Commits an offer: the slot and the request transition together, as one
+-- call producing both halves. This is the only place in the module where
+-- either constructor is applied — there is no way to obtain an OfferedSlot
+-- or an AppointmentRequestWithOffer except through this function, and no
+-- way to obtain one without the other.
+giveOffer :: PendingSlot -> AppointmentRequest -> UTCTime -> (OfferedSlot, AppointmentRequestWithOffer)
 giveOffer ps req now =
   ( OfferedSlot { slot = ps, offeredTo = requestId req }
   , AppointmentRequestWithOffer { request = req, offeredSlot = ps.details.id, offeredAt = now }
@@ -379,7 +432,7 @@ giveOffer ps req now =
 checkWaitlist :: PendingSlot -> [AppointmentRequest] -> UTCTime -> MatchAppointmentRequestResult
 checkWaitlist ps reqs now =
   case bestMatch ps reqs of
-    Nothing  -> NoMatch $ releaseSlot ps
+    Nothing  -> NoMatch (releaseSlot ps)
     Just req -> let (os, withReq) = giveOffer ps req now in Matched os withReq
 
 -- Matches when: the service matches; the doctor preference is satisfied
