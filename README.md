@@ -15,6 +15,30 @@ The slot lifecycle is encoded as separate types rather than a status field —
 transitions are compile errors, not runtime guards. Every transition
 function is total.
 
+## Provenance, not just types
+
+Each slot lifecycle type goes a step further than the usual "make illegal
+states unrepresentable": their constructors aren't exported at all. The
+only way to obtain a `BookedSlot` from outside `Domain.hs` is to call
+`bookAppointment` or `tryAccept` — and each of those demands an
+`AvailableSlot` or an `OfferedSlot` as input, which themselves can only
+come from their own single sanctioned producer, all the way back to
+`mkPendingSlot`.
+
+The result: holding a `BookedSlot` is a compile-time-enforced proof that
+the slot was `Pending`, was legitimately released to `Available`, and was
+then booked with a matching `Appointment` — not a convention callers are
+trusted to follow, a fact the type system guarantees. The same pattern
+seals `OfferedSlot` and `AppointmentRequestWithOffer`: `giveOffer` is the
+only place either is constructed, so the two can never be created
+separately or out of sync with each other.
+
+Where a guarantee like that genuinely isn't available — `tryAccept`
+reconciles two values that were created together but independently
+re-fetched, so nothing at the type level can confirm they're still the
+matching pair — the function says so honestly with `Maybe`, rather than
+assuming.
+
 ## The Model
 
 Five core entities: `Service`, `Slot`, `Appointment`, `AppointmentRequest`
