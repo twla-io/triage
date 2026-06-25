@@ -364,7 +364,7 @@ data MatchAppointmentRequestResult
 
 -- Highest-priority eligible request for this slot, without committing any change.
 bestMatch :: PendingSlot -> [AppointmentRequest] -> Maybe AppointmentRequest
-bestMatch ps reqs = listToMaybe (sort (filter (matches ps) reqs))
+bestMatch ps reqs = listToMaybe $ sort $ filter (matches ps) reqs
 
 -- Sole constructor for both OfferedSlot and AppointmentRequestWithOffer —
 -- constructors are hidden, so this is the only path to produce either. Call
@@ -379,7 +379,7 @@ giveOffer ps req now =
 checkWaitlist :: PendingSlot -> [AppointmentRequest] -> UTCTime -> MatchAppointmentRequestResult
 checkWaitlist ps reqs now =
   case bestMatch ps reqs of
-    Nothing  -> NoMatch (releaseSlot ps)
+    Nothing  -> NoMatch $ releaseSlot ps
     Just req -> let (os, withReq) = giveOffer ps req now in Matched os withReq
 
 -- Matches when: the service matches; the doctor preference is satisfied
