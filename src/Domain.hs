@@ -54,7 +54,11 @@ module Domain
   , AppointmentDetails (..)
   , AppointmentParty (..)
   , CloseReason (..)
+  , OpenAppointment       -- constructor hidden — use bookAppointment or tryAccept
+  , ClosedAppointment     -- constructor hidden — use closeAppointment
   , Appointment (..)
+  -- Commands (state transitions)
+  , closeAppointment
   -- Commands (spans two aggregates — both halves must be persisted together)
   , bookAppointment
   , tryAccept
@@ -226,9 +230,11 @@ data Slot
 mkPendingSlot :: SlotDetails -> PendingSlot
 mkPendingSlot d = PendingSlot { details = d, declinedBy = mempty }
 
--- Appointment cancelled: new offer cycle begins, decline history discarded
+-- Appointment cancelled: new offer cycle begins, decline history discarded.
+-- Delegates to mkPendingSlot rather than re-stating "fresh slot, empty
+-- declinedBy" independently — one definition of what a fresh cycle means.
 freeSlot :: BookedSlot -> PendingSlot
-freeSlot (BookedSlot d _) = PendingSlot { details = d, declinedBy = mempty }
+freeSlot (BookedSlot d _) = mkPendingSlot d
 
 -- No waitlist match: slot opens for regular booking
 releaseSlot :: PendingSlot -> AvailableSlot
@@ -279,10 +285,22 @@ data CloseReason
   | NoShow      AppointmentParty
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
-data Appointment
-  = Open   AppointmentDetails
-  | Closed AppointmentDetails CloseReason
+newtype OpenAppointment = OpenAppointment AppointmentDetails
   deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+data ClosedAppointment = ClosedAppointment AppointmentDetails CloseReason
+  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+data Appointment
+  = Open   OpenAppointment
+  | Closed ClosedAppointment
+  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+-- The only place ClosedAppointment's constructor is applied. Mirrors every
+-- other transition in this file: the entity being transitioned comes
+-- first, the reason/auxiliary data second.
+closeAppointment :: OpenAppointment -> CloseReason -> ClosedAppointment
+closeAppointment (OpenAppointment d) reason = ClosedAppointment d reason
 
 -- Commits a direct, self-service booking: a patient claims a publicly
 -- available slot with no triage step involved — no AppointmentRequest, no
@@ -299,7 +317,7 @@ data Appointment
 bookAppointment :: AvailableSlot -> AppointmentId -> PatientId -> (BookedSlot, Appointment)
 bookAppointment (AvailableSlot d) aid pid =
   ( BookedSlot d aid
-  , Open AppointmentDetails { id = aid, patientId = pid, slotId = d.id, priority = Routine }
+  , Open (OpenAppointment AppointmentDetails { id = aid, patientId = pid, slotId = d.id, priority = Routine })
   )
 
 -- Accepting a waitlist offer: unlike giveOffer and bookAppointment, the two
@@ -323,12 +341,12 @@ tryAccept :: OfferedSlot -> AppointmentRequestWithOffer -> AppointmentId -> Mayb
 tryAccept os awo aid
   | os.offeredTo == requestId awo.request && awo.offeredSlot == os.slot.details.id =
       Just ( BookedSlot os.slot.details aid
-           , Open AppointmentDetails
+           , Open (OpenAppointment AppointmentDetails
                { id        = aid
                , patientId = (detailsOf awo.request).patientId
                , slotId    = os.slot.details.id
                , priority  = priorityOf awo.request
-               }
+               })
            )
   | otherwise = Nothing
 
