@@ -6,7 +6,7 @@ Commands map to mutating HTTP verbs; Queries map to `GET`. The Command/Query spl
 
 | Domain function | HTTP | Route (example) |
 |---|---|---|
-| `bookSlot :: AvailableSlot -> AppointmentId -> BookedSlot` | `POST` | `/slots/:id/book` |
+| `bookAppointment :: AvailableSlot -> AppointmentId -> PatientId -> (BookedSlot, Appointment)` | `POST` | `/slots/:id/book` |
 | `declineOffer :: OfferedSlot -> PendingSlot` | `POST` | `/slots/:id/decline` |
 | `freeSlot :: BookedSlot -> PendingSlot` (via appointment cancellation) | `POST` | `/appointments/:id/cancel` |
 | `matches :: PendingSlot -> AppointmentRequest -> Bool` | `GET` (internal use, not usually its own endpoint) | — |

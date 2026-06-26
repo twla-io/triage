@@ -10,7 +10,7 @@ Each Command in `Domain.hs`'s exports corresponds to one application-layer comma
 
 | Domain function | Command | Event(s) emitted |
 |---|---|---|
-| `bookSlot` | `BookSlot SlotId AppointmentId` | `SlotBooked`, `AppointmentOpened` |
+| `bookAppointment` | `BookAppointment SlotId AppointmentId PatientId` | `SlotBooked`, `AppointmentOpened` |
 | `declineOffer` | `DeclineOffer SlotId AppointmentRequestId` | `OfferDeclined` |
 | `checkWaitlist`'s `Matched` result | (internal to the `SlotCreated`/`SlotFreed` handler) | `SlotOffered`, `AppointmentRequestOffered` — **emitted together, same transaction** (this is the atomicity invariant from `SKILL.md`, expressed as "these events are always written in the same append") |
 | `checkWaitlist`'s `NoMatch` result | (internal) | `SlotReleased` |

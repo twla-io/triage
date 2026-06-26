@@ -1,6 +1,6 @@
 # DB Strategy: Document Store
 
-One JSON document per aggregate, mirroring the sum type's `ToJSON` encoding directly (Postgres `JSONB`, MongoDB, or similar). The Haskell `Generic`-derived JSON instances already produce exactly this shape — minimal translation needed.
+One JSON document per aggregate (Postgres `JSONB`, MongoDB, or similar).
 
 ## Example: `Slot`
 
@@ -16,8 +16,6 @@ A row's `data` column holds the JSON-encoded `Slot` value directly, e.g.:
 ```json
 { "tag": "Offered", "slot": { "details": {...}, "declinedBy": [...] }, "offeredTo": "..." }
 ```
-
-(exact shape depends on the `aeson` encoding options used — confirm with the actual `ToJSON` output rather than assuming a specific tagging scheme).
 
 ## Trade-offs
 

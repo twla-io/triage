@@ -7,8 +7,8 @@ Derived directly from `Domain.hs`'s Commands. If a domain function isn't listed 
 | State | Valid actions | Domain function | Notes |
 |---|---|---|---|
 | `Pending` | none (system-internal) | — | A `PendingSlot` is mid-protocol, waiting for `checkWaitlist`. No user-facing action applies; if shown at all (e.g. a doctor's internal dashboard), show as "processing" / "awaiting waitlist check," not as something to act on. |
-| `Offered` | Accept, Decline | `bookSlot` (via the offered request accepting), `declineOffer` | These actions belong to the *appointment request's* perspective (the patient who received the offer), not a general slot view. A doctor-facing slot view should show "Offered to [patient], awaiting response," not Accept/Decline controls. |
-| `Available` | Book | `bookSlot` | The only valid action. Never show Cancel/Decline for an `Available` slot — there's nothing to cancel yet. |
+| `Offered` | Accept, Decline | `tryAccept` (via the offered request accepting), `declineOffer` | These actions belong to the *appointment request's* perspective (the patient who received the offer), not a general slot view. A doctor-facing slot view should show "Offered to [patient], awaiting response," not Accept/Decline controls. |
+| `Available` | Book | `bookAppointment` | The only valid action. Never show Cancel/Decline for an `Available` slot — there's nothing to cancel yet. |
 | `Booked` | (none at the Slot level) | — | Actions on a booked slot are actually actions on its `Appointment` — see below. A slot-level view should link to the appointment, not duplicate its actions. |
 
 ## `Appointment`
@@ -45,4 +45,4 @@ Note that `checkWaitlist` deliberately takes `[AppointmentRequest]` (the waiting
 | `WaitlistRecord` case | Valid actions | Domain function | Notes |
 |---|---|---|---|
 | `Waiting` | none directly — eligible to be matched by `checkWaitlist` | — | Nothing for a user to act on; this record is simply on the list. |
-| `HasOffer` | Accept, Decline | `bookSlot` (on accept), `declineOffer` (on decline) | Show "Offered [slot], awaiting response" with Accept/Decline controls — this is the one place a patient or staff member acts directly on a waitlist record. |
+| `HasOffer` | Accept, Decline | `tryAccept` (on accept), `declineOffer` (on decline) | Show "Offered [slot], awaiting response" with Accept/Decline controls — this is the one place a patient or staff member acts directly on a waitlist record. |

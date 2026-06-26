@@ -11,7 +11,7 @@ description: Conventions for generating a REST, GraphQL, or RPC API from triage'
 
 ### Functions are either Commands or Queries — never both, never ambiguous
 
-`Domain.hs`'s export list groups every function under `-- Commands` (state transitions: `freeSlot`, `offerSlot`, `bookSlot`, `giveOffer`, ...) or `-- Queries` (pure, read-only: `matches`, `satisfiesDueAt`, `requestId`, `priorityOf`, ...). A Command always returns a new domain value, never `Bool` or a primitive. Map Commands to mutating operations and Queries to read operations — never the reverse, regardless of which API style is chosen below.
+`Domain.hs`'s export list groups every function under `-- Commands` (state transitions: `freeSlot`, `bookAppointment`, `giveOffer`, ...) or `-- Queries` (pure, read-only: `matches`, `satisfiesDueAt`, `requestId`, `priorityOf`, ...). A Command always returns a new domain value, never `Bool` or a primitive. Map Commands to mutating operations and Queries to read operations — never the reverse, regardless of which API style is chosen below.
 
 ### `checkWaitlist` is a protocol decision, not an endpoint
 

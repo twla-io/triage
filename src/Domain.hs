@@ -1,5 +1,3 @@
-{-# LANGUAGE DeriveAnyClass        #-}
-{-# LANGUAGE DeriveGeneric         #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 
@@ -86,26 +84,24 @@ module Domain
   , matches
   ) where
 
-import Data.Aeson   (FromJSON, ToJSON)
 import Data.List    (sort)
 import Data.Maybe   (listToMaybe)
 import Data.Set     (Set, insert, notMember)
 import Data.Text    (Text)
 import Data.Time    (NominalDiffTime, UTCTime, addUTCTime)
 import Data.UUID    (UUID)
-import GHC.Generics (Generic)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ID WRAPPERS
 -- Newtypes prevent mixing up identities of different aggregates at compile time.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-newtype DoctorId        = DoctorId        UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
-newtype PatientId       = PatientId       UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
-newtype ServiceId       = ServiceId       UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
-newtype SlotId          = SlotId          UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
-newtype AppointmentId   = AppointmentId   UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
-newtype AppointmentRequestId = AppointmentRequestId UUID deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+newtype DoctorId        = DoctorId        UUID deriving (Show, Eq, Ord)
+newtype PatientId       = PatientId       UUID deriving (Show, Eq, Ord)
+newtype ServiceId       = ServiceId       UUID deriving (Show, Eq, Ord)
+newtype SlotId          = SlotId          UUID deriving (Show, Eq, Ord)
+newtype AppointmentId   = AppointmentId   UUID deriving (Show, Eq, Ord)
+newtype AppointmentRequestId = AppointmentRequestId UUID deriving (Show, Eq, Ord)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DURATION
@@ -114,7 +110,7 @@ newtype AppointmentRequestId = AppointmentRequestId UUID deriving (Show, Eq, Ord
 -- ═══════════════════════════════════════════════════════════════════════════
 
 newtype Minutes = Minutes Int
-  deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq, Ord)
 
 mkMinutes :: Int -> Maybe Minutes
 mkMinutes n
@@ -125,7 +121,7 @@ data Duration
   = OneHour
   | HalfAnHour
   | Custom Minutes     -- doctor-specified duration for non-standard slots
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 durationToNominalDiffTime :: Duration -> NominalDiffTime
 durationToNominalDiffTime OneHour              = 3600
@@ -143,7 +139,7 @@ data Service = Service
   , name     :: Text
   , duration :: Duration
   }
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- APPOINTMENT PRIORITY
@@ -156,7 +152,7 @@ data AppointmentPriority
   = Emergency
   | Urgent
   | Routine
-  deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq, Ord)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DUE AT
@@ -169,7 +165,7 @@ data DueAt
   | NotBefore UTCTime
   | NotAfter  UTCTime
   | Within    UTCTime UTCTime
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 satisfiesDueAt :: UTCTime -> DueAt -> Bool
 satisfiesDueAt _ Anytime        = True
@@ -192,7 +188,7 @@ data SlotDetails = SlotDetails
   , start     :: UTCTime
   , duration  :: Duration   -- frozen from Service at creation time
   }
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 -- declinedBy tracks who has already declined this slot in the current
 -- offer cycle. Lives here, not on SlotDetails, since it's specific to the
@@ -201,10 +197,10 @@ data PendingSlot = PendingSlot
   { details    :: SlotDetails
   , declinedBy :: Set AppointmentRequestId
   }
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 newtype AvailableSlot = AvailableSlot SlotDetails
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 -- An OfferedSlot IS a PendingSlot with a claim placed on it — embedding
 -- carries declinedBy for free, and expireOffer becomes a pure unwrap.
@@ -212,17 +208,17 @@ data OfferedSlot = OfferedSlot
   { slot      :: PendingSlot
   , offeredTo :: AppointmentRequestId
   }
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 data BookedSlot = BookedSlot SlotDetails AppointmentId
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 data Slot
   = Pending   PendingSlot
   | Offered   OfferedSlot
   | Available AvailableSlot
   | Booked    BookedSlot
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 -- ── Transitions ──────────────────────────────────────────────────────────
 
@@ -271,30 +267,30 @@ data AppointmentDetails = AppointmentDetails
   , slotId    :: SlotId
   , priority  :: AppointmentPriority
   }
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 data AppointmentParty
   = Doctor
   | Patient
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 data CloseReason
   = Completed
   | Cancelled   AppointmentParty
   | Rescheduled AppointmentParty
   | NoShow      AppointmentParty
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 newtype OpenAppointment = OpenAppointment AppointmentDetails
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 data ClosedAppointment = ClosedAppointment AppointmentDetails CloseReason
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 data Appointment
   = Open   OpenAppointment
   | Closed ClosedAppointment
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 -- The only place ClosedAppointment's constructor is applied. Mirrors every
 -- other transition in this file: the entity being transitioned comes
@@ -366,13 +362,13 @@ data AppointmentRequestDetails = AppointmentRequestDetails
   , serviceId :: ServiceId
   , createdAt :: UTCTime
   }
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 data AppointmentRequest
   = EmergencyRequest AppointmentRequestDetails
   | UrgentRequest    AppointmentRequestDetails
   | RoutineRequest   AppointmentRequestDetails (Maybe DoctorId) DueAt
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 -- An AppointmentRequest with an outstanding offer on a specific slot. Embeds
 -- the request rather than duplicating its fields, mirroring OfferedSlot/PendingSlot.
@@ -381,7 +377,7 @@ data AppointmentRequestWithOffer = AppointmentRequestWithOffer
   , offeredSlot :: SlotId
   , offeredAt   :: UTCTime
   }
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 -- A request, in whichever state it's currently in. The waitlist is the
 -- collection of these — each record is either still waiting, or holds
@@ -389,7 +385,7 @@ data AppointmentRequestWithOffer = AppointmentRequestWithOffer
 data WaitlistRecord
   = Waiting  AppointmentRequest
   | HasOffer AppointmentRequestWithOffer
-  deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq)
 
 -- Reuses AppointmentPriority rather than an arbitrary ranking — this is also
 -- exactly the value needed for AppointmentDetails.priority once a match
