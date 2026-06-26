@@ -25,7 +25,8 @@ module Domain
 
   -- ── AppointmentPriority ──────────────────────────────────────────────────
   , AppointmentPriority (..)
-  , DueAt (..)
+  , DueAt (Anytime, NotBefore, NotAfter)  -- Within hidden — use mkWithin; lo > hi would be permanently unsatisfiable
+  , mkWithin
   -- Queries (pure, read-only)
   , satisfiesDueAt
 
@@ -156,6 +157,13 @@ data DueAt
   | Within    UTCTime UTCTime
   deriving (Show, Eq)
 
+-- Within lo hi with lo > hi describes an impossible time span — satisfiesDueAt
+-- would always return False for it, silently. mkWithin rejects the inversion.
+mkWithin :: UTCTime -> UTCTime -> Maybe DueAt
+mkWithin lo hi
+  | lo <= hi  = Just (Within lo hi)
+  | otherwise = Nothing
+
 satisfiesDueAt :: UTCTime -> DueAt -> Bool
 satisfiesDueAt _ Anytime        = True
 satisfiesDueAt t (NotBefore lo) = t >= lo
@@ -285,7 +293,7 @@ data Appointment
 -- other transition in this file: the entity being transitioned comes
 -- first, the reason/auxiliary data second.
 closeAppointment :: OpenAppointment -> CloseReason -> ClosedAppointment
-closeAppointment (OpenAppointment d) reason = ClosedAppointment d reason
+closeAppointment (OpenAppointment d) = ClosedAppointment d
 
 -- Commits a direct, self-service booking: a patient claims a publicly
 -- available slot with no triage step involved — no AppointmentRequest, no
