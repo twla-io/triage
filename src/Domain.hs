@@ -17,8 +17,6 @@ module Domain
   , AppointmentRequestId (..)
 
   -- ── Duration ─────────────────────────────────────────────────────────────
-  , Minutes           -- type exported, constructor hidden — use mkMinutes
-  , mkMinutes
   , Duration (..)
   , durationToNominalDiffTime
 
@@ -105,28 +103,19 @@ newtype AppointmentRequestId = AppointmentRequestId UUID deriving (Show, Eq, Ord
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DURATION
--- Constrained type: Custom Minutes enforces valid range at construction.
--- Raw Int or NominalDiffTime would admit -12 or 346 minutes.
+-- Deliberately minimal: only the two durations the doctor has confirmed are
+-- in use. If a non-standard duration is validated later, add it here with
+-- whatever real constraint that case actually needs — not preemptively.
 -- ═══════════════════════════════════════════════════════════════════════════
-
-newtype Minutes = Minutes Int
-  deriving (Show, Eq, Ord)
-
-mkMinutes :: Int -> Maybe Minutes
-mkMinutes n
-  | n > 0 && n <= 480 = Just (Minutes n)
-  | otherwise         = Nothing
 
 data Duration
   = OneHour
   | HalfAnHour
-  | Custom Minutes     -- doctor-specified duration for non-standard slots
   deriving (Show, Eq)
 
 durationToNominalDiffTime :: Duration -> NominalDiffTime
-durationToNominalDiffTime OneHour              = 3600
-durationToNominalDiffTime HalfAnHour           = 1800
-durationToNominalDiffTime (Custom (Minutes n)) = fromIntegral n * 60
+durationToNominalDiffTime OneHour    = 3600
+durationToNominalDiffTime HalfAnHour = 1800
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SERVICE
