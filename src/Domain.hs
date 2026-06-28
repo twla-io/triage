@@ -23,51 +23,48 @@ module Domain
   -- ── Service ──────────────────────────────────────────────────────────────
   , Service (..)
 
+  -- ── Doctor / Patient ─────────────────────────────────────────────────────
+  , Doctor (..)
+  , Patient (..)
+
   -- ── AppointmentPriority ──────────────────────────────────────────────────
   , AppointmentPriority (..)
-  , DueAt (Anytime, NotBefore, NotAfter)  -- Within hidden — use mkWithin; lo > hi would be permanently unsatisfiable
+  , DueAt (Anytime, NotBefore, NotAfter)   -- Within excluded — use mkWithin
   , mkWithin
   -- Queries (pure, read-only)
   , satisfiesDueAt
 
   -- ── Slot ─────────────────────────────────────────────────────────────────
   , SlotDetails (..)
-  , PendingSlot           -- constructor hidden — use mkPendingSlot, freeSlot, declineOffer, or expireOffer
+  , PendingSlot           -- constructor hidden — use mkPendingSlot or freeSlot
   , AvailableSlot         -- constructor hidden — use releaseSlot; existence proves a PendingSlot was released
-  , OfferedSlot           -- constructor hidden — only giveOffer creates one
-  , BookedSlot            -- constructor hidden — use bookAppointment; existence proves Pending -> Available -> Booked, with a matching Appointment
+  , BookedSlot            -- constructor hidden — use bookAppointment or assignAppointment; existence proves Pending -> Available -> Booked, with a matching Appointment
   , Slot (..)
   -- Commands (state transitions)
   , mkPendingSlot
   , freeSlot
   , releaseSlot
-  , declineOffer
-  , expireOffer
   -- Queries (pure, read-only)
   , slotEnd
   , getSlotDetails
+  , appointmentId
 
   -- ── Appointment ──────────────────────────────────────────────────────────
   , AppointmentDetails (..)
   , AppointmentParty (..)
   , CloseReason (..)
-  , OpenAppointment       -- constructor hidden — use bookAppointment or tryAccept
+  , OpenAppointment       -- constructor hidden — use bookAppointment or assignAppointment
   , ClosedAppointment     -- constructor hidden — use closeAppointment
   , Appointment (..)
   -- Commands (state transitions)
   , closeAppointment
   -- Commands (spans two aggregates — both halves must be persisted together)
   , bookAppointment
-  , tryAccept
+  , assignAppointment
 
   -- ── Waitlist ─────────────────────────────────────────────────────────────
   , AppointmentRequestDetails (..)
   , AppointmentRequest (..)
-  , AppointmentRequestWithOffer    -- constructor hidden — only giveOffer creates one
-  , WaitlistRecord (..)
-  -- Commands (state transitions)
-  , giveOffer
-  , backToWaiting
   -- Queries (pure, read-only)
   , requestId
   , detailsOf
@@ -85,7 +82,6 @@ module Domain
 
 import Data.List    (sort)
 import Data.Maybe   (listToMaybe)
-import Data.Set     (Set, insert, notMember)
 import Data.Text    (Text)
 import Data.Time    (NominalDiffTime, UTCTime, addUTCTime)
 import Data.UUID    (UUID)
@@ -104,9 +100,10 @@ newtype AppointmentRequestId = AppointmentRequestId UUID deriving (Show, Eq, Ord
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DURATION
--- Deliberately minimal: only the two durations the doctor has confirmed are
--- in use. If a non-standard duration is validated later, add it here with
--- whatever real constraint that case actually needs — not preemptively.
+-- The only two appointment lengths the practice currently uses. Not
+-- validated as needing more: if a service ever requires a different
+-- length, extend this then, with whatever real constraint that case
+-- actually needs — not preemptively.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data Duration
@@ -132,6 +129,26 @@ data Service = Service
   deriving (Show, Eq)
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- DOCTOR / PATIENT
+-- Deliberately minimal — both are expected to move to a separate system
+-- (staff directory, patient registry) later, with this module referencing
+-- them by ID only. Until that exists, a bare name is the only field
+-- validated as needed; add more only when a real requirement calls for it.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data Doctor = Doctor
+  { id   :: DoctorId
+  , name :: Text
+  }
+  deriving (Show, Eq)
+
+data Patient = Patient
+  { id   :: PatientId
+  , name :: Text
+  }
+  deriving (Show, Eq)
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- APPOINTMENT PRIORITY
 -- Flat sum type; Ord gives Emergency < Urgent < Routine by constructor order.
 -- Drives both appointment operations (rescheduling eligibility) and
@@ -148,6 +165,13 @@ data AppointmentPriority
 -- DUE AT
 -- When a Routine entry's slot is expected to occur. NotBefore and NotAfter
 -- are one-sided constraints, not a window with one end at infinity.
+--
+-- Within is the one case that can be malformed (lo > hi describes an
+-- impossible window — no slot start time could ever satisfy it, and the
+-- request would silently never match anything, with no error anywhere).
+-- The other three constructors have no such invariant, so only Within is
+-- excluded from the export list; Anytime/NotBefore/NotAfter stay directly
+-- constructible.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data DueAt
@@ -157,8 +181,6 @@ data DueAt
   | Within    UTCTime UTCTime
   deriving (Show, Eq)
 
--- Within lo hi with lo > hi describes an impossible time span — satisfiesDueAt
--- would always return False for it, silently. mkWithin rejects the inversion.
 mkWithin :: UTCTime -> UTCTime -> Maybe DueAt
 mkWithin lo hi
   | lo <= hi  = Just (Within lo hi)
@@ -187,24 +209,18 @@ data SlotDetails = SlotDetails
   }
   deriving (Show, Eq)
 
--- declinedBy tracks who has already declined this slot in the current
--- offer cycle. Lives here, not on SlotDetails, since it's specific to the
--- pending phase, not a fact true of the slot in every state.
-data PendingSlot = PendingSlot
-  { details    :: SlotDetails
-  , declinedBy :: Set AppointmentRequestId
-  }
+-- declinedBy was removed along with offers entirely: it existed to stop a
+-- slot from immediately re-offering itself to a request that just declined
+-- it, within the same offer cycle. Without an offer cycle — checkWaitlist
+-- now commits a match directly — there's no slot-level decline action left
+-- to guard against. (Rejecting a real, booked appointment is a different
+-- event, on Appointment, handled by closeAppointment/CloseReason; whether
+-- the patient re-enters the waiting list afterward is a deliberate,
+-- explicit choice, not an automatic retry, so no loop risk applies there.)
+newtype PendingSlot = PendingSlot SlotDetails
   deriving (Show, Eq)
 
 newtype AvailableSlot = AvailableSlot SlotDetails
-  deriving (Show, Eq)
-
--- An OfferedSlot IS a PendingSlot with a claim placed on it — embedding
--- carries declinedBy for free, and expireOffer becomes a pure unwrap.
-data OfferedSlot = OfferedSlot
-  { slot      :: PendingSlot
-  , offeredTo :: AppointmentRequestId
-  }
   deriving (Show, Eq)
 
 data BookedSlot = BookedSlot SlotDetails AppointmentId
@@ -212,34 +228,23 @@ data BookedSlot = BookedSlot SlotDetails AppointmentId
 
 data Slot
   = Pending   PendingSlot
-  | Offered   OfferedSlot
   | Available AvailableSlot
   | Booked    BookedSlot
   deriving (Show, Eq)
 
 -- ── Transitions ──────────────────────────────────────────────────────────
 
--- New slot: fresh offer cycle, no prior declines
+-- New slot: enters the matching protocol immediately.
 mkPendingSlot :: SlotDetails -> PendingSlot
-mkPendingSlot d = PendingSlot { details = d, declinedBy = mempty }
+mkPendingSlot = PendingSlot
 
--- Appointment cancelled: new offer cycle begins, decline history discarded.
--- Delegates to mkPendingSlot rather than re-stating "fresh slot, empty
--- declinedBy" independently — one definition of what a fresh cycle means.
+-- Appointment cancelled: slot re-enters the matching protocol.
 freeSlot :: BookedSlot -> PendingSlot
 freeSlot (BookedSlot d _) = mkPendingSlot d
 
 -- No waitlist match: slot opens for regular booking
 releaseSlot :: PendingSlot -> AvailableSlot
-releaseSlot ps = AvailableSlot ps.details
-
--- Active decline: record the decliner, return to pending for next candidate
-declineOffer :: OfferedSlot -> PendingSlot
-declineOffer o = o.slot { declinedBy = insert o.offeredTo o.slot.declinedBy }
-
--- Offer expired: patient didn't respond — eligible again, return pending slot unchanged
-expireOffer :: OfferedSlot -> PendingSlot
-expireOffer o = o.slot
+releaseSlot (PendingSlot d) = AvailableSlot d
 
 -- ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -247,10 +252,16 @@ slotEnd :: SlotDetails -> UTCTime
 slotEnd d = addUTCTime (durationToNominalDiffTime d.duration) d.start
 
 getSlotDetails :: Slot -> SlotDetails
-getSlotDetails (Pending   ps)              = ps.details
-getSlotDetails (Offered   os)              = os.slot.details
+getSlotDetails (Pending   (PendingSlot d))   = d
 getSlotDetails (Available (AvailableSlot d)) = d
 getSlotDetails (Booked    (BookedSlot d _))  = d
+
+-- BookedSlot is positional with no named fields, so there's no dot-access
+-- to its AppointmentId from outside Domain.hs. A pure extraction from an
+-- already-valid value — no new fabrication capability, unlike anything
+-- touching PendingSlot's hidden state (see Rule 8 in triage-db-codegen).
+appointmentId :: BookedSlot -> AppointmentId
+appointmentId (BookedSlot _ aid) = aid
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- APPOINTMENT
@@ -266,9 +277,13 @@ data AppointmentDetails = AppointmentDetails
   }
   deriving (Show, Eq)
 
+-- ByDoctor/ByPatient, not Doctor/Patient: those names belong to the real
+-- entity types (see DOCTOR / PATIENT above) — reusing them here would
+-- collide, the same way AppointmentPriority's constructors once collided
+-- with WaitlistEntry's before that got renamed.
 data AppointmentParty
-  = Doctor
-  | Patient
+  = ByDoctor
+  | ByPatient
   deriving (Show, Eq)
 
 data CloseReason
@@ -304,7 +319,7 @@ closeAppointment (OpenAppointment d) = ClosedAppointment d
 -- here would let a self-service booking claim urgency with nothing backing
 -- the claim. The slot and the appointment transition together, sharing the
 -- same AppointmentId — BookedSlot's constructor is applied only here and
--- in tryAccept (the waitlist-acceptance path below), so a BookedSlot can
+-- in assignAppointment (the waitlist-match path below), so a BookedSlot can
 -- never exist without a matching Appointment, regardless of which path
 -- created it.
 bookAppointment :: AvailableSlot -> AppointmentId -> PatientId -> (BookedSlot, Appointment)
@@ -313,44 +328,32 @@ bookAppointment (AvailableSlot d) aid pid =
   , Open (OpenAppointment AppointmentDetails { id = aid, patientId = pid, slotId = d.id, priority = Routine })
   )
 
--- Accepting a waitlist offer: unlike giveOffer and bookAppointment, the two
--- inputs here weren't produced together by one call — they were created as
--- a pair by giveOffer, then independently persisted and re-fetched, so
--- nothing at the type level guarantees they're still the matching pair.
--- Two UUIDs being equal is a runtime fact about which values someone
--- handed this function, not something a type signature can express.
---
--- So this checks both directions of the bidirectional reference before
--- committing: the slot's offeredTo must name this request, and the
--- request's offeredSlot must name this slot. Nothing is checked elsewhere
--- in this file (bookAppointment trusts its patientId, for instance) — this
--- is the one place a mismatch is actually possible, because it's the one
--- place two independently-fetched values are required to agree.
---
--- Still total: Maybe doesn't mean "this can crash," it means "not every
--- pair of inputs is a valid pair," which is the honest fact established
--- above, made explicit instead of assumed.
-tryAccept :: OfferedSlot -> AppointmentRequestWithOffer -> AppointmentId -> Maybe (BookedSlot, Appointment)
-tryAccept os awo aid
-  | os.offeredTo == requestId awo.request && awo.offeredSlot == os.slot.details.id =
-      Just ( BookedSlot os.slot.details aid
-           , Open (OpenAppointment AppointmentDetails
-               { id        = aid
-               , patientId = (detailsOf awo.request).patientId
-               , slotId    = os.slot.details.id
-               , priority  = priorityOf awo.request
-               })
-           )
-  | otherwise = Nothing
+-- Commits a waitlist match directly: the matched request's real priority
+-- (Emergency/Urgent/Routine, from actual triage) carries through to the
+-- Appointment — unlike bookAppointment, which has no triage evidence and
+-- must hardcode Routine. The slot and the appointment transition together,
+-- sharing the same AppointmentId — BookedSlot's constructor is applied
+-- only here and in bookAppointment, so a BookedSlot can never exist
+-- without a matching Appointment, regardless of which path created it.
+-- Exposed standalone (not only called from checkWaitlist) so a doctor can
+-- assign a specific request directly, bypassing bestMatch's priority scan
+-- entirely, while still committing through the one safe path.
+assignAppointment :: PendingSlot -> AppointmentRequest -> AppointmentId -> (BookedSlot, Appointment)
+assignAppointment (PendingSlot d) req aid =
+  ( BookedSlot d aid
+  , Open (OpenAppointment AppointmentDetails
+      { id        = aid
+      , patientId = (detailsOf req).patientId
+      , slotId    = d.id
+      , priority  = priorityOf req
+      })
+  )
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- WAITLIST
 -- Doctor preference and DueAt are exclusive to RoutineRequest: choosing a
 -- specific doctor means accepting a longer wait, safe only when there's no
 -- urgent time pressure.
---
--- No status field — a bare AppointmentRequest IS waiting. A request with an
--- outstanding offer is an AppointmentRequestWithOffer instead.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data AppointmentRequestDetails = AppointmentRequestDetails
@@ -365,23 +368,6 @@ data AppointmentRequest
   = EmergencyRequest AppointmentRequestDetails
   | UrgentRequest    AppointmentRequestDetails
   | RoutineRequest   AppointmentRequestDetails (Maybe DoctorId) DueAt
-  deriving (Show, Eq)
-
--- An AppointmentRequest with an outstanding offer on a specific slot. Embeds
--- the request rather than duplicating its fields, mirroring OfferedSlot/PendingSlot.
-data AppointmentRequestWithOffer = AppointmentRequestWithOffer
-  { request     :: AppointmentRequest
-  , offeredSlot :: SlotId
-  , offeredAt   :: UTCTime
-  }
-  deriving (Show, Eq)
-
--- A request, in whichever state it's currently in. The waitlist is the
--- collection of these — each record is either still waiting, or holds
--- an outstanding offer.
-data WaitlistRecord
-  = Waiting  AppointmentRequest
-  | HasOffer AppointmentRequestWithOffer
   deriving (Show, Eq)
 
 -- Reuses AppointmentPriority rather than an arbitrary ranking — this is also
@@ -404,62 +390,44 @@ instance Ord AppointmentRequest where
 requestId :: AppointmentRequest -> AppointmentRequestId
 requestId e = (detailsOf e).id
 
--- Declined or expired: unwrap back to a waiting request.
-backToWaiting :: AppointmentRequestWithOffer -> AppointmentRequest
-backToWaiting o = o.request
-
 -- ═══════════════════════════════════════════════════════════════════════════
 -- PROTOCOL
 -- When a slot becomes pending, the waitlist is checked: the highest-priority
--- matching request (Emergency → Urgent → Routine, FIFO) is offered the slot
--- before it's released to regular booking.
+-- matching request (Emergency → Urgent → Routine, FIFO) is assigned the
+-- slot directly — no intermediate offer/accept step. A request either gets
+-- booked now or doesn't; there's no "held, awaiting response" state for a
+-- slot to sit idle in.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data MatchAppointmentRequestResult
-  = NoMatch AvailableSlot                            -- no eligible request; slot released to regular booking
-  | Matched OfferedSlot AppointmentRequestWithOffer  -- offer made; both slot and request updated
+  = NoMatch AvailableSlot          -- no eligible request; slot released to regular booking
+  | Matched BookedSlot Appointment -- match committed; both slot and appointment created
   deriving (Show, Eq)
 
 -- The highest-priority request, among those given, that's eligible for this
--- slot — or Nothing if none are. Pure selection only: filter then sort,
--- no transition happens here. Separated from giveOffer so the priority
--- scan and the act of committing an offer can be used independently — e.g.
--- a doctor overriding the scan entirely to hand a slot to a specific
--- patient still goes through giveOffer, just skipping this function.
+-- slot — or Nothing if none are. Pure selection only: filter then sort, no
+-- transition happens here. Separated from assignAppointment so the priority
+-- scan and the act of committing a match can be used independently — e.g. a
+-- doctor overriding the scan entirely to assign a slot to a specific
+-- patient still goes through assignAppointment, just skipping this function.
 bestMatch :: PendingSlot -> [AppointmentRequest] -> Maybe AppointmentRequest
 bestMatch ps reqs = listToMaybe $ sort $ filter (matches ps) reqs
 
--- Commits an offer: the slot and the request transition together, as one
--- call producing both halves. This is the only place in the module where
--- either constructor is applied — there is no way to obtain an OfferedSlot
--- or an AppointmentRequestWithOffer except through this function, and no
--- way to obtain one without the other.
-giveOffer :: PendingSlot -> AppointmentRequest -> UTCTime -> (OfferedSlot, AppointmentRequestWithOffer)
-giveOffer ps req now =
-  ( OfferedSlot { slot = ps, offeredTo = requestId req }
-  , AppointmentRequestWithOffer { request = req, offeredSlot = ps.details.id, offeredAt = now }
-  )
-
-checkWaitlist :: PendingSlot -> [AppointmentRequest] -> UTCTime -> MatchAppointmentRequestResult
-checkWaitlist ps reqs now =
+checkWaitlist :: PendingSlot -> [AppointmentRequest] -> AppointmentId -> MatchAppointmentRequestResult
+checkWaitlist ps reqs aid =
   case bestMatch ps reqs of
     Nothing  -> NoMatch (releaseSlot ps)
-    Just req -> let (os, withReq) = giveOffer ps req now in Matched os withReq
+    Just req -> let (bs, appt) = assignAppointment ps req aid in Matched bs appt
 
 -- Matches when: the service matches; the doctor preference is satisfied
--- (only RoutineRequest has one); the request hasn't already declined this
--- slot this cycle; and the slot's start time satisfies its DueAt, if any.
--- No "is this waiting" check — the list passed in is, by its type, the
--- waiting list; an offered request is an AppointmentRequestWithOffer, not a candidate here.
+-- (only RoutineRequest has one); and the slot's start time satisfies its
+-- DueAt, if any.
 matches :: PendingSlot -> AppointmentRequest -> Bool
-matches ps (EmergencyRequest d) =
-  d.serviceId == ps.details.serviceId  &&
-  d.id `notMember` ps.declinedBy
-matches ps (UrgentRequest d) =
-  d.serviceId == ps.details.serviceId  &&
-  d.id `notMember` ps.declinedBy
-matches ps (RoutineRequest d mDoc dueAt) =
-  d.serviceId == ps.details.serviceId              &&
-  maybe True (== ps.details.doctorId) mDoc         &&
-  d.id `notMember` ps.declinedBy                   &&
-  satisfiesDueAt ps.details.start dueAt
+matches (PendingSlot d) (EmergencyRequest rd) =
+  rd.serviceId == d.serviceId
+matches (PendingSlot d) (UrgentRequest rd) =
+  rd.serviceId == d.serviceId
+matches (PendingSlot d) (RoutineRequest rd mDoc dueAt) =
+  rd.serviceId == d.serviceId              &&
+  maybe True (== d.doctorId) mDoc          &&
+  satisfiesDueAt d.start dueAt
