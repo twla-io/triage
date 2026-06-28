@@ -36,12 +36,11 @@ module Domain
 
   -- ── Slot ─────────────────────────────────────────────────────────────────
   , SlotDetails (..)
-  , PendingSlot           -- constructor hidden — use mkPendingSlot or freeSlot
+  , PendingSlot (..)      -- constructor open: no invariant left to protect here since declinedBy is gone
   , AvailableSlot         -- constructor hidden — use releaseSlot; existence proves a PendingSlot was released
   , BookedSlot            -- constructor hidden — use bookAppointment or assignAppointment; existence proves Pending -> Available -> Booked, with a matching Appointment
   , Slot (..)
   -- Commands (state transitions)
-  , mkPendingSlot
   , freeSlot
   , releaseSlot
   -- Queries (pure, read-only)
@@ -234,13 +233,9 @@ data Slot
 
 -- ── Transitions ──────────────────────────────────────────────────────────
 
--- New slot: enters the matching protocol immediately.
-mkPendingSlot :: SlotDetails -> PendingSlot
-mkPendingSlot = PendingSlot
-
 -- Appointment cancelled: slot re-enters the matching protocol.
 freeSlot :: BookedSlot -> PendingSlot
-freeSlot (BookedSlot d _) = mkPendingSlot d
+freeSlot (BookedSlot d _) = PendingSlot d
 
 -- No waitlist match: slot opens for regular booking
 releaseSlot :: PendingSlot -> AvailableSlot
@@ -258,8 +253,9 @@ getSlotDetails (Booked    (BookedSlot d _))  = d
 
 -- BookedSlot is positional with no named fields, so there's no dot-access
 -- to its AppointmentId from outside Domain.hs. A pure extraction from an
--- already-valid value — no new fabrication capability, unlike anything
--- touching PendingSlot's hidden state (see Rule 8 in triage-db-codegen).
+-- already-valid value — no new fabrication capability, unlike a function
+-- that took raw internal state and skipped the sealed constructor's only
+-- producer (see Rule 8 in triage-db-codegen).
 appointmentId :: BookedSlot -> AppointmentId
 appointmentId (BookedSlot _ aid) = aid
 
