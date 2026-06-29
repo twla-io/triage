@@ -1,10 +1,15 @@
-{-# LANGUAGE DuplicateRecordFields  #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
-{-# LANGUAGE ScopedTypeVariables   #-}
-{-# OPTIONS_GHC -Wno-orphans -Wno-ambiguous-fields #-}
+-- Arbitrary instances for Domain's types are necessarily orphans here:
+-- Domain.hs deliberately has no QuickCheck dependency (it's pure, with no
+-- awareness of testing/serialization/anything external), so any Arbitrary
+-- instance for its types has to live in whichever module actually needs
+-- it. Standard, expected practice for test suites — not a real warning.
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module Main (main) where
 
+import Prelude hiding (id)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
@@ -42,25 +47,44 @@ genMoment = do
 instance Arbitrary Duration where
   arbitrary = elements [OneHour, HalfAnHour]
 
-genSlotDetails :: Gen SlotDetails
-genSlotDetails = SlotDetails
-  <$> arbitrary <*> arbitrary <*> arbitrary <*> genMoment <*> arbitrary
+-- Takes serviceId/doctorId as parameters and constructs fresh, rather than
+-- generating an arbitrary value and then updating its fields — record
+-- update syntax on a field name shared across types (serviceId appears on
+-- both SlotDetails and AppointmentRequestDetails) needs its own GHC
+-- extension (OverloadedRecordUpdate) that's still immature in several
+-- compiler versions; full named construction is unambiguous everywhere,
+-- since the constructor name alone pins down the type.
+genSlotDetailsFor :: ServiceId -> DoctorId -> Gen SlotDetails
+genSlotDetailsFor sid did = do
+  newSlotId <- arbitrary
+  moment    <- genMoment
+  dur       <- arbitrary
+  pure SlotDetails { id = newSlotId, doctorId = did, serviceId = sid, start = moment, duration = dur }
 
-genAppointmentRequestDetails :: Gen AppointmentRequestDetails
-genAppointmentRequestDetails = AppointmentRequestDetails
-  <$> arbitrary <*> arbitrary <*> arbitrary <*> genMoment
+genAppointmentRequestDetailsFor :: ServiceId -> Gen AppointmentRequestDetails
+genAppointmentRequestDetailsFor sid = do
+  rid     <- arbitrary
+  pid     <- arbitrary
+  created <- genMoment
+  pure AppointmentRequestDetails { id = rid, patientId = pid, serviceId = sid, createdAt = created }
+
+-- For tests that don't care about a specific serviceId/doctorId match.
+genSlotDetails :: Gen SlotDetails
+genSlotDetails = do
+  sid <- arbitrary
+  did <- arbitrary
+  genSlotDetailsFor sid did
 
 -- Builds a request with a SPECIFIC serviceId/doctorId, so tests can control
 -- whether it matches a given slot rather than relying on chance collisions.
 genRequestFor :: ServiceId -> Maybe DoctorId -> Gen AppointmentRequest
 genRequestFor sid mDoc = do
-  details <- genAppointmentRequestDetails
-  let details' = (details :: AppointmentRequestDetails) { serviceId = sid }
+  details <- genAppointmentRequestDetailsFor sid
   tier <- elements [0, 1, 2 :: Int]
   case tier of
-    0 -> pure (EmergencyRequest details')
-    1 -> pure (UrgentRequest details')
-    _ -> pure (RoutineRequest details' mDoc Anytime)
+    0 -> pure (EmergencyRequest details)
+    1 -> pure (UrgentRequest details)
+    _ -> pure (RoutineRequest details mDoc Anytime)
 
 main :: IO ()
 main = hspec $ do
@@ -80,27 +104,27 @@ main = hspec $ do
   describe "bestMatch" $ do
     prop "always chooses the highest-priority eligible request" $ do
       sid <- arbitrary
-      slotDoc <- arbitrary
-      slotDetails <- genSlotDetails
-      let slot = PendingSlot (slotDetails { serviceId = sid, doctorId = slotDoc })
+      did <- arbitrary
+      slotDetails <- genSlotDetailsFor sid did
+      let slot = PendingSlot slotDetails
       n <- choose (1, 6)
       reqs <- vectorOf n (genRequestFor sid Nothing)
       pure $ case bestMatch slot reqs of
-        Nothing     -> property (all (not . matches slot) reqs)
+        Nothing     -> property (not (any (matches slot) reqs))
         Just winner ->
           let eligible = filter (matches slot) reqs
           in priorityOf winner === minimum (map priorityOf eligible)
 
     prop "is FIFO within the same priority tier" $ do
       sid <- arbitrary
-      slotDetails <- genSlotDetails
-      let slot = PendingSlot (slotDetails { serviceId = sid })
+      did <- arbitrary
+      slotDetails <- genSlotDetailsFor sid did
+      let slot = PendingSlot slotDetails
       -- Two Urgent requests at different times — the earlier one must win,
       -- since nothing else distinguishes them.
-      d1 <- genAppointmentRequestDetails
+      earlier <- genAppointmentRequestDetailsFor sid
       offsetSecs <- choose (1, 100000 :: Integer)
-      let earlier = (d1 :: AppointmentRequestDetails) { serviceId = sid }
-          later   = d1 { serviceId = sid, createdAt = addUTCTime (fromIntegral offsetSecs) d1.createdAt }
+      let later      = earlier { createdAt = addUTCTime (fromIntegral offsetSecs) earlier.createdAt }
           reqEarlier = UrgentRequest earlier
           reqLater   = UrgentRequest later
       pure $ bestMatch slot [reqLater, reqEarlier] === Just reqEarlier
@@ -110,18 +134,19 @@ main = hspec $ do
       sid <- arbitrary
       doc1 <- arbitrary
       doc2 <- arbitrary `suchThat` (/= doc1)
-      details <- genAppointmentRequestDetails
-      slotDetails <- genSlotDetails
-      let req           = RoutineRequest (details { serviceId = sid }) (Just doc1) Anytime
-          matchingSlot  = PendingSlot (slotDetails { serviceId = sid, doctorId = doc1 })
-          mismatchSlot  = PendingSlot (slotDetails { serviceId = sid, doctorId = doc2 })
+      details <- genAppointmentRequestDetailsFor sid
+      matchingSlotDetails <- genSlotDetailsFor sid doc1
+      mismatchSlotDetails <- genSlotDetailsFor sid doc2
+      let req          = RoutineRequest details (Just doc1) Anytime
+          matchingSlot = PendingSlot matchingSlotDetails
+          mismatchSlot = PendingSlot mismatchSlotDetails
       pure $ matches matchingSlot req .&&. not (matches mismatchSlot req)
 
   describe "bookAppointment" $
     prop "always creates a Routine appointment" $ do
       details <- genSlotDetails
-      (aid :: AppointmentId) <- arbitrary
-      (pid :: PatientId)     <- arbitrary
+      aid <- arbitrary
+      pid <- arbitrary
       let (_, appt) = bookAppointment (releaseSlot (PendingSlot details)) aid pid
       pure $ case appt of
         Open oa -> (openAppointmentDetails oa).priority === Routine
@@ -133,7 +158,7 @@ main = hspec $ do
       slotDetails <- genSlotDetails
       req <- genRequestFor sid Nothing
       aid <- arbitrary
-      let slot = PendingSlot (slotDetails { serviceId = sid })
+      let slot = PendingSlot slotDetails
           (_, appt) = assignAppointment slot req aid
       pure $ case appt of
         Open oa -> (openAppointmentDetails oa).priority === priorityOf req
