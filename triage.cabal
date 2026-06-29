@@ -35,6 +35,8 @@ test-suite triage-test
       base
     , triage
     , hspec
+    , QuickCheck
     , time
+    , uuid
   default-language:     Haskell2010
   ghc-options:          -Wall

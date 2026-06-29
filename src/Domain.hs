@@ -60,6 +60,8 @@ module Domain
   -- Commands (spans two aggregates — both halves must be persisted together)
   , bookAppointment
   , assignAppointment
+  -- Queries (pure, read-only)
+  , openAppointmentDetails
 
   -- ── Waitlist ─────────────────────────────────────────────────────────────
   , AppointmentRequestDetails (..)
@@ -208,14 +210,9 @@ data SlotDetails = SlotDetails
   }
   deriving (Show, Eq)
 
--- declinedBy was removed along with offers entirely: it existed to stop a
--- slot from immediately re-offering itself to a request that just declined
--- it, within the same offer cycle. Without an offer cycle — checkWaitlist
--- now commits a match directly — there's no slot-level decline action left
--- to guard against. (Rejecting a real, booked appointment is a different
--- event, on Appointment, handled by closeAppointment/CloseReason; whether
--- the patient re-enters the waiting list afterward is a deliberate,
--- explicit choice, not an automatic retry, so no loop risk applies there.)
+-- No fields beyond SlotDetails — there's no decline history to track here.
+-- Rejecting a booked appointment is a separate event, on Appointment
+-- (closeAppointment/CloseReason), not something this type represents.
 newtype PendingSlot = PendingSlot SlotDetails
   deriving (Show, Eq)
 
@@ -275,8 +272,7 @@ data AppointmentDetails = AppointmentDetails
 
 -- ByDoctor/ByPatient, not Doctor/Patient: those names belong to the real
 -- entity types (see DOCTOR / PATIENT above) — reusing them here would
--- collide, the same way AppointmentPriority's constructors once collided
--- with WaitlistEntry's before that got renamed.
+-- collide with them.
 data AppointmentParty
   = ByDoctor
   | ByPatient
@@ -303,6 +299,13 @@ data Appointment
 -- The only place ClosedAppointment's constructor is applied. Mirrors every
 -- other transition in this file: the entity being transitioned comes
 -- first, the reason/auxiliary data second.
+-- OpenAppointment is positional with no named fields, so there's no
+-- dot-access to its AppointmentDetails from outside Domain.hs. A pure
+-- extraction from an already-valid value — no new fabrication capability,
+-- same reasoning as appointmentId.
+openAppointmentDetails :: OpenAppointment -> AppointmentDetails
+openAppointmentDetails (OpenAppointment d) = d
+
 closeAppointment :: OpenAppointment -> CloseReason -> ClosedAppointment
 closeAppointment (OpenAppointment d) = ClosedAppointment d
 
