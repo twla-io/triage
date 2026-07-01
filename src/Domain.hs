@@ -1,4 +1,5 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NamedFieldPuns        #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 
 -- For conventions on generating downstream layers from these types, see:
@@ -11,130 +12,98 @@ module Domain
   ( -- ── ID wrappers ───────────────────────────────────────────────────────
     DoctorId (..)
   , PatientId (..)
-  , ServiceId (..)
+  , HealthcareServiceId (..)
+  , HealthcareRequestId (..)
   , SlotId (..)
   , AppointmentId (..)
-  , AppointmentRequestId (..)
 
   -- ── Duration ─────────────────────────────────────────────────────────────
   , Duration (..)
   , durationToNominalDiffTime
 
-  -- ── Service ──────────────────────────────────────────────────────────────
-  , Service (..)
-
   -- ── Doctor / Patient ─────────────────────────────────────────────────────
   , Doctor (..)
   , Patient (..)
 
-  -- ── AppointmentPriority ──────────────────────────────────────────────────
-  , AppointmentPriority (..)
-  , DueAt (Anytime, NotBefore, NotAfter)   -- Within excluded — use mkWithin
-  , mkWithin
-  -- Queries (pure, read-only)
-  , satisfiesDueAt
+  -- ── Healthcare Service ───────────────────────────────────────────────────
+  , HealthcareService (..)
+
+  -- ── Doctor Requirement ───────────────────────────────────────────────────
+  , DoctorRequirement (..)
+
+  -- ── Priority / Due constraints ───────────────────────────────────────────
+  , EmergencyDue (..)
+  , UrgentDue (..)
+  , RoutineDue (RoutineAnytime, RoutineNotBefore, RoutineNotAfter)
+  , mkRoutineWithin
+  , HealthcareRequestPriority (..)
+
+  -- ── Healthcare Request ───────────────────────────────────────────────────
+  , HealthcareRequestDetails (..)
+  , TriagedHealthcareRequest (..)
+  , HealthcareRequest (..)
+  , triageHealthcareRequest
 
   -- ── Slot ─────────────────────────────────────────────────────────────────
   , SlotDetails (..)
-  , PendingSlot (..)      -- constructor open: no invariant left to protect here since declinedBy is gone
-  , AvailableSlot         -- constructor hidden — use releaseSlot; existence proves a PendingSlot was released
-  , BookedSlot            -- constructor hidden — use bookAppointment or assignAppointment; existence proves Pending -> Available -> Booked, with a matching Appointment
+  , AvailableSlot (..)
+  , BookedSlot
   , Slot (..)
-  -- Commands (state transitions)
   , freeSlot
-  , releaseSlot
-  -- Queries (pure, read-only)
   , slotEnd
   , getSlotDetails
-  , appointmentId
+  , bookedAppointmentId
 
   -- ── Appointment ──────────────────────────────────────────────────────────
-  , AppointmentDetails (..)
+  , OpenAppointment (..)  -- constructor open — no invariant to protect
+  , ClosedAppointment
+  , Appointment (..)
   , AppointmentParty (..)
   , CloseReason (..)
-  , OpenAppointment       -- constructor hidden — use bookAppointment or assignAppointment
-  , ClosedAppointment     -- constructor hidden — use closeAppointment
-  , Appointment (..)
-  -- Commands (state transitions)
   , closeAppointment
-  -- Commands (spans two aggregates — both halves must be persisted together)
-  , bookAppointment
-  , assignAppointment
-  -- Queries (pure, read-only)
-  , openAppointmentDetails
-
-  -- ── Waitlist ─────────────────────────────────────────────────────────────
-  , AppointmentRequestDetails (..)
-  , AppointmentRequest (..)
-  -- Queries (pure, read-only)
-  , requestId
-  , detailsOf
-  , priorityOf
-  , bestMatch
+  , openAppointmentRequest
 
   -- ── Protocol ─────────────────────────────────────────────────────────────
-  , MatchAppointmentRequestResult (..)
-  -- Commands (spans two aggregates — both halves of the result must be
-  -- persisted together)
+  , satisfyHealthcareRequest
   , checkWaitlist
-  -- Queries (pure, read-only)
   , matches
   ) where
 
-import Data.List    (sort)
-import Data.Maybe   (listToMaybe)
-import Data.Text    (Text)
-import Data.Time    (NominalDiffTime, UTCTime, addUTCTime)
-import Data.UUID    (UUID)
+import Data.List  (sortOn)
+import Data.Maybe (listToMaybe, mapMaybe)
+import Data.Text  (Text)
+import Data.Time  (NominalDiffTime, UTCTime, addUTCTime)
+import Data.UUID  (UUID)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ID WRAPPERS
--- Newtypes prevent mixing up identities of different aggregates at compile time.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-newtype DoctorId        = DoctorId        UUID deriving (Show, Eq, Ord)
-newtype PatientId       = PatientId       UUID deriving (Show, Eq, Ord)
-newtype ServiceId       = ServiceId       UUID deriving (Show, Eq, Ord)
-newtype SlotId          = SlotId          UUID deriving (Show, Eq, Ord)
-newtype AppointmentId   = AppointmentId   UUID deriving (Show, Eq, Ord)
-newtype AppointmentRequestId = AppointmentRequestId UUID deriving (Show, Eq, Ord)
+newtype DoctorId            = DoctorId            UUID deriving (Show, Eq, Ord)
+newtype PatientId           = PatientId           UUID deriving (Show, Eq, Ord)
+newtype HealthcareServiceId = HealthcareServiceId UUID deriving (Show, Eq, Ord)
+newtype HealthcareRequestId = HealthcareRequestId UUID deriving (Show, Eq, Ord)
+newtype SlotId              = SlotId              UUID deriving (Show, Eq, Ord)
+newtype AppointmentId       = AppointmentId       UUID deriving (Show, Eq, Ord)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DURATION
--- The only two appointment lengths the practice currently uses. Not
--- validated as needing more: if a service ever requires a different
--- length, extend this then, with whatever real constraint that case
--- actually needs — not preemptively.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data Duration
-  = OneHour
+  = QuarterOfAnHour
   | HalfAnHour
+  | OneHour
   deriving (Show, Eq)
 
 durationToNominalDiffTime :: Duration -> NominalDiffTime
-durationToNominalDiffTime OneHour    = 3600
-durationToNominalDiffTime HalfAnHour = 1800
-
--- ═══════════════════════════════════════════════════════════════════════════
--- SERVICE
--- A medical service offered by the practice. Defines the canonical duration
--- that is copied (frozen) into each Slot at allocation time.
--- ═══════════════════════════════════════════════════════════════════════════
-
-data Service = Service
-  { id       :: ServiceId
-  , name     :: Text
-  , duration :: Duration
-  }
-  deriving (Show, Eq)
+durationToNominalDiffTime QuarterOfAnHour = 900
+durationToNominalDiffTime HalfAnHour      = 1800
+durationToNominalDiffTime OneHour         = 3600
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DOCTOR / PATIENT
--- Deliberately minimal — both are expected to move to a separate system
--- (staff directory, patient registry) later, with this module referencing
--- them by ID only. Until that exists, a bare name is the only field
--- validated as needed; add more only when a real requirement calls for it.
+-- Deliberately minimal — expected to move to a separate system later.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data Doctor = Doctor
@@ -150,70 +119,145 @@ data Patient = Patient
   deriving (Show, Eq)
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- APPOINTMENT PRIORITY
--- Flat sum type; Ord gives Emergency < Urgent < Routine by constructor order.
--- Drives both appointment operations (rescheduling eligibility) and
--- waitlist ordering (who receives the next freed slot first).
+-- HEALTHCARE SERVICE
+-- Defines the canonical duration copied into each Slot at allocation time.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data AppointmentPriority
-  = Emergency
-  | Urgent
-  | Routine
-  deriving (Show, Eq, Ord)
-
--- ═══════════════════════════════════════════════════════════════════════════
--- DUE AT
--- When a Routine entry's slot is expected to occur. NotBefore and NotAfter
--- are one-sided constraints, not a window with one end at infinity.
---
--- Within is the one case that can be malformed (lo > hi describes an
--- impossible window — no slot start time could ever satisfy it, and the
--- request would silently never match anything, with no error anywhere).
--- The other three constructors have no such invariant, so only Within is
--- excluded from the export list; Anytime/NotBefore/NotAfter stay directly
--- constructible.
--- ═══════════════════════════════════════════════════════════════════════════
-
-data DueAt
-  = Anytime
-  | NotBefore UTCTime
-  | NotAfter  UTCTime
-  | Within    UTCTime UTCTime
-  deriving (Show, Eq)
-
-mkWithin :: UTCTime -> UTCTime -> Maybe DueAt
-mkWithin lo hi
-  | lo <= hi  = Just (Within lo hi)
-  | otherwise = Nothing
-
-satisfiesDueAt :: UTCTime -> DueAt -> Bool
-satisfiesDueAt _ Anytime        = True
-satisfiesDueAt t (NotBefore lo) = t >= lo
-satisfiesDueAt t (NotAfter  hi) = t <= hi
-satisfiesDueAt t (Within lo hi) = t >= lo && t <= hi
-
--- ═══════════════════════════════════════════════════════════════════════════
--- SLOT
--- Lifecycle encoded as separate types, not a status field — each state
--- carries only the payload it needs, and transitions are total functions.
--- There is no EmergencyOnly slot: emergency patients are served via
--- waitlist priority, not reserved capacity (see WAITLIST).
--- ═══════════════════════════════════════════════════════════════════════════
-
-data SlotDetails = SlotDetails
-  { id        :: SlotId
-  , doctorId  :: DoctorId
-  , serviceId :: ServiceId
-  , start     :: UTCTime
-  , duration  :: Duration   -- frozen from Service at creation time
+data HealthcareService = HealthcareService
+  { id       :: HealthcareServiceId
+  , name     :: Text
+  , duration :: Duration
   }
   deriving (Show, Eq)
 
--- No fields beyond SlotDetails — there's no decline history to track here.
--- Rejecting a booked appointment is a separate event, on Appointment
--- (closeAppointment/CloseReason), not something this type represents.
-newtype PendingSlot = PendingSlot SlotDetails
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DOCTOR REQUIREMENT
+-- Structural absence on Emergency/Urgent: those tiers have no time slack to
+-- spend waiting on a specific doctor. Only RoutineRequest carries this.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data DoctorRequirement
+  = AnyDoctor
+  | SpecificDoctor DoctorId
+  deriving (Show, Eq)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- PRIORITY / DUE CONSTRAINTS
+--
+-- Priority is assigned by a triager (doctor or qualified assistant), never
+-- self-declared by the patient. Each tier carries a deadline: Emergency and
+-- Urgent express "must be seen by X"; Routine expresses the appointment
+-- window (or Anytime).
+--
+-- RoutineWithin excluded from exports — use mkRoutineWithin (enforces
+-- from <= to, the same structural invariant as the old mkWithin).
+-- ═══════════════════════════════════════════════════════════════════════════
+
+newtype EmergencyDue = EmergencyDue UTCTime
+  deriving (Show, Eq, Ord)
+
+newtype UrgentDue = UrgentDue UTCTime
+  deriving (Show, Eq, Ord)
+
+data RoutineDue
+  = RoutineAnytime
+  | RoutineNotBefore UTCTime
+  | RoutineNotAfter  UTCTime
+  | RoutineWithin    UTCTime UTCTime
+  deriving (Show, Eq)
+
+mkRoutineWithin :: UTCTime -> UTCTime -> Maybe RoutineDue
+mkRoutineWithin from to
+  | from <= to = Just (RoutineWithin from to)
+  | otherwise  = Nothing
+
+-- Tighter/earlier constraints rank before looser ones.
+-- RoutineWithin < RoutineNotAfter < RoutineNotBefore < RoutineAnytime
+instance Ord RoutineDue where
+  compare (RoutineWithin _ lhi) (RoutineWithin _ rhi) = compare lhi rhi
+  compare (RoutineWithin _ _)   _                     = LT
+  compare _                     (RoutineWithin _ _)   = GT
+  compare (RoutineNotAfter l)   (RoutineNotAfter r)   = compare l r
+  compare (RoutineNotAfter _)   _                     = LT
+  compare _                     (RoutineNotAfter _)   = GT
+  compare (RoutineNotBefore l)  (RoutineNotBefore r)  = compare l r
+  compare (RoutineNotBefore _)  _                     = LT
+  compare _                     (RoutineNotBefore _)  = GT
+  compare RoutineAnytime        RoutineAnytime         = EQ
+
+data HealthcareRequestPriority
+  = Emergency EmergencyDue
+  | Urgent    UrgentDue
+  | Routine   RoutineDue
+  deriving (Show, Eq)
+
+-- Emergency < Urgent < Routine; within tier, tighter deadline ranks first.
+instance Ord HealthcareRequestPriority where
+  compare (Emergency l) (Emergency r) = compare l r
+  compare (Emergency _) _             = LT
+  compare _             (Emergency _) = GT
+  compare (Urgent l)    (Urgent r)    = compare l r
+  compare (Urgent _)    _             = LT
+  compare _             (Urgent _)    = GT
+  compare (Routine l)   (Routine r)   = compare l r
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- HEALTHCARE REQUEST
+--
+-- Submitted: patient describes need via narrative — no service or priority
+-- yet; the patient doesn't know those. Triaged: a qualified triager has
+-- assigned service and priority. Only Triaged requests can be matched to
+-- slots and become appointments.
+-- Triage is a trusted human judgment — deadline sanity relative to
+-- triagedAt is clinical judgment, not a structural invariant to enforce here
+-- (unlike mkRoutineWithin's from <= to, which is incoherent at any scale).
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data HealthcareRequestDetails = HealthcareRequestDetails
+  { id                :: HealthcareRequestId
+  , patientId         :: PatientId
+  , narrative         :: Text
+  , doctorRequirement :: DoctorRequirement
+  , createdAt         :: UTCTime
+  }
+  deriving (Show, Eq)
+
+data TriagedHealthcareRequest = TriagedHealthcareRequest
+  { details             :: HealthcareRequestDetails
+  , healthcareServiceId :: HealthcareServiceId
+  , priority            :: HealthcareRequestPriority
+  , triagedAt           :: UTCTime
+  }
+  deriving (Show, Eq)
+
+data HealthcareRequest
+  = Submitted HealthcareRequestDetails
+  | Triaged   TriagedHealthcareRequest
+  deriving (Show, Eq)
+
+triageHealthcareRequest
+  :: HealthcareRequestDetails
+  -> HealthcareServiceId
+  -> HealthcareRequestPriority
+  -> UTCTime
+  -> TriagedHealthcareRequest
+triageHealthcareRequest details healthcareServiceId priority triagedAt =
+  TriagedHealthcareRequest { details, healthcareServiceId, priority, triagedAt }
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SLOT
+-- Two states: Available (open for matching) or Booked. No Pending or Offered
+-- — every appointment originates from a TriagedHealthcareRequest, so a slot
+-- either has a match or stays Available until one arrives.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data SlotDetails = SlotDetails
+  { id                  :: SlotId
+  , doctorId            :: DoctorId
+  , healthcareServiceId :: HealthcareServiceId
+  , start               :: UTCTime
+  , duration            :: Duration
+  }
   deriving (Show, Eq)
 
 newtype AvailableSlot = AvailableSlot SlotDetails
@@ -223,56 +267,37 @@ data BookedSlot = BookedSlot SlotDetails AppointmentId
   deriving (Show, Eq)
 
 data Slot
-  = Pending   PendingSlot
-  | Available AvailableSlot
+  = Available AvailableSlot
   | Booked    BookedSlot
   deriving (Show, Eq)
 
--- ── Transitions ──────────────────────────────────────────────────────────
-
--- Appointment cancelled: slot re-enters the matching protocol.
-freeSlot :: BookedSlot -> PendingSlot
-freeSlot (BookedSlot d _) = PendingSlot d
-
--- No waitlist match: slot opens for regular booking
-releaseSlot :: PendingSlot -> AvailableSlot
-releaseSlot (PendingSlot d) = AvailableSlot d
-
--- ── Helpers ──────────────────────────────────────────────────────────────
+-- Appointment cancelled: slot re-enters the matching protocol immediately.
+freeSlot :: BookedSlot -> AvailableSlot
+freeSlot (BookedSlot d _) = AvailableSlot d
 
 slotEnd :: SlotDetails -> UTCTime
 slotEnd d = addUTCTime (durationToNominalDiffTime d.duration) d.start
 
 getSlotDetails :: Slot -> SlotDetails
-getSlotDetails (Pending   (PendingSlot d))   = d
 getSlotDetails (Available (AvailableSlot d)) = d
 getSlotDetails (Booked    (BookedSlot d _))  = d
 
--- BookedSlot is positional with no named fields, so there's no dot-access
--- to its AppointmentId from outside Domain.hs. A pure extraction from an
--- already-valid value — no new fabrication capability, unlike a function
--- that took raw internal state and skipped the sealed constructor's only
--- producer (see Rule 8 in triage-db-codegen).
-appointmentId :: BookedSlot -> AppointmentId
-appointmentId (BookedSlot _ aid) = aid
+-- BookedSlot is positional — no dot-access to its AppointmentId externally.
+bookedAppointmentId :: BookedSlot -> AppointmentId
+bookedAppointmentId (BookedSlot _ aid) = aid
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- APPOINTMENT
--- Open | Closed encoded structurally, not as a status field. CloseReason
--- records who initiated the close, for billing and audit.
+-- OpenAppointment embeds the full TriagedHealthcareRequest — the appointment
+-- IS the request, now bound to a slot. No separate patientId/priority fields:
+-- one fact in one place, no duplication.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data AppointmentDetails = AppointmentDetails
-  { id        :: AppointmentId
-  , patientId :: PatientId
-  , slotId    :: SlotId
-  , priority  :: AppointmentPriority
-  }
+data OpenAppointment =
+  OpenAppointment AppointmentId TriagedHealthcareRequest SlotId
   deriving (Show, Eq)
 
--- ByDoctor/ByPatient, not Doctor/Patient: those names belong to the real
--- entity types (see DOCTOR / PATIENT above) — reusing them here would
--- collide with them.
+-- ByDoctor/ByPatient avoid collision with the real Doctor/Patient entity types.
 data AppointmentParty
   = ByDoctor
   | ByPatient
@@ -285,10 +310,8 @@ data CloseReason
   | NoShow      AppointmentParty
   deriving (Show, Eq)
 
-newtype OpenAppointment = OpenAppointment AppointmentDetails
-  deriving (Show, Eq)
-
-data ClosedAppointment = ClosedAppointment AppointmentDetails CloseReason
+-- Embeds the OpenAppointment — closing carries its full history for free.
+data ClosedAppointment = ClosedAppointment OpenAppointment CloseReason
   deriving (Show, Eq)
 
 data Appointment
@@ -296,137 +319,64 @@ data Appointment
   | Closed ClosedAppointment
   deriving (Show, Eq)
 
--- The only place ClosedAppointment's constructor is applied. Mirrors every
--- other transition in this file: the entity being transitioned comes
--- first, the reason/auxiliary data second.
--- OpenAppointment is positional with no named fields, so there's no
--- dot-access to its AppointmentDetails from outside Domain.hs. A pure
--- extraction from an already-valid value — no new fabrication capability,
--- same reasoning as appointmentId.
-openAppointmentDetails :: OpenAppointment -> AppointmentDetails
-openAppointmentDetails (OpenAppointment d) = d
+-- The embedded request is the single source of truth for patient/priority.
+openAppointmentRequest :: OpenAppointment -> TriagedHealthcareRequest
+openAppointmentRequest (OpenAppointment _ req _) = req
 
 closeAppointment :: OpenAppointment -> CloseReason -> ClosedAppointment
-closeAppointment (OpenAppointment d) = ClosedAppointment d
-
--- Commits a direct, self-service booking: a patient claims a publicly
--- available slot with no triage step involved — no AppointmentRequest, no
--- classification, just "this open time matches what I want." Priority is
--- always Routine here, not a parameter: claiming Urgent or Emergency
--- requires going through the waitlist's triage (see AppointmentRequest),
--- which this path skips entirely. Letting a caller assert any priority
--- here would let a self-service booking claim urgency with nothing backing
--- the claim. The slot and the appointment transition together, sharing the
--- same AppointmentId — BookedSlot's constructor is applied only here and
--- in assignAppointment (the waitlist-match path below), so a BookedSlot can
--- never exist without a matching Appointment, regardless of which path
--- created it.
-bookAppointment :: AvailableSlot -> AppointmentId -> PatientId -> (BookedSlot, Appointment)
-bookAppointment (AvailableSlot d) aid pid =
-  ( BookedSlot d aid
-  , Open (OpenAppointment AppointmentDetails { id = aid, patientId = pid, slotId = d.id, priority = Routine })
-  )
-
--- Commits a waitlist match directly: the matched request's real priority
--- (Emergency/Urgent/Routine, from actual triage) carries through to the
--- Appointment — unlike bookAppointment, which has no triage evidence and
--- must hardcode Routine. The slot and the appointment transition together,
--- sharing the same AppointmentId — BookedSlot's constructor is applied
--- only here and in bookAppointment, so a BookedSlot can never exist
--- without a matching Appointment, regardless of which path created it.
--- Exposed standalone (not only called from checkWaitlist) so a doctor can
--- assign a specific request directly, bypassing bestMatch's priority scan
--- entirely, while still committing through the one safe path.
-assignAppointment :: PendingSlot -> AppointmentRequest -> AppointmentId -> (BookedSlot, Appointment)
-assignAppointment (PendingSlot d) req aid =
-  ( BookedSlot d aid
-  , Open (OpenAppointment AppointmentDetails
-      { id        = aid
-      , patientId = (detailsOf req).patientId
-      , slotId    = d.id
-      , priority  = priorityOf req
-      })
-  )
-
--- ═══════════════════════════════════════════════════════════════════════════
--- WAITLIST
--- Doctor preference and DueAt are exclusive to RoutineRequest: choosing a
--- specific doctor means accepting a longer wait, safe only when there's no
--- urgent time pressure.
--- ═══════════════════════════════════════════════════════════════════════════
-
-data AppointmentRequestDetails = AppointmentRequestDetails
-  { id        :: AppointmentRequestId
-  , patientId :: PatientId
-  , serviceId :: ServiceId
-  , createdAt :: UTCTime
-  }
-  deriving (Show, Eq)
-
-data AppointmentRequest
-  = EmergencyRequest AppointmentRequestDetails
-  | UrgentRequest    AppointmentRequestDetails
-  | RoutineRequest   AppointmentRequestDetails (Maybe DoctorId) DueAt
-  deriving (Show, Eq)
-
--- Reuses AppointmentPriority rather than an arbitrary ranking — this is also
--- exactly the value needed for AppointmentDetails.priority once a match
--- becomes a booked appointment.
-priorityOf :: AppointmentRequest -> AppointmentPriority
-priorityOf EmergencyRequest{} = Emergency
-priorityOf UrgentRequest{}    = Urgent
-priorityOf RoutineRequest{}   = Routine
-
-detailsOf :: AppointmentRequest -> AppointmentRequestDetails
-detailsOf (EmergencyRequest d)   = d
-detailsOf (UrgentRequest    d)   = d
-detailsOf (RoutineRequest d _ _) = d
-
-instance Ord AppointmentRequest where
-  compare a b = compare (priorityOf a) (priorityOf b)
-             <> compare (detailsOf a).createdAt (detailsOf b).createdAt
-
-requestId :: AppointmentRequest -> AppointmentRequestId
-requestId e = (detailsOf e).id
+closeAppointment = ClosedAppointment
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- PROTOCOL
--- When a slot becomes pending, the waitlist is checked: the highest-priority
--- matching request (Emergency → Urgent → Routine, FIFO) is assigned the
--- slot directly — no intermediate offer/accept step. A request either gets
--- booked now or doesn't; there's no "held, awaiting response" state for a
--- slot to sit idle in.
+--
+-- Every appointment originates from a TriagedHealthcareRequest. Requests are
+-- tried in priority order (tightest deadline first); the first eligible match
+-- commits atomically. No intermediate offer/accept step.
+--
+-- satisfyHealthcareRequest checks eligibility AND commits. It can be called
+-- directly by a manager to bypass the automatic scan while still enforcing
+-- structural eligibility (service match, doctor requirement, time window) —
+-- those are never overridable, even by a manager.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data MatchAppointmentRequestResult
-  = NoMatch AvailableSlot          -- no eligible request; slot released to regular booking
-  | Matched BookedSlot Appointment -- match committed; both slot and appointment created
-  deriving (Show, Eq)
+matchesDoctorRequirement :: SlotDetails -> DoctorRequirement -> Bool
+matchesDoctorRequirement _    AnyDoctor              = True
+matchesDoctorRequirement slot (SpecificDoctor reqId) = slot.doctorId == reqId
 
--- The highest-priority request, among those given, that's eligible for this
--- slot — or Nothing if none are. Pure selection only: filter then sort, no
--- transition happens here. Separated from assignAppointment so the priority
--- scan and the act of committing a match can be used independently — e.g. a
--- doctor overriding the scan entirely to assign a slot to a specific
--- patient still goes through assignAppointment, just skipping this function.
-bestMatch :: PendingSlot -> [AppointmentRequest] -> Maybe AppointmentRequest
-bestMatch ps reqs = listToMaybe $ sort $ filter (matches ps) reqs
+matchesTime :: HealthcareRequestPriority -> UTCTime -> Bool
+matchesTime (Emergency (EmergencyDue deadline))       slotStart = slotStart <= deadline
+matchesTime (Urgent    (UrgentDue    deadline))       slotStart = slotStart <= deadline
+matchesTime (Routine   RoutineAnytime)                _         = True
+matchesTime (Routine   (RoutineNotBefore earliest))   slotStart = slotStart >= earliest
+matchesTime (Routine   (RoutineNotAfter  latest))     slotStart = slotStart <= latest
+matchesTime (Routine   (RoutineWithin earliest latest)) slotStart =
+  slotStart >= earliest && slotStart <= latest
 
-checkWaitlist :: PendingSlot -> [AppointmentRequest] -> AppointmentId -> MatchAppointmentRequestResult
-checkWaitlist ps reqs aid =
-  case bestMatch ps reqs of
-    Nothing  -> NoMatch (releaseSlot ps)
-    Just req -> let (bs, appt) = assignAppointment ps req aid in Matched bs appt
+matches :: AvailableSlot -> TriagedHealthcareRequest -> Bool
+matches (AvailableSlot slot) TriagedHealthcareRequest { healthcareServiceId, priority, details } =
+     slot.healthcareServiceId == healthcareServiceId
+  && matchesDoctorRequirement slot details.doctorRequirement
+  && matchesTime priority slot.start
 
--- Matches when: the service matches; the doctor preference is satisfied
--- (only RoutineRequest has one); and the slot's start time satisfies its
--- DueAt, if any.
-matches :: PendingSlot -> AppointmentRequest -> Bool
-matches (PendingSlot d) (EmergencyRequest rd) =
-  rd.serviceId == d.serviceId
-matches (PendingSlot d) (UrgentRequest rd) =
-  rd.serviceId == d.serviceId
-matches (PendingSlot d) (RoutineRequest rd mDoc dueAt) =
-  rd.serviceId == d.serviceId              &&
-  maybe True (== d.doctorId) mDoc          &&
-  satisfiesDueAt d.start dueAt
+satisfyHealthcareRequest
+  :: AvailableSlot
+  -> AppointmentId
+  -> TriagedHealthcareRequest
+  -> Maybe (BookedSlot, OpenAppointment)
+satisfyHealthcareRequest available@(AvailableSlot slot) appointmentId request
+  | matches available request =
+      Just
+        ( BookedSlot slot appointmentId
+        , OpenAppointment appointmentId request slot.id
+        )
+  | otherwise = Nothing
+
+checkWaitlist
+  :: AvailableSlot
+  -> AppointmentId
+  -> [TriagedHealthcareRequest]
+  -> Maybe (BookedSlot, OpenAppointment)
+checkWaitlist slot appointmentId =
+  listToMaybe
+    . mapMaybe (satisfyHealthcareRequest slot appointmentId)
+    . sortOn priority
