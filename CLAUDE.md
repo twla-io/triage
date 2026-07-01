@@ -1,106 +1,84 @@
-# CLAUDE.md
+# triage
 
-Instructions for Claude Code working in this repository. Read this before making
-any change to `src/Domain.hs` or writing a commit message.
+Medical appointment scheduling system in Haskell. "triage" refers to the
+priority-sorting waitlist protocol — name is provisional.
 
-## What this project is
+## Purpose — Domain.hs is a specification, not just an implementation
 
-`triage` is a Haskell domain model for medical appointment scheduling, built
-through extensive design discussion with a practicing doctor as domain expert.
-The name is provisional — open to renaming if a better one arises.
+`src/Domain.hs` is the single source of truth for the domain model and every
+valid state transition in it. Sealed types + smart constructors exist to
+encode domain rules directly into the type system — not primarily for
+defensive Haskell hygiene, but so the rules are machine-legible. Claude Code
+reads this file as the spec and generates the downstream layers (DB schema,
+Persistence, Service, API, UI/UX) from it via the codegen skills below.
 
-The core idea: instead of reserving dedicated emergency slots (which sit idle
-on quiet days), every slot is offered to the highest-priority matching request
-on a waitlist. See `src/Domain.hs`'s inline comments for the reasoning behind
-each type — they explain the current rule and the one reason it matters, not
-the history of how it was decided. Match that style in any comments you add.
+This means: when editing `Domain.hs`, you're not writing implementation,
+you're writing the thing every other layer gets derived from. Precision here
+has a multiplier effect — an ambiguity or missing invariant propagates into
+every generated layer.
 
-## Before generating downstream code
+## Commands
 
-If you're generating a database schema, an API, or a UI from this domain
-model, read the relevant skill first — don't improvise conventions that are
-already decided:
+<!-- TODO: fill in with actual invocations once confirmed -->
+- Build: `cabal build` (or `stack build` — confirm which toolchain this repo uses)
+- Test: `cabal test`
+- REPL: `cabal repl`
 
-- `skills/triage-db-codegen` — database schema generation
-- `skills/triage-api-codegen` — API generation
-- `skills/triage-ui-codegen` — UI/UX generation
+## Before generating downstream layers
 
-Each separates fixed invariants (always apply) from genuine architecture
-choices (confirm with whoever owns that layer before assuming one).
+`src/Domain.hs` carries this header comment — follow it:
 
-## Domain modeling principles
+> For conventions on generating downstream layers from these types, see:
+> `triage-db-codegen` (database schema), `triage-api-codegen` (REST/GraphQL/RPC
+> API), `triage-ui-codegen` (frontend). Read the relevant skill before
+> generating any of these from this module.
 
-These are non-negotiable when touching `src/Domain.hs`:
+## Workflow discipline (non-negotiable)
 
-1. **State-specific data belongs on the state type, not on shared details.**
-   E.g. `declinedBy` lives on `PendingSlot`, not `SlotDetails` — `SlotDetails`
-   is the immutable core, true in every lifecycle state.
+- One decision at a time. Don't bundle multiple design changes into one turn.
+- No code for unvalidated requirements. If a rule sounds plausible but wasn't
+  discussed with the domain expert (the doctor), leave it out — cheaper to add
+  later than to carry unvalidated complexity now.
+- Model perfection is a deliberate goal, not over-engineering. If a type
+  requires ceremony to explain, the model is wrong — fix the model, don't
+  write a comment.
+- Scale target is 2-3 doctors. Don't reach for infrastructure (event
+  sourcing, CQRS, etc.) sized for a problem this isn't.
 
-2. **Embed previous state in next state rather than duplicating fields.**
-   E.g. `OfferedSlot { slot :: PendingSlot, ... }` — an `OfferedSlot` IS a
-   `PendingSlot` with a claim placed on it. Carries history for free; the
-   reverse transition becomes a pure unwrap.
-   When two types must always be produced as a pair, reinforce this at the
-   module boundary: hide both constructors and expose a single function that
-   produces both. `OfferedSlot` and `AppointmentRequestWithOffer` are the
-   example — `giveOffer` is the only way to produce either.
+## Before touching code, read the relevant doc
 
-3. **Possession framing over identity framing**, when a type wraps something
-   that hasn't changed identity. `AppointmentRequestWithOffer` and `HasOffer`
-   are correct because the request doesn't become a different kind of thing
-   when it gets an offer — it's the same request, now carrying one.
-   `OfferedAppointmentRequest` and `offerRequest` were wrong for exactly this
-   reason and were renamed.
+- Working in `src/Domain.hs`? Read `docs/domain-model.md` and
+  `docs/modeling-principles.md` first.
+- Proposing a persistence or architecture change? Read `docs/decisions.md`
+  first — check whether this was already explored and rejected.
+- Open questions that don't yet have an answer live at the bottom of
+  `docs/decisions.md`, not scattered in chat history.
 
-4. **Type signatures should read as domain narrative without explanation.**
-   If a type requires ceremony to understand, the model is wrong. No
-   ambiguity, no room for misinterpretation — this is a deliberate goal, not
-   over-engineering.
+## Sealing in Domain.hs — selective, and that's the point
 
-5. **Do not add domain rules speculatively.** If a rule sounds plausible but
-   wasn't actually validated with the doctor, leave it out — cheaper to add
-   later than to carry unvalidated complexity now. (`escalateToUrgent` was
-   added, then removed for exactly this reason — see git history.)
+Constructors are hidden (export list omits `(..)`) only where there's an
+invariant to protect:
+- `BookedSlot` — construct only via `satisfyHealthcareRequest`.
+- `ClosedAppointment` — construct only via `closeAppointment`.
+- `RoutineDue`'s `RoutineWithin` case — construct only via
+  `mkRoutineWithin`, which enforces `from <= to`.
 
-6. **Don't keep complexity that doesn't earn its keep.** A wrapper function
-   that adds zero behavior beyond what it wraps (e.g. the removed
-   `sortWaitlist = sort`) should be deleted, not kept for symmetry.
+Everywhere else (`HealthcareRequestPriority`, `Slot`, `TriagedHealthcareRequest`,
+`OpenAppointment`, ...) constructors are exported openly via `(..)` —
+deliberate, because those types have no invariant beyond what their own
+field types already enforce. Under the spec-for-codegen framing above, this
+distinction isn't incidental: sealed vs. open *is* part of the spec — it
+tells the generating agent exactly where validation logic needs to exist
+downstream and where it doesn't. Don't seal a type "for consistency" without
+identifying the actual invariant it protects — that would be adding a false
+signal to the spec.
 
-## Comments
+## Layering (unverified against Transport/Persistence source — from prior discussion, not yet re-checked against code)
 
-Public, open-source audience — assume the reader has no access to any design
-conversation that produced the code. A comment should state the current rule
-and, if non-obvious, the one reason it matters. It should never narrate how a
-decision was reached, what was tried before, or reference a removed feature's
-backstory. If a comment only makes sense to someone who was part of the
-original discussion, cut it or rewrite it so it doesn't need that context.
-
-## Naming
-
-Before introducing a name, check it doesn't collide with an existing
-constructor elsewhere in the module — Haskell constructors must be globally
-unique per module, and this has bitten us before (`Emergency`/`Urgent`/
-`Routine` colliding between `AppointmentPriority` and the waitlist type;
-`Offered` colliding between `Slot` and `WaitlistRecord`).
-
-## Commit messages
-
-The body must explain **why** a change was made, not just restate what the
-diff shows. If a commit is a pure rename or cleanup with no behavior change,
-say so explicitly — that tells a reviewer the commit is safe to skim.
-
-- Subject line: imperative mood ("Rename X to Y", not "Renamed" or "Renaming"),
-  under ~70 characters
-- Body: one bullet per logical change, each explaining the reasoning, not
-  just the mechanics
-- End with a line stating whether behavior changed, when it's not obvious
-
-## Build
-
-```
-cabal build
-cabal test
-```
-
-This project uses plain Cabal, not Stack. No specific reason is recorded for
-that choice — just match it rather than introducing Stack tooling alongside it.
+Pure `Domain` (this file) → `Transport` (DTO twin types, Generic-derived
+Aeson, `toDomain`/`fromDomain` boundary functions) → `Persistence` (Row types
+shaped independently for storage, not mirrored from Domain). `Domain.hs`
+itself imports no Aeson and references no other modules, consistent with
+being the pure base layer — but the Transport/Persistence shape described
+here hasn't been confirmed against those files the way the Domain claims in
+this file have been. Re-verify before treating as settled.
