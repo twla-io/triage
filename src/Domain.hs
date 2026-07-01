@@ -379,15 +379,8 @@ reassignSlot
   -> BookedSlot      -- appointment's current slot; caller's responsibility to pass the correct one, not checked here
   -> AvailableSlot   -- proposed new slot
   -> Maybe (AvailableSlot, BookedSlot, OpenAppointment)
-reassignSlot (OpenAppointment aid req _) (BookedSlot oldDetails _) newSlot
-  | matches newSlot req =
-      let newDetails = getSlotDetails (Available newSlot)
-      in Just
-           ( AvailableSlot oldDetails
-           , BookedSlot newDetails aid
-           , OpenAppointment aid req newDetails.id
-           )
-  | otherwise = Nothing
+reassignSlot (OpenAppointment aid req _) (BookedSlot oldDetails _) newSlot =
+  (\(bs, oa) -> (AvailableSlot oldDetails, bs, oa)) <$> satisfyHealthcareRequest newSlot aid req
 
 checkWaitlist
   :: AvailableSlot

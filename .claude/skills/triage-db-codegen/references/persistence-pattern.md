@@ -60,7 +60,19 @@ toDomainAvailable :: SlotDetails -> AvailableSlot
 toDomainAvailable = AvailableSlot  -- constructor is open; nothing to protect
 ```
 
-`BookedSlot` is still sealed. Its only producers, `satisfyHealthcareRequest` and `reassignSlot`, are both gated by `matches` — reconstruction has to make that gate provably succeed, not just avoid reading unused fields (unlike the old skill's `PatientId nil` case, which worked because the relevant function simply never touched that field):
+`BookedSlot` is still sealed. Its only producers are `satisfyHealthcareRequest` and `reassignSlot` — but `reassignSlot` now delegates to `satisfyHealthcareRequest` internally rather than gating independently:
+
+```haskell
+reassignSlot
+  :: OpenAppointment
+  -> BookedSlot      -- appointment's current slot; caller's responsibility to pass the correct one, not checked here
+  -> AvailableSlot   -- proposed new slot
+  -> Maybe (AvailableSlot, BookedSlot, OpenAppointment)
+reassignSlot (OpenAppointment aid req _) (BookedSlot oldDetails _) newSlot =
+  (\(bs, oa) -> (AvailableSlot oldDetails, bs, oa)) <$> satisfyHealthcareRequest newSlot aid req
+```
+
+So there is exactly one place `matches` needs verifying, not two — reconstruction has to make that single gate provably succeed, not just avoid reading unused fields (unlike the old skill's `PatientId nil` case, which worked because the relevant function simply never touched that field):
 
 ```haskell
 data SlotRow = SlotRow
@@ -129,7 +141,7 @@ toDomain row = do
 
 ## Case 3 — `HealthcareRequest`: two-stage discriminator plus `nullability-as-discriminator` bijections
 
-Covers the `submitted`/`triaged` discriminator (`discriminator-column-tables`) and the two nullability-as-discriminator cases (`nullability-as-discriminator`): `DoctorRequirement` (on every row) and `RoutineDue` (only within the `routine` tier).
+Covers both the `submitted`/`triaged` discriminator (`discriminator-column-tables`) and the two nullability-as-discriminator cases from `nullability-as-discriminator`: `DoctorRequirement` (on every row) and `RoutineDue` (only within the `routine` tier).
 
 ```haskell
 data HealthcareRequestRow = HealthcareRequestRow
@@ -141,11 +153,6 @@ data HealthcareRequestRow = HealthcareRequestRow
   , rowState               :: Text        -- 'submitted' | 'triaged'
   , rowHealthcareServiceId :: Maybe UUID
   , rowTier                :: Maybe Text  -- 'emergency' | 'urgent' | 'routine'
-                                          -- ord-ranking-check does NOT require an int encoding here:
-                                          -- verified against Domain.hs's checkWaitlist, whose
-                                          -- `sortOn priority` runs in Haskell over already-decoded
-                                          -- values, never as a SQL ORDER BY. Nothing compares this
-                                          -- column at the database layer, so TEXT is fine.
   , rowDueNotBefore        :: Maybe UTCTime
   , rowDueNotAfter         :: Maybe UTCTime
   , rowTriagedAt           :: Maybe UTCTime

@@ -5,9 +5,24 @@ description: Generate the database schema and Persistence-layer module from tria
 
 # triage-db-codegen
 
-`Domain.hs` is the single source of truth. The database schema and the Persistence module are both **derived** from it — read `Domain.hs` first, every time, rather than working from memory of a previous generation.
+`Domain.hs` is the single source of truth. The database schema and the Persistence module are both **derived** from it — read `Domain.hs` first, every time, rather than working from memory of a previous generation (including this skill's own worked examples, which will go stale exactly like the previous version of this skill did).
 
 This skill encodes specific decisions already made for `triage`, not a menu of strategies. Apply these rules directly; don't offer alternatives.
+
+**Rules are identified by name, not number.** Numbers below are positional only — they will drift whenever a rule is added, retired, or reordered (this happened once already: the previous version's "Rule 9" is a different rule than this version's). Always cross-reference by name (e.g. `nullability-as-discriminator`), never by number, in code comments, PR descriptions, or conversation.
+
+| Name | One-line summary |
+|---|---|
+| `discriminator-column-tables` | Sum types → one table, discriminator column, nullable payload columns |
+| `nullability-as-discriminator` | Presence/absence sum types → nullable column(s) alone, no redundant discriminator |
+| `ord-ranking-check` | Only add SQL-level rank encoding if something actually sorts in SQL |
+| `join-tables-not-arrays` | Multi-valued fields → join tables, never array columns |
+| `fail-loudly-on-decode` | Decode errors are explicit, never clamped/defaulted |
+| `transactional-cross-table-consistency` | Cross-table agreement enforced by transaction discipline, not a trigger, unless nothing else catches it |
+| `id-types-plain` | ID newtypes need no helper functions |
+| `minimal-types-minimal-tables` | Don't add speculative columns beyond what `Domain.hs` has |
+| `sealed-type-replay` | Reconstruct sealed types by replaying through existing exported functions |
+| `no-delete-on-consumption` | Requests are never deleted or flagged matched; "waiting" is a derived anti-join |
 
 ## Architecture this skill fits into
 
@@ -19,138 +34,181 @@ Persistence   — Row types matching storage shape, toDomain/fromDomain at the b
 
 `Domain.hs` has no serialization of any kind — no `ToJSON`/`FromJSON`, no `Generic` deriving for that purpose. Nothing in this skill should assume otherwise or reintroduce that coupling.
 
-## Sum types become one table, a discriminator column, and nullable state-specific columns (`discriminator-column-tables`, Rule 1)
+## `discriminator-column-tables` (Rule 1) — Sum types become one table, a discriminator column, and nullable state-specific columns
 
-For every multi-constructor domain type without a separate status field (`Slot`, `AppointmentRequest`'s priority variants, `Appointment`), generate **one table**, not one table per constructor:
+For every multi-constructor domain type without a separate status field, generate **one table**, not one table per constructor. The three live cases in the current domain:
 
-```sql
-state TEXT NOT NULL CHECK (state IN ('pending', 'available', 'booked')),
--- nullable columns for each constructor's extra payload
-```
+- `HealthcareRequest` (`Submitted | Triaged`) -> `healthcare_requests`, `state IN ('submitted', 'triaged')`.
+- `Slot` (`Available | Booked`) -> `slots`, `state IN ('available', 'booked')`.
+- `Appointment` (`Open | Closed`) -> `appointments`, `state IN ('open', 'closed')`.
 
-For each domain type, write **one `CHECK` constraint per valid constructor shape**, derived mechanically from the constructors themselves — every combination of which nullable columns are set must correspond to exactly one constructor:
+Write **one `CHECK` constraint per valid constructor shape**, derived mechanically from the constructors themselves — every combination of which nullable columns are set must correspond to exactly one constructor. See `migrations/0001_init.sql` for the current worked example of all three — that file is the live reference; when actually generating SQL, derive it fresh from `Domain.hs` and write it to `migrations/` at the repo root, numbered sequentially (`migrations/0002_...sql`, etc.) for any schema change after this one.
 
-```sql
-CHECK (
-  (state = 'pending'   AND appointment_id IS NULL) OR
-  (state = 'available' AND appointment_id IS NULL) OR
-  (state = 'booked'    AND appointment_id IS NOT NULL)
-)
-```
+This isn't redundant with `Domain.hs`'s own type-level guarantee — it's a backstop against backdoor writes (manual SQL, bad migrations, anything bypassing the generated Persistence module) that the type system can no longer see once data has left Haskell.
 
-This isn't redundant with `Domain.hs`'s own type-level guarantee — it's a backstop against backdoor writes (manual SQL, bad migrations, anything bypassing the generated Persistence module) that the type system can no longer see once data has left Haskell. See `migrations/0001_init.sql` at the repo root for the current generated schema — derive future migrations fresh from `Domain.hs` rather than copying it verbatim, numbered sequentially (`migrations/0002_...sql`, etc.), not into `skills/`.
+## `nullability-as-discriminator` (Rule 2) — Presence/absence sum types encode via nullability alone — no redundant discriminator
 
-## Nullable columns can be the discriminator by themselves — no separate column needed when nullability alone is a bijection (`nullability-as-discriminator`, Rule 2)
+Where a sum type's cases differ *solely* by the presence or absence of a payload (not by which of several distinct shapes it takes), a single nullable column — or a small fixed set of them — already carries full information about which case applies. Adding a parallel `TEXT` discriminator column next to it duplicates information the nullability pattern already states, and risks the two disagreeing.
 
-Distinct from `discriminator-column-tables`: that rule adds an explicit `state` column because the nullable payload columns *alone* don't injectively determine the constructor (e.g. `HealthcareRequestPriority`'s `Emergency`/`Urgent`/`Routine (RoutineNotAfter _)` all produce the identical `(due_not_before, due_not_after)` shape — see `ord-ranking-check`'s worked example). `nullability-as-discriminator` is the narrower, opposite case: a field whose own nullable column(s) already form a complete bijection with a small sum type, so no extra column is needed at all.
+Two live cases:
 
-Two live examples:
+- **`DoctorRequirement` (`AnyDoctor | SpecificDoctor DoctorId`)**: `required_doctor_id UUID NULL REFERENCES doctors(id)`. `NULL` means `AnyDoctor`; a set value means `SpecificDoctor`. No `doctor_requirement TEXT` column alongside it.
+- **`RoutineDue` (`RoutineAnytime | RoutineNotBefore UTCTime | RoutineNotAfter UTCTime | RoutineWithin UTCTime UTCTime`)**: two nullable columns, `due_not_before` / `due_not_after`, give exactly 2² = 4 nullability combinations — a genuine bijection with `RoutineDue`'s four constructors:
 
-- `DoctorRequirement` (`AnyDoctor | SpecificDoctor DoctorId`) encodes as a single nullable FK: `NULL = AnyDoctor`, a set value = `SpecificDoctor`. No `has_doctor_requirement` column.
-- `RoutineDue` (`RoutineAnytime | RoutineNotBefore | RoutineNotAfter | RoutineWithin`) encodes via the *joint* nullability of two columns (`due_not_before`, `due_not_after`) — all four NULL/set combinations are valid and each maps to exactly one constructor.
+  | `due_not_before` | `due_not_after` | case |
+  |---|---|---|
+  | NULL | NULL | `RoutineAnytime` |
+  | set | NULL | `RoutineNotBefore` |
+  | NULL | set | `RoutineNotAfter` |
+  | set | set | `RoutineWithin` |
 
-Before applying this instead of `discriminator-column-tables`, verify the bijection actually holds: enumerate every constructor's nullable-column pattern and confirm none collide. If two constructors could produce the same pattern, the field needs `discriminator-column-tables`'s explicit column instead — don't assume nullability alone is safe just because it worked for one field.
+  `EmergencyDue`/`UrgentDue` are each a single "must be seen by X" deadline — structurally identical to `RoutineNotAfter` — so `Emergency`/`Urgent` tiers reuse `due_not_after` rather than getting their own `emergency_due`/`urgent_due` columns. The `tier` column (`emergency`/`urgent`/`routine`) exists because tier itself is *not* a presence/absence distinction — it's three genuinely different shapes — so `discriminator-column-tables` applies to `tier`, and `nullability-as-discriminator` applies within the `routine` case to the deadline pair.
 
-## Check `Ord`-bearing types against their derived ranking, not just valid values (`ord-ranking-check`, Rule 3)
+When a new nullable field is proposed, check first whether it's actually encoding a presence/absence sum type per this rule before reaching for a separate discriminator column.
 
-If a domain type stored as a column has a derived `Ord` instance and anything ever sorts by it, the column's encoding must preserve that ranking under the database's native ordering — checking "is this a valid value" is not sufficient.
+## `ord-ranking-check` (Rule 3) — Check `Ord`-bearing types against their derived ranking only if something actually sorts by it at the SQL level
 
-`HealthcareRequestPriority`'s custom `Ord` instance gives `Emergency < Urgent < Routine` (`Domain.hs`'s `compare`, not a bare `deriving Ord`). A naive `TEXT` column sorts alphabetically — `'emergency' < 'routine' < 'urgent'` — which **disagrees** with the domain order on where `Routine` and `Urgent` fall. Where the DB itself sorts or compares by the column, the fix is an integer encoding matching the derived rank directly:
+If a domain type stored as a column has a derived `Ord` instance, that alone does not require an integer-rank encoding — only do this if some query actually needs `ORDER BY` on it in SQL.
 
-```sql
-priority SMALLINT NOT NULL CHECK (priority IN (0, 1, 2))  -- 0=Emergency, 1=Urgent, 2=Routine
-```
+`HealthcareRequestPriority` and `RoutineDue` both derive `Ord`, and the ranking is non-trivial (case-shape first, value second — e.g. `RoutineWithin < RoutineNotAfter < RoutineNotBefore < RoutineAnytime`, which a naive column sort would not reproduce). But **ordering happens exclusively in `Domain.hs`** — `checkWaitlist`'s `sortOn priority` runs in memory over already-decoded `TriagedHealthcareRequest` values, fetched via a plain (unordered) query. Confirmed: nothing in the intended Persistence layer issues `ORDER BY` on priority.
 
-Before choosing a column type for any enum-shaped value, check: does this type derive (or define) `Ord`, and does anything in `Domain.hs` or the application ever sort or compare by it *at the database layer*? If yes, the encoding must be checked against the actual derived ranking, not assumed safe because the values themselves are constrained.
+Consequence: **no integer tier-rank column exists in this schema, and none should be added.** If a future change introduces a query that does need SQL-level priority ordering, that's the trigger to revisit this rule — not the mere presence of the `Ord` instance.
 
-This condition can fail even when the type clearly has a meaningful `Ord`. `healthcare_requests.tier` stores `HealthcareRequestPriority`'s tier as plain `TEXT` (`'emergency'|'urgent'|'routine'`) rather than the ranked-int encoding above — verified against `Domain.hs`'s `checkWaitlist`, whose `sortOn priority` runs in Haskell over an already-decoded `[TriagedHealthcareRequest]` list, never as a SQL `ORDER BY`. No comparison happens at the database layer for this column, so this rule's precondition doesn't hold and `TEXT` is correct. Don't apply the int encoding reflexively just because a type derives `Ord` — check where the comparison actually happens first.
+## `join-tables-not-arrays` (Rule 4) — Multi-valued fields become join tables, never array columns
 
-## Multi-valued fields become join tables, never array columns (`join-table-not-array`, Rule 4)
-
-No domain field currently needs this rule — `PendingSlot.declinedBy` was the original motivating case, and it was removed entirely along with the offer mechanism (see `Domain.hs`'s comment on `PendingSlot`). The rule is kept here for if/when a future `Set a`/`[a]` field appears: such a field becomes a separate join table with real foreign key constraints, never a native array column (e.g. Postgres `UUID[]`), even though Postgres supports them.
+No domain field currently needs this rule. Kept for if/when a future `Set a`/`[a]` field appears on a domain type: such a field becomes a separate join table with real foreign key constraints, never a native array column (e.g. Postgres `UUID[]`), even though Postgres supports them.
 
 Reasons, in order of how much they actually matter: an array column cannot carry a foreign key constraint at all (a stray, non-existent UUID in the array is invisible to the database forever); no cascading delete; no uniqueness guarantee against duplicate entries; awkward, index-dependent reverse queries; concurrent-write hazards on the same array. A join table closes all of these for free.
 
-## Decoding fails loudly, never clamps or coerces silently (`fail-loudly-on-decode`, Rule 5)
+## `fail-loudly-on-decode` (Rule 5) — Decoding fails loudly, never clamps or coerces silently
 
 Any function reading a column value back into a domain type must produce an explicit error on anything that doesn't correspond to a valid domain value — never round, clamp, or default it into something plausible-looking.
 
 ```haskell
-data DecodeError = InvalidDuration Int | InvalidPriority Int | ...
+data DecodeError = InvalidDuration Int | InvalidTier Text | InvalidState Text | ...
   deriving (Show, Eq)
 
 decodeDuration :: Int -> Either DecodeError Duration
-decodeDuration 60 = Right OneHour
+decodeDuration 15 = Right QuarterOfAnHour
 decodeDuration 30 = Right HalfAnHour
+decodeDuration 60 = Right OneHour
 decodeDuration n  = Left (InvalidDuration n)
 ```
 
 This matters specifically because of `discriminator-column-tables`'s threat model: a `CHECK` constraint defends against backdoor writes at insert time, but anything that somehow still gets through (a constraint added after data already existed, a constraint disabled during a migration) must surface as a decode failure when read back — not get silently coerced into a default that hides the corruption.
 
-Where `Domain.hs` itself exposes a smart constructor for the value being decoded (e.g. `mkWithin` for `DueAt`'s `Within` case), the decode function must go through it rather than constructing the value directly — the same validation that protects in-memory construction has to protect the read-from-storage path too.
+Where `Domain.hs` itself exposes a smart constructor for the value being decoded (e.g. `mkRoutineWithin` for `RoutineDue`'s `RoutineWithin` case), the decode function must go through it rather than constructing the value directly — the same validation that protects in-memory construction has to protect the read-from-storage path too.
 
-## Cross-table consistency needs a trigger only when nothing else catches the mismatch (`transactional-cross-table-consistency`, Rule 6)
+## `transactional-cross-table-consistency` (Rule 6) — Cross-table consistency needs a trigger only when nothing else catches the mismatch
 
-No current case needs this rule — it addressed `slots.offered_to` / `appointment_requests.offered_slot_id` disagreeing, both of which were removed along with the entire offer mechanism. Kept here for if/when a future pair of columns across two tables are supposed to agree:
+This is now a **live case**, not a hypothetical: `slots.appointment_id` and `appointments.slot_id` are two independent columns in two different tables that must always agree, and `reassignSlot` actively changes this pairing in place (old slot freed, new slot booked, same appointment row's `slot_id` updated) with no new rows created on either side.
 
-- If a domain function already re-validates the relationship at the point it matters and fails gracefully — rely on that, plus the convention that both columns are always written together in one transaction by the same Persistence-layer function. No trigger.
-- If no such function exists, and a disagreement would be silently acted upon by some other operation with no defense — that's the case that justifies a trigger, the same standard already applied to `discriminator-column-tables`'s `CHECK` constraints.
+Applying the same standard as before: `satisfyHealthcareRequest` and `reassignSlot` both produce their `BookedSlot`/`OpenAppointment` (or freed/rebooked) pairs atomically as pure values — the corresponding `Persistence.hs` store functions must write both the `slots` and `appointments` rows involved **in a single transaction**. Given that discipline, no trigger is used. Both FKs (`slots.appointment_id -> appointments`, `appointments.slot_id -> slots`) are declared `DEFERRABLE INITIALLY DEFERRED` specifically so a single transaction can insert/update both tables in either order without a constraint firing mid-transaction on a momentarily-circular reference.
 
-Don't add a trigger by default "to be safe" — that's the same unnecessary-complexity mistake this domain model has avoided elsewhere (see `Domain.hs`'s own comments on `escalateToUrgent`, `sortWaitlist`). Justify it against an actual unguarded failure mode, or skip it.
+Don't add a trigger by default "to be safe" — that's the unnecessary-complexity mistake this domain model has avoided elsewhere. The transactional-pairing discipline is the chosen guard; revisit only if a real unguarded write path (bypassing `Persistence.hs` entirely) is identified.
 
-## ID types need no special handling (`id-newtype-passthrough`, Rule 7)
+## `id-types-plain` (Rule 7) — ID types need no special handling
 
-Domain ID newtypes (`DoctorId`, `PatientId`, `ServiceId`, `SlotId`, `AppointmentId`, `AppointmentRequestId`) are not sealed — their constructors are exported. Extract the underlying `UUID` with plain pattern matching (`let DoctorId u = someDoctorId in u`); no helper function or typeclass is needed for this, and adding one would be unnecessary indirection around something that already works.
+Domain ID newtypes (`DoctorId`, `PatientId`, `HealthcareServiceId`, `HealthcareRequestId`, `SlotId`, `AppointmentId`) are not sealed — their constructors are exported. Extract the underlying `UUID` with plain pattern matching (`let DoctorId u = someDoctorId in u`); no helper function or typeclass is needed for this.
 
-## Minimal domain types get minimal tables (`minimal-types-minimal-tables`, Rule 8)
+## `minimal-types-minimal-tables` (Rule 8) — Minimal domain types get minimal tables
 
 `Doctor` and `Patient` are deliberately minimal in `Domain.hs` (`id` and `name` only, pending a future external system). Their tables must match — do not add columns speculatively (email, specialty, contact info, etc.) that aren't in the domain type. If `Domain.hs` gains a field, the table gains the matching column; not before.
 
-## Reconstructing a sealed type's hidden state replays through existing exports, never a new raw constructor (`sealed-type-replay`, Rule 9)
+## `sealed-type-replay` (Rule 9) — Reconstructing a sealed type's hidden state replays through existing exported functions, never a new raw constructor
 
-Some domain types are sealed because their internal state must only ever be reached through validated paths. `PendingSlot` no longer needs this at all — it's an open, single-field `newtype` now, and reconstructing one from storage is just `PendingSlot details`, no replay needed. But `BookedSlot` and `OpenAppointment` are still sealed, and reconstructing either still hits the same problem: two tempting fixes are both wrong, for related reasons:
+Some domain types are sealed because their internal state must only ever be reached through validated paths. As of the current `Domain.hs`, **`BookedSlot` is the only remaining case needing this treatment.**
+
+`OpenAppointment` is now exported openly (`OpenAppointment (..)` — "constructor open, no invariant to protect") and `ClosedAppointment`'s only producer, `closeAppointment`, has no predicate to satisfy — both reconstruct from real stored data via direct construction, no placeholder needed:
+
+```haskell
+-- OpenAppointment: real data throughout — healthcare_request_id and slot_id
+-- come straight from the row, no fabrication.
+toDomainOpenAppointment :: AppointmentId -> TriagedHealthcareRequest -> SlotId -> OpenAppointment
+toDomainOpenAppointment = OpenAppointment
+
+-- ClosedAppointment: closeAppointment has no predicate to satisfy — direct
+-- wrap of two already-real values.
+rebuildClosedAppointment :: OpenAppointment -> CloseReason -> ClosedAppointment
+rebuildClosedAppointment = closeAppointment
+```
+
+`BookedSlot`'s only producers are `satisfyHealthcareRequest` and `reassignSlot` — but `reassignSlot` delegates to `satisfyHealthcareRequest` internally rather than gating independently, so there is exactly **one** place `matches` actually needs verifying, not two:
+
+```haskell
+reassignSlot
+  :: OpenAppointment
+  -> BookedSlot      -- appointment's current slot; caller's responsibility to pass the correct one, not checked here
+  -> AvailableSlot   -- proposed new slot
+  -> Maybe (AvailableSlot, BookedSlot, OpenAppointment)
+reassignSlot (OpenAppointment aid req _) (BookedSlot oldDetails _) newSlot =
+  (\(bs, oa) -> (AvailableSlot oldDetails, bs, oa)) <$> satisfyHealthcareRequest newSlot aid req
+```
+
+With that delegation in place, `matches` itself is:
+
+```haskell
+matches slot req = slot.healthcareServiceId == req.healthcareServiceId
+                 && matchesDoctorRequirement slot req.details.doctorRequirement
+                 && matchesTime req.priority slot.start
+```
+
+Two tempting fixes are both wrong, for related reasons:
 
 - **Adding a new exported `Domain.hs` function that takes the raw internal state directly** is equivalent to unsealing the constructor — it grants the same fabrication capability to every caller, not just the Persistence layer, defeating the reason the type was sealed in the first place.
 - **Adding a constructor or field to a real domain type purely to support reconstruction** leaks a Persistence-layer concern backward into the Domain layer.
 
-**The correct approach: rebuild the value by replaying it through the type's own already-safe exported functions**, supplying placeholder values only for arguments that are *provably* never read by the specific call path — verified by checking what those functions actually use, not assumed. For `BookedSlot`:
+**The correct approach: rebuild the value by replaying it through the type's own already-safe exported functions**, fabricating only the arguments needed to make the gating predicate *provably* always succeed — verified against the predicate's actual current body, not assumed:
 
 ```haskell
--- bookAppointment's BookedSlot half never reads patientId — only the
--- (fabricated, discarded) Appointment half does. Verified against the
--- current bookAppointment body before relying on this.
+-- BookedSlot's constructor (BookedSlot slot appointmentId) never reads
+-- `request` at all — only `matches` does, to gate whether
+-- satisfyHealthcareRequest fires.
+-- healthcareServiceId is real (must equal the slot's own, or matches
+-- fails). doctorRequirement = AnyDoctor and priority = Routine
+-- RoutineAnytime are the unique constructors that make
+-- matchesDoctorRequirement/matchesTime unconditionally True, verified
+-- against their current bodies — not assumed. id/patientId/narrative/
+-- createdAt/triagedAt are sentinel — discarded either way, since only the
+-- BookedSlot half of the result is kept. fromJust is safe here
+-- specifically because the Maybe is proven, not merely expected, to be
+-- Just — this is the one place in generated Persistence code where
+-- fromJust is acceptable, and only because of this proof.
 rebuildBookedSlot :: SlotDetails -> AppointmentId -> BookedSlot
 rebuildBookedSlot details aid =
-  fst (bookAppointment (releaseSlot (PendingSlot details)) aid (PatientId nil))
-```
-
-For `OpenAppointment` — simpler than before, since `assignAppointment` is now total (no `Maybe` to satisfy):
-
-```haskell
-rebuildOpenAppointment :: AppointmentId -> PatientId -> AppointmentPriority -> SlotId -> OpenAppointment
-rebuildOpenAppointment aid realPid realPrio realSlotId =
-  case assignAppointment placeholderSlot placeholderRequest aid of
-    (_, Open oa) -> oa
+  fst . fromJust $ satisfyHealthcareRequest (AvailableSlot details) aid placeholderRequest
   where
-    placeholderRequest = case realPrio of
-      Emergency -> EmergencyRequest details
-      Urgent    -> UrgentRequest    details
-      Routine   -> RoutineRequest   details Nothing Anytime
-      where details = AppointmentRequestDetails
-              { id = AppointmentRequestId nil, patientId = realPid
-              , serviceId = ServiceId nil, createdAt = posixSecondsToUTCTime 0 }
-    placeholderSlot = PendingSlot SlotDetails
-      { id = realSlotId, doctorId = DoctorId nil, serviceId = ServiceId nil
-      , start = posixSecondsToUTCTime 0, duration = OneHour }
+    placeholderRequest = TriagedHealthcareRequest
+      { details  = HealthcareRequestDetails
+          { id = HealthcareRequestId nil, patientId = PatientId nil
+          , narrative = "", doctorRequirement = AnyDoctor
+          , createdAt = posixSecondsToUTCTime 0 }
+      , healthcareServiceId = details.healthcareServiceId
+      , priority  = Routine RoutineAnytime
+      , triagedAt = posixSecondsToUTCTime 0
+      }
 ```
 
-Any placeholder used this way must: be defined entirely within the Persistence layer (never exported, never visible to `Domain.hs` or any other module); use hardcoded sentinel literals (e.g. `Data.UUID.nil`, a fixed epoch timestamp) rather than parameters, so nothing about it looks configurable or meaningful; and carry a comment stating exactly which fields are real and which are inert, and why the inert ones are provably never read by the specific functions being replayed through.
+Any placeholder used this way must: be defined entirely within the Persistence layer (never exported, never visible to `Domain.hs` or any other module); use hardcoded sentinel literals (e.g. `Data.UUID.nil`, a fixed epoch timestamp) rather than parameters, so nothing about it looks configurable or meaningful; and carry a comment stating exactly which fields are real, which are inert, and — for the `fromJust`-style case above — the specific proof that the gating predicate always succeeds, not just an assumption that it does.
 
-## A row's mere existence is the discriminator — never delete or flag on consumption (`no-delete-on-consumption`, Rule 10)
+## `no-delete-on-consumption` (Rule 10) — A row's mere existence is *not* the discriminator here; requests are never deleted on consumption
 
-`healthcare_requests` is two-valued (`submitted`/`triaged`) only — there is no third "matched" state and no schema-level path back from matched to waiting, confirmed against `Domain.hs`: nothing transitions a triaged-and-matched request back to waiting.
+An earlier version of this skill had a rule with the opposite name and behavior — a matched request's row was deleted the moment it was consumed, and existence alone meant "waiting." That doesn't apply to the current domain at all; naming this rule for what it now does, rather than reusing a number, is exactly to prevent that confusion from recurring.
 
-Don't add a status column or a soft-delete flag to capture "already matched." **Never delete or flag the row** on match — a match is represented entirely by the existence of a corresponding `appointments` row referencing it via `healthcare_request_id`. "Currently waiting" is a derived query: a `triaged` request with no matching `appointments` row (an anti-join), not a stored flag. This reverses an earlier delete-on-match design from a prior `appointment_requests` table — see `docs/decisions.md`'s "healthcare_requests lifecycle" entry.
+The current domain's deliberate choice: `healthcare_requests` rows are **never deleted**, and there is **no third `state` value** for "matched" — confirmed against the current `Domain.hs`, nothing transitions a request back to waiting, and nothing marks it matched in place either.
+
+Instead, "currently waiting" is a **derived** condition: a triaged request with no corresponding `appointments` row.
+
+```sql
+SELECT hr.*
+FROM healthcare_requests hr
+LEFT JOIN appointments a ON a.healthcare_request_id = hr.id
+WHERE hr.state = 'triaged' AND a.id IS NULL;
+```
+
+`appointments.healthcare_request_id` is `UNIQUE`, so this join can never produce more than one `appointments` row per request — a triaged request is consumed by at most one appointment, ever. A failed `reassignSlot` does not free the original request back to this query's result set; it produces an entirely new `healthcare_requests` row via re-triage, with no stored lineage back to the original (deliberate — `Domain.hs` doesn't track that lineage, and the schema doesn't invent it; see the `healthcare_requests` comment in `migrations/0001_init.sql`).
+
+Do not reintroduce a `'matched'` state value or a soft-delete flag to represent this — the anti-join is the intended query shape, matching the fact that `Domain.hs` itself has no notion of a request being flagged matched, only of an `OpenAppointment` existing that happens to reference it.
 
 ## The Persistence module
 
@@ -158,13 +216,15 @@ All Persistence-layer code lives in a single module, `src/Persistence.hs` (modul
 
 For each domain aggregate with its own table(s), generate, within `Persistence.hs`:
 
-1. **A `Row` type** whose fields match the table's columns exactly (e.g. `ServiceRow`, `SlotRow`, `AppointmentRequestRow`, `AppointmentRow`).
+1. **A `Row` type** whose fields match the table's columns exactly (e.g. `HealthcareServiceRow`, `SlotRow`, `HealthcareRequestRow`, `AppointmentRow`).
 2. **`toDomain :: Row -> Either DecodeError DomainType`** — decodes a row into the real domain value, following `fail-loudly-on-decode`.
 3. **`fromDomain :: DomainType -> Row`** — encodes a domain value for storage. Always total; nothing about going from a valid domain value to its storage shape can fail, since the domain value is already known-valid.
-4. **Fetch and store functions** — `fetchX :: <connection> -> XId -> IO (Maybe X)`, `storeX :: <connection> -> X -> IO ()`, mapping through `toDomain`/`fromDomain` and the actual SQL. For `HealthcareRequest` specifically, per `no-delete-on-consumption` there is no delete or status flip on match — add a `fetchWaitlist` function running the anti-join instead of branching the store side on match. The specific Haskell DB library (`postgresql-simple`, `hasql`, etc.) has not been decided — leave the connection type and query mechanism as an explicit open parameter rather than assuming one. Ask before committing to a library if it isn't already established elsewhere in the project.
+4. **Fetch and store functions** — `fetchX :: <connection> -> XId -> IO (Maybe X)`, `storeX :: <connection> -> X -> IO ()`, mapping through `toDomain`/`fromDomain` and the actual SQL. The specific Haskell DB library (`postgresql-simple`, `hasql`, etc.) has not been decided — leave the connection type and query mechanism as an explicit open parameter rather than assuming one. Ask before committing to a library if it isn't already established elsewhere in the project.
+5. **A dedicated waitlist fetch**, `fetchWaitlist :: <connection> -> IO (Either DecodeError [TriagedHealthcareRequest])`, implementing `no-delete-on-consumption`'s anti-join and decoding each resulting row via the same `toDomain` path as any other triaged `HealthcareRequestRow`. This is the function `checkWaitlist`'s caller is expected to use to obtain its input list.
+6. **Transactional pairing for `satisfyHealthcareRequest`/`reassignSlot`**, per `transactional-cross-table-consistency` — the store function(s) covering these must write the affected `slots` and `appointments` rows within one transaction. Do not split this across two separately-committed calls.
 
-See `references/persistence-pattern.md` for worked examples of the `Row`/`toDomain`/`fromDomain` pattern, including `sealed-type-replay`'s reconstruction technique for `BookedSlot` and `OpenAppointment`.
+See `references/persistence-pattern.md` for worked examples of the `Row`/`toDomain`/`fromDomain` pattern, including `sealed-type-replay`'s reconstruction technique for `BookedSlot`.
 
 ## When unsure
 
-If a rule above doesn't cover a case that comes up, prefer the option that mirrors `Domain.hs`'s own structure most directly, and flag the ambiguity to the user rather than inventing a convention silently.
+If a rule above doesn't cover a case that comes up, prefer the option that mirrors `Domain.hs`'s own structure most directly, and flag the ambiguity to the user rather than inventing a convention silently. When adding a genuinely new rule, give it a name in this same style before writing content under it — don't leave it number-only, and don't renumber existing rules to make room for it.
