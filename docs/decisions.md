@@ -53,6 +53,24 @@ constructors are visible, so it sidesteps the export-based sealing entirely.
 Transport DTO twin types may derive Generic freely; the `toDomain` boundary
 function is where smart-constructor validation actually happens.
 
+## Rescheduling: reassignSlot, not a CloseReason variant (2026-07-01)
+
+**Decided:** Moving an open appointment to a different slot is modeled as
+`reassignSlot` — it frees the old `BookedSlot`, books the new one, and
+updates `OpenAppointment`'s `SlotId`, re-checking the same structural
+eligibility (`matches`) against the proposed slot. The appointment stays
+`Open` throughout.
+
+**Rejected:** the previous representation, `CloseReason`'s `Rescheduled
+AppointmentParty` constructor — closing the appointment to reschedule
+conflated "this appointment is done" with "this appointment moved," losing
+the open appointment's identity across the move.
+
+**Why:** an appointment being rescheduled is still the same appointment,
+still open — closing it to represent a slot change would mean an
+`OpenAppointment`'s identity doesn't survive an operation that shouldn't
+affect its identity at all.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)

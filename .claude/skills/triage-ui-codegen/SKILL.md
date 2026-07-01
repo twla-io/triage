@@ -11,7 +11,7 @@ description: Conventions for generating a frontend UI or UX flow from triage's D
 
 ### Available actions must mirror exactly which transitions are type-valid for the current state
 
-This is the most important rule in this skill, and the one most likely to be silently violated. If a `Slot` is `Available`, the only valid action is `bookSlot` — never show a "decline" or "cancel" control, because no domain function accepts an `AvailableSlot` for those operations. If a `Slot` is `Booked`, the relevant actions come from `Appointment`'s lifecycle (`Cancelled`, `Rescheduled`, `NoShow`, `Completed`), not from any Slot-level transition.
+This is the most important rule in this skill, and the one most likely to be silently violated. If a `Slot` is `Available`, the only valid action is booking it via `satisfyHealthcareRequest` — never show a "decline" or "cancel" control, because no domain function accepts an `AvailableSlot` for those operations. If a `Slot` is `Booked`, the relevant actions come from `Appointment`'s lifecycle (`Cancelled`, `NoShow`, `Completed`) plus `reassignSlot` for moving to a different slot, not from any Slot-level transition.
 
 Concretely: **build the set of enabled controls from the current state's type, not from a general-purpose "what can a slot do" menu with conditions sprinkled on top.** A `case` over the `Slot`/`Appointment`/`AppointmentRequest` constructor should produce the exact list of valid actions — if a new constructor is added to a domain type later, the UI should fail to compile (in a typed frontend) or at minimum visibly need updating, not silently render a stale action list.
 

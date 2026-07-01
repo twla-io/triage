@@ -65,6 +65,7 @@ module Domain
 
   -- ── Protocol ─────────────────────────────────────────────────────────────
   , satisfyHealthcareRequest
+  , reassignSlot
   , checkWaitlist
   , matches
   ) where
@@ -306,7 +307,6 @@ data AppointmentParty
 data CloseReason
   = Completed
   | Cancelled   AppointmentParty
-  | Rescheduled AppointmentParty
   | NoShow      AppointmentParty
   deriving (Show, Eq)
 
@@ -337,6 +337,9 @@ closeAppointment = ClosedAppointment
 -- directly by a manager to bypass the automatic scan while still enforcing
 -- structural eligibility (service match, doctor requirement, time window) —
 -- those are never overridable, even by a manager.
+--
+-- reassignSlot moves an already-open appointment to a different slot,
+-- re-checking the same structural eligibility against the proposed slot.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 matchesDoctorRequirement :: SlotDetails -> DoctorRequirement -> Bool
@@ -369,6 +372,21 @@ satisfyHealthcareRequest available@(AvailableSlot slot) appointmentId request
         ( BookedSlot slot appointmentId
         , OpenAppointment appointmentId request slot.id
         )
+  | otherwise = Nothing
+
+reassignSlot
+  :: OpenAppointment
+  -> BookedSlot      -- appointment's current slot; caller's responsibility to pass the correct one, not checked here
+  -> AvailableSlot   -- proposed new slot
+  -> Maybe (AvailableSlot, BookedSlot, OpenAppointment)
+reassignSlot (OpenAppointment aid req _) (BookedSlot oldDetails _) newSlot
+  | matches newSlot req =
+      let newDetails = getSlotDetails (Available newSlot)
+      in Just
+           ( AvailableSlot oldDetails
+           , BookedSlot newDetails aid
+           , OpenAppointment aid req newDetails.id
+           )
   | otherwise = Nothing
 
 checkWaitlist
