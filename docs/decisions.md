@@ -71,6 +71,56 @@ still open — closing it to represent a slot change would mean an
 `OpenAppointment`'s identity doesn't survive an operation that shouldn't
 affect its identity at all.
 
+## Appointments: FK to healthcare_requests, not denormalized (2026-07-01)
+
+**Decided:** the `appointments` table stores `healthcare_request_id` as a
+foreign key back to `healthcare_requests`, rather than denormalizing the
+full `TriagedHealthcareRequest` onto the appointments row.
+
+**Why:** `OpenAppointment`'s constructor is open — no invariant to protect
+— so reconstruction is a plain join. A FK is the relational mirror of "one
+fact in one place," matching how `OpenAppointment` embeds the request by
+reference in Haskell rather than duplicating its fields.
+
+## healthcare_requests lifecycle: two states, no delete-on-match, waitlist is derived (2026-07-01)
+
+**Decided:** `healthcare_requests` state is two-valued (`submitted` /
+`triaged`) only — no third "matched" state, and no schema-level path back
+from matched to waiting, confirmed against `Domain.hs`: nothing transitions
+a request from matched back to waiting. Rows are never deleted on
+consumption.
+
+**Rejected:** the old `appointment_requests` delete-on-match behavior from
+an earlier domain version.
+
+**Consequence:** "currently waiting" is a derived query — a triaged request
+with no corresponding `appointments` row (anti-join) — not a stored flag.
+
+## No lineage tracking across re-triage after failed reassignment (2026-07-01)
+
+**Decided:** when a slot reassignment fails, the appointment is closed, and
+the same `HealthcareRequestDetails` is re-triaged, the new
+`TriagedHealthcareRequest` is a plain new row — no FK or other pointer back
+to the original.
+
+**Why:** `Domain.hs` itself doesn't track this lineage —
+`triageHealthcareRequest` doesn't thread an old `TriagedHealthcareRequest`
+through — so the schema doesn't invent tracking the domain model doesn't
+have. Revisit only if reporting/audit needs surface a concrete requirement.
+
+## slots/appointments cross-table consistency: transaction discipline, not a trigger (2026-07-01)
+
+**Decided:** `slots.appointment_id` and `appointments.slot_id` are kept
+consistent by transaction discipline in `Persistence.hs` — both rows
+written together in one transaction for `satisfyHealthcareRequest` and
+`reassignSlot` — not by a database trigger. Both FKs are `DEFERRABLE
+INITIALLY DEFERRED` to allow this.
+
+**Why:** per db-codegen's `transactional-cross-table-consistency`, a trigger
+is justified only when nothing else catches a mismatch; here the
+Persistence-layer transaction already does. Rejected adding one "to be
+safe."
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
