@@ -49,10 +49,8 @@ module Domain
   , AvailableSlot (..)
   , BookedSlot
   , Slot (..)
-  , freeSlot
   , slotEnd
   , getSlotDetails
-  , bookedAppointmentId
 
   -- ── Appointment ──────────────────────────────────────────────────────────
   , OpenAppointment (..)  -- constructor open — no invariant to protect
@@ -65,6 +63,7 @@ module Domain
   -- ── Protocol ─────────────────────────────────────────────────────────────
   , satisfyHealthcareRequest
   , reassignSlot
+  , closeAppointment
   , checkWaitlist
   , matches
   ) where
@@ -263,7 +262,7 @@ data SlotDetails = SlotDetails
 newtype AvailableSlot = AvailableSlot SlotDetails
   deriving (Show, Eq)
 
-data BookedSlot = BookedSlot SlotDetails AppointmentId
+data BookedSlot = BookedSlot SlotDetails
   deriving (Show, Eq)
 
 data Slot
@@ -271,30 +270,28 @@ data Slot
   | Booked    BookedSlot
   deriving (Show, Eq)
 
--- Appointment cancelled: slot re-enters the matching protocol immediately.
-freeSlot :: BookedSlot -> AvailableSlot
-freeSlot (BookedSlot d _) = AvailableSlot d
-
 slotEnd :: SlotDetails -> UTCTime
 slotEnd d = addUTCTime (durationToNominalDiffTime d.duration) d.start
 
 getSlotDetails :: Slot -> SlotDetails
 getSlotDetails (Available (AvailableSlot d)) = d
-getSlotDetails (Booked    (BookedSlot d _))  = d
-
--- BookedSlot is positional — no dot-access to its AppointmentId externally.
-bookedAppointmentId :: BookedSlot -> AppointmentId
-bookedAppointmentId (BookedSlot _ aid) = aid
+getSlotDetails (Booked    (BookedSlot d))    = d
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- APPOINTMENT
 -- OpenAppointment embeds the full TriagedHealthcareRequest — the appointment
 -- IS the request, now bound to a slot. No separate patientId/priority fields:
--- one fact in one place, no duplication.
+-- one fact in one place, no duplication. It also embeds the BookedSlot
+-- itself, not just a SlotId — a BookedSlot has no legitimate standalone use
+-- outside the OpenAppointment holding it, so access to it is always through
+-- the appointment.
+--
+-- Closing an appointment (closeAppointment, in Protocol below) always frees
+-- its slot, unconditionally, regardless of CloseReason.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data OpenAppointment =
-  OpenAppointment AppointmentId TriagedHealthcareRequest SlotId
+  OpenAppointment AppointmentId TriagedHealthcareRequest BookedSlot
   deriving (Show, Eq)
 
 -- ByDoctor/ByPatient avoid collision with the real Doctor/Patient entity types.
@@ -333,10 +330,25 @@ openAppointmentRequest (OpenAppointment _ req _) = req
 -- satisfyHealthcareRequest checks eligibility AND commits. It can be called
 -- directly by a manager to bypass the automatic scan while still enforcing
 -- structural eligibility (service match, doctor requirement, time window) —
--- those are never overridable, even by a manager.
+-- those are never overridable, even by a manager. It returns the
+-- OpenAppointment alone, not a (BookedSlot, OpenAppointment) pair — the
+-- BookedSlot is recoverable directly from the OpenAppointment that embeds
+-- it, so returning both would just be redundant. checkWaitlist, built on
+-- top of it, follows the same shape.
 --
 -- reassignSlot moves an already-open appointment to a different slot,
--- re-checking the same structural eligibility against the proposed slot.
+-- re-checking the same structural eligibility against the proposed slot. It
+-- pulls the appointment's current slot from the OpenAppointment itself
+-- rather than taking a caller-supplied BookedSlot — there's no mismatch
+-- trust boundary to document because it's now impossible to pass the wrong
+-- one.
+--
+-- closeAppointment always frees its slot, unconditionally — regardless of
+-- CloseReason. This holds even for Completed and NoShow, where the freed
+-- slot's start is in the past; filtering stale slots by start_time is a
+-- query-layer responsibility, not Domain.hs's. Like reassignSlot, it pulls
+-- the slot from the OpenAppointment rather than taking it as a separate,
+-- caller-supplied argument.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 matchesDoctorRequirement :: SlotDetails -> DoctorRequirement -> Bool
@@ -362,28 +374,30 @@ satisfyHealthcareRequest
   :: AvailableSlot
   -> AppointmentId
   -> TriagedHealthcareRequest
-  -> Maybe (BookedSlot, OpenAppointment)
+  -> Maybe OpenAppointment
 satisfyHealthcareRequest available@(AvailableSlot slot) appointmentId request
-  | matches available request =
-      Just
-        ( BookedSlot slot appointmentId
-        , OpenAppointment appointmentId request slot.id
-        )
+  | matches available request = Just (OpenAppointment appointmentId request (BookedSlot slot))
   | otherwise = Nothing
 
 reassignSlot
   :: OpenAppointment
-  -> BookedSlot      -- appointment's current slot; caller's responsibility to pass the correct one, not checked here
   -> AvailableSlot   -- proposed new slot
-  -> Maybe (AvailableSlot, BookedSlot, OpenAppointment)
-reassignSlot (OpenAppointment aid req _) (BookedSlot oldDetails _) newSlot =
-  (\(bs, oa) -> (AvailableSlot oldDetails, bs, oa)) <$> satisfyHealthcareRequest newSlot aid req
+  -> Maybe (AvailableSlot, OpenAppointment)
+reassignSlot (OpenAppointment aid req (BookedSlot oldDetails)) newSlot =
+  fmap (\newOA -> (AvailableSlot oldDetails, newOA)) (satisfyHealthcareRequest newSlot aid req)
+
+closeAppointment
+  :: OpenAppointment
+  -> CloseReason
+  -> (AvailableSlot, ClosedAppointment)
+closeAppointment oa@(OpenAppointment _ _ (BookedSlot details)) reason =
+  (AvailableSlot details, ClosedAppointment oa reason)
 
 checkWaitlist
   :: AvailableSlot
   -> AppointmentId
   -> [TriagedHealthcareRequest]
-  -> Maybe (BookedSlot, OpenAppointment)
+  -> Maybe OpenAppointment
 checkWaitlist slot appointmentId =
   listToMaybe
     . mapMaybe (satisfyHealthcareRequest slot appointmentId)

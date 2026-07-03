@@ -46,19 +46,20 @@ AvailableSlot | Booked BookedSlot`. Two states only — no `Pending` or
 so a slot either has a match or stays `Available` until one arrives.
 
 **Appointment** — `OpenAppointment` (embeds the full
-`TriagedHealthcareRequest` plus the `SlotId` it's bound to — the appointment
-IS the request, now bound to a slot); `AppointmentParty = ByDoctor |
-ByPatient`; `CloseReason = Completed | Cancelled AppointmentParty | NoShow
-AppointmentParty`; `ClosedAppointment` (embeds the `OpenAppointment` plus its
-`CloseReason`); `Appointment = Open OpenAppointment | Closed
-ClosedAppointment`.
+`TriagedHealthcareRequest` plus the `BookedSlot` it's bound to — the
+appointment IS the request, now bound to a slot; a `BookedSlot` has no
+legitimate standalone use outside the `OpenAppointment` holding it, so
+access to it is always through the appointment); `AppointmentParty =
+ByDoctor | ByPatient`; `CloseReason = Completed | Cancelled
+AppointmentParty | NoShow AppointmentParty`; `ClosedAppointment` (embeds the
+`OpenAppointment` plus its `CloseReason`); `Appointment = Open
+OpenAppointment | Closed ClosedAppointment`.
 
 ### Sealed vs. open
 
 Constructors are hidden only where there's an invariant to protect:
 
-- `BookedSlot` — construct only via `satisfyHealthcareRequest` or
-  `reassignSlot`.
+- `BookedSlot` — construct only via `satisfyHealthcareRequest`.
 - `RoutineDue`'s `RoutineWithin` case — construct only via
   `mkRoutineWithin` (enforces `from <= to`).
 
@@ -75,21 +76,35 @@ matches
 
 satisfyHealthcareRequest
   :: AvailableSlot -> AppointmentId -> TriagedHealthcareRequest
-  -> Maybe (BookedSlot, OpenAppointment)
+  -> Maybe OpenAppointment
 
 reassignSlot
-  :: OpenAppointment -> BookedSlot -> AvailableSlot
-  -> Maybe (AvailableSlot, BookedSlot, OpenAppointment)
+  :: OpenAppointment -> AvailableSlot
+  -> Maybe (AvailableSlot, OpenAppointment)
+
+closeAppointment
+  :: OpenAppointment -> CloseReason
+  -> (AvailableSlot, ClosedAppointment)
 
 checkWaitlist
   :: AvailableSlot -> AppointmentId -> [TriagedHealthcareRequest]
-  -> Maybe (BookedSlot, OpenAppointment)
+  -> Maybe OpenAppointment
 ```
 
 `checkWaitlist` sorts the waitlist by priority and tries `satisfyHealthcareRequest`
 against each in order, taking the first success — no separate offer/accept
-step. `reassignSlot` moves an already-open appointment to a different slot,
-re-checking the same structural eligibility against the proposed slot.
+step. Both return the `OpenAppointment` alone rather than a redundant pair
+with its `BookedSlot`, since the slot is recoverable directly from the
+appointment that embeds it. `reassignSlot` moves an already-open appointment
+to a different slot, re-checking the same structural eligibility against the
+proposed slot — it pulls the appointment's current slot from the
+`OpenAppointment` itself rather than taking a caller-supplied `BookedSlot`,
+so there's no mismatch to guard against. `closeAppointment` always frees its
+slot, unconditionally, regardless of `CloseReason` — including
+`Completed`/`NoShow`, where the freed slot's start is in the past; filtering
+stale slots by start time is a query-layer responsibility, not this
+module's. Like `reassignSlot`, it pulls the slot from the `OpenAppointment`
+rather than taking it separately.
 
 ### Generating downstream layers
 

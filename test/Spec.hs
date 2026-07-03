@@ -74,6 +74,14 @@ genTriagedRequestFor sid = do
   prio       <- genPriority
   triageHealthcareRequest reqDetails sid prio <$> genMoment
 
+genCloseReason :: Gen CloseReason
+genCloseReason =
+  elements
+    [ Completed
+    , Cancelled ByDoctor, Cancelled ByPatient
+    , NoShow    ByDoctor, NoShow    ByPatient
+    ]
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- TESTS
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -145,7 +153,7 @@ main = hspec $ do
           slot       = AvailableSlot slotDetails
       aid <- arbitrary
       pure $ case checkWaitlist slot aid [routine, urgent, emergency] of
-        Just (_, OpenAppointment _ req _) ->
+        Just (OpenAppointment _ req _) ->
           req.priority === Emergency (EmergencyDue deadline)
         Nothing -> property False
 
@@ -166,18 +174,20 @@ main = hspec $ do
       req         <- genTriagedRequestFor sid
       aid         <- arbitrary
       pure $ case satisfyHealthcareRequest (AvailableSlot slotDetails) aid req of
-        Just (_, oa) -> openAppointmentRequest oa === req
-        Nothing      -> property True
+        Just oa -> openAppointmentRequest oa === req
+        Nothing -> property True
 
-  describe "freeSlot" $
-    prop "re-creates AvailableSlot with same SlotDetails" $ do
+  describe "closeAppointment" $
+    prop "frees the slot with its original SlotDetails and pairs the appointment with the reason" $ do
       sid         <- arbitrary
       did         <- arbitrary
       slotDetails <- genSlotDetailsFor sid did
       req         <- genTriagedRequestFor sid
       aid         <- arbitrary
+      closeReason <- genCloseReason
       pure $ case satisfyHealthcareRequest (AvailableSlot slotDetails) aid req of
-        Nothing      -> property True
-        Just (booked, _) ->
-          let AvailableSlot freedDetails = freeSlot booked
-          in freedDetails === slotDetails
+        Nothing -> property True
+        Just oa ->
+          let (freed, closed)        = closeAppointment oa closeReason
+              AvailableSlot freedDetails = freed
+          in freedDetails === slotDetails .&&. closed === ClosedAppointment oa closeReason
