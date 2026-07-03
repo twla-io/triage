@@ -59,14 +59,13 @@ Constructors are hidden only where there's an invariant to protect:
 
 - `BookedSlot` — construct only via `satisfyHealthcareRequest` or
   `reassignSlot`.
-- `ClosedAppointment` — construct only via `closeAppointment`.
 - `RoutineDue`'s `RoutineWithin` case — construct only via
   `mkRoutineWithin` (enforces `from <= to`).
 
 Every other type (`HealthcareRequestPriority`, `AvailableSlot`, `Slot`,
-`TriagedHealthcareRequest`, `OpenAppointment`, ...) exports its constructors
-openly — there's no invariant beyond what its own field types already
-enforce.
+`TriagedHealthcareRequest`, `OpenAppointment`, `ClosedAppointment`, ...)
+exports its constructors openly — there's no invariant beyond what its own
+field types already enforce.
 
 ### Key functions
 

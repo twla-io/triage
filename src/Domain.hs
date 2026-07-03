@@ -56,11 +56,10 @@ module Domain
 
   -- ── Appointment ──────────────────────────────────────────────────────────
   , OpenAppointment (..)  -- constructor open — no invariant to protect
-  , ClosedAppointment
+  , ClosedAppointment (..)  -- constructor open — no invariant to protect
   , Appointment (..)
   , AppointmentParty (..)
   , CloseReason (..)
-  , closeAppointment
   , openAppointmentRequest
 
   -- ── Protocol ─────────────────────────────────────────────────────────────
@@ -311,6 +310,7 @@ data CloseReason
   deriving (Show, Eq)
 
 -- Embeds the OpenAppointment — closing carries its full history for free.
+-- Constructor open — no invariant to protect.
 data ClosedAppointment = ClosedAppointment OpenAppointment CloseReason
   deriving (Show, Eq)
 
@@ -322,9 +322,6 @@ data Appointment
 -- The embedded request is the single source of truth for patient/priority.
 openAppointmentRequest :: OpenAppointment -> TriagedHealthcareRequest
 openAppointmentRequest (OpenAppointment _ req _) = req
-
-closeAppointment :: OpenAppointment -> CloseReason -> ClosedAppointment
-closeAppointment = ClosedAppointment
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- PROTOCOL
