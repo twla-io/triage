@@ -40,30 +40,34 @@ no service or priority yet); `TriagedHealthcareRequest` (embeds
 `triagedAt`); `HealthcareRequest = Submitted HealthcareRequestDetails |
 Triaged TriagedHealthcareRequest`.
 
-**Slot** — `SlotDetails`; `AvailableSlot`; `BookedSlot`; `Slot = Available
-AvailableSlot | Booked BookedSlot`. Two states only — no `Pending` or
-`Offered` — every appointment originates from a `TriagedHealthcareRequest`,
-so a slot either has a match or stays `Available` until one arrives.
+**Slot** — `AvailableSlot`: `id`, `doctorId`, `healthcareServiceId`, `start`,
+`duration`. A slot has no existence independent of matching — available
+until claimed, then fully absorbed into the appointment; there is no
+post-booking slot state, no freeing, and no sealed "proof" wrapper.
 
 **Appointment** — `OpenAppointment` (embeds the full
-`TriagedHealthcareRequest` plus the `BookedSlot` it's bound to — the
-appointment IS the request, now bound to a slot; a `BookedSlot` has no
-legitimate standalone use outside the `OpenAppointment` holding it, so
-access to it is always through the appointment); `AppointmentParty =
-ByDoctor | ByPatient`; `CloseReason = Completed | Cancelled
-AppointmentParty | NoShow AppointmentParty`; `ClosedAppointment` (embeds the
-`OpenAppointment` plus its `CloseReason`); `Appointment = Open
+`TriagedHealthcareRequest` plus the matched `DoctorId`, `UTCTime`, and
+`Duration` copied from the slot at the moment of matching — the appointment
+IS the request, now bound to those hard-copied facts; the original slot is
+no longer referenced or exists once matched); `AppointmentParty = ByDoctor |
+ByPatient`.
+
+**Close reason** — `CloseReason = Completed | Cancelled AppointmentParty
+UTCTime | NoShow AppointmentParty`. `Cancelled`'s `UTCTime` is when the
+cancellation occurred, distinct from the appointment's own scheduled date;
+there's no structural check relating the two — Cancelled vs. NoShow is
+entirely the booking manager's judgment call. `ClosedAppointment` (embeds
+the `OpenAppointment` plus its `CloseReason`); `Appointment = Open
 OpenAppointment | Closed ClosedAppointment`.
 
 ### Sealed vs. open
 
 Constructors are hidden only where there's an invariant to protect:
 
-- `BookedSlot` — construct only via `satisfyHealthcareRequest`.
 - `RoutineDue`'s `RoutineWithin` case — construct only via
   `mkRoutineWithin` (enforces `from <= to`).
 
-Every other type (`HealthcareRequestPriority`, `AvailableSlot`, `Slot`,
+Every other type (`HealthcareRequestPriority`, `AvailableSlot`,
 `TriagedHealthcareRequest`, `OpenAppointment`, `ClosedAppointment`, ...)
 exports its constructors openly — there's no invariant beyond what its own
 field types already enforce.
@@ -79,32 +83,27 @@ satisfyHealthcareRequest
   -> Maybe OpenAppointment
 
 reassignSlot
-  :: OpenAppointment -> AvailableSlot
-  -> Maybe (AvailableSlot, OpenAppointment)
-
-closeAppointment
-  :: OpenAppointment -> CloseReason
-  -> (AvailableSlot, ClosedAppointment)
+  :: OpenAppointment -> AvailableSlot -> Maybe OpenAppointment
 
 checkWaitlist
   :: AvailableSlot -> AppointmentId -> [TriagedHealthcareRequest]
   -> Maybe OpenAppointment
 ```
 
-`checkWaitlist` sorts the waitlist by priority and tries `satisfyHealthcareRequest`
-against each in order, taking the first success — no separate offer/accept
-step. Both return the `OpenAppointment` alone rather than a redundant pair
-with its `BookedSlot`, since the slot is recoverable directly from the
-appointment that embeds it. `reassignSlot` moves an already-open appointment
-to a different slot, re-checking the same structural eligibility against the
-proposed slot — it pulls the appointment's current slot from the
-`OpenAppointment` itself rather than taking a caller-supplied `BookedSlot`,
-so there's no mismatch to guard against. `closeAppointment` always frees its
-slot, unconditionally, regardless of `CloseReason` — including
-`Completed`/`NoShow`, where the freed slot's start is in the past; filtering
-stale slots by start time is a query-layer responsibility, not this
-module's. Like `reassignSlot`, it pulls the slot from the `OpenAppointment`
-rather than taking it separately.
+`checkWaitlist` sorts the waitlist by priority and tries
+`satisfyHealthcareRequest` against each in order, taking the first success —
+no separate offer/accept step. `satisfyHealthcareRequest` returns the
+`OpenAppointment` alone: the matched slot's doctor/time/duration facts are
+copied once into the appointment at the moment of booking, and the original
+slot ceases to be referenced or exist thereafter. `reassignSlot` moves an
+already-open appointment to a different slot, re-checking the same
+structural eligibility against the proposed slot; the old slot/appointment
+facts are simply discarded, not freed or returned — if the vacated time
+should become bookable again, that's a new `AvailableSlot` created
+independently elsewhere, not this function's concern. There is no
+post-close slot recreation logic in this module — closing an appointment is
+direct construction of `ClosedAppointment` (`ClosedAppointment oa reason`),
+no dedicated function.
 
 ### Generating downstream layers
 
