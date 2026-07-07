@@ -36,6 +36,7 @@ module Domain
   , UrgentDue (..)
   , RoutineDue (RoutineAnytime, RoutineNotBefore, RoutineNotAfter)
   , mkRoutineWithin
+  , routineWithinBounds
   , HealthcareRequestPriority (..)
 
   -- ── Healthcare Request ───────────────────────────────────────────────────
@@ -164,6 +165,15 @@ mkRoutineWithin :: UTCTime -> UTCTime -> Maybe RoutineDue
 mkRoutineWithin from to
   | from <= to = Just (RoutineWithin from to)
   | otherwise  = Nothing
+
+-- Read-only extraction over an already-valid value — cannot construct or
+-- fabricate a RoutineWithin, so this does not reopen mkRoutineWithin's
+-- from <= to invariant. Exists so downstream layers (e.g. Persistence) can
+-- encode an in-memory RoutineDue without needing RoutineWithin's
+-- constructor exported.
+routineWithinBounds :: RoutineDue -> Maybe (UTCTime, UTCTime)
+routineWithinBounds (RoutineWithin from to) = Just (from, to)
+routineWithinBounds _                       = Nothing
 
 -- Tighter/earlier constraints rank before looser ones.
 -- RoutineWithin < RoutineNotAfter < RoutineNotBefore < RoutineAnytime

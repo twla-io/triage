@@ -65,7 +65,10 @@ OpenAppointment | Closed ClosedAppointment`.
 Constructors are hidden only where there's an invariant to protect:
 
 - `RoutineDue`'s `RoutineWithin` case — construct only via
-  `mkRoutineWithin` (enforces `from <= to`).
+  `mkRoutineWithin` (enforces `from <= to`); read its bounds back out via
+  `routineWithinBounds` (returns `Nothing` for any other constructor), the
+  read-only accessor a downstream layer needs to encode an already-valid
+  value without the constructor itself being exported.
 
 Every other type (`HealthcareRequestPriority`, `AvailableSlot`,
 `TriagedHealthcareRequest`, `OpenAppointment`, `ClosedAppointment`, ...)

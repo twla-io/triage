@@ -18,9 +18,12 @@ extra-source-files:  README.md
 library
   hs-source-dirs:      src
   exposed-modules:     Domain
+                      , Persistence
   build-depends:
-      base       >=4.14 && <5
+      base               >=4.14 && <5
     , containers
+    , postgresql-simple
+    , resource-pool
     , text
     , time
     , uuid

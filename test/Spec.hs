@@ -39,14 +39,14 @@ genMoment = do
   pure $ addUTCTime (fromIntegral days * 86400) base
   where base = UTCTime (fromGregorian 2026 1 1) 0
 
--- Constructs SlotDetails with a specific serviceId and doctorId — avoids
--- record update syntax on shared field names (DuplicateRecordFields).
-genSlotDetailsFor :: HealthcareServiceId -> DoctorId -> Gen SlotDetails
-genSlotDetailsFor sid did = do
+-- AvailableSlot is the full slot value now (no separate details/wrapper
+-- type since Slot/BookedSlot were folded away) — construct it directly.
+genAvailableSlotFor :: HealthcareServiceId -> DoctorId -> Gen AvailableSlot
+genAvailableSlotFor sid did = do
   newSlotId <- arbitrary
   moment    <- genMoment
   dur       <- arbitrary
-  pure SlotDetails
+  pure AvailableSlot
     { id = newSlotId, doctorId = did
     , healthcareServiceId = sid, start = moment, duration = dur }
 
@@ -74,14 +74,6 @@ genTriagedRequestFor sid = do
   prio       <- genPriority
   triageHealthcareRequest reqDetails sid prio <$> genMoment
 
-genCloseReason :: Gen CloseReason
-genCloseReason =
-  elements
-    [ Completed
-    , Cancelled ByDoctor, Cancelled ByPatient
-    , NoShow    ByDoctor, NoShow    ByPatient
-    ]
-
 -- ═══════════════════════════════════════════════════════════════════════════
 -- TESTS
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -100,94 +92,103 @@ main = hspec $ do
 
   describe "matches" $ do
     prop "requires service to match" $ do
-      sid1        <- arbitrary
-      sid2        <- arbitrary `suchThat` (/= sid1)
-      did         <- arbitrary
-      slotDetails <- genSlotDetailsFor sid1 did
-      req         <- genTriagedRequestFor sid2
-      pure $ not (matches (AvailableSlot slotDetails) req)
+      sid1 <- arbitrary
+      sid2 <- arbitrary `suchThat` (/= sid1)
+      did  <- arbitrary
+      slot <- genAvailableSlotFor sid1 did
+      req  <- genTriagedRequestFor sid2
+      pure $ not (matches slot req)
 
     prop "SpecificDoctor requirement is respected" $ do
       sid         <- arbitrary
       doc1        <- arbitrary
       doc2        <- arbitrary `suchThat` (/= doc1)
-      slotMatch   <- genSlotDetailsFor sid doc1
-      slotNoMatch <- genSlotDetailsFor sid doc2
+      slotMatch   <- genAvailableSlotFor sid doc1
+      slotNoMatch <- genAvailableSlotFor sid doc2
       reqDetails  <- genRequestDetails
       now         <- genMoment
       let req = triageHealthcareRequest
                   reqDetails { doctorRequirement = SpecificDoctor doc1 }
                   sid (Routine RoutineAnytime) now
-      pure $  matches (AvailableSlot slotMatch)   req
-          .&&. not (matches (AvailableSlot slotNoMatch) req)
+      pure $  matches slotMatch req
+          .&&. not (matches slotNoMatch req)
 
     prop "Emergency requires slotStart <= deadline" $ do
-      sid         <- arbitrary
-      did         <- arbitrary
-      slotDetails <- genSlotDetailsFor sid did
-      offset      <- choose (1, 100000 :: Integer)
-      now         <- genMoment
-      reqDetails  <- genRequestDetails
-      let deadline         = addUTCTime (fromIntegral offset) slotDetails.start
-          beforeDeadline   = slotDetails
-          afterDeadline    = slotDetails
+      sid        <- arbitrary
+      did        <- arbitrary
+      slot       <- genAvailableSlotFor sid did
+      offset     <- choose (1, 100000 :: Integer)
+      now        <- genMoment
+      reqDetails <- genRequestDetails
+      let deadline       = addUTCTime (fromIntegral offset) slot.start
+          beforeDeadline = slot
+          afterDeadline  = slot
             { start = addUTCTime (fromIntegral offset + 1) deadline }
-          prio             = Emergency (EmergencyDue deadline)
-          req              = triageHealthcareRequest reqDetails sid prio now
-      pure $  matches (AvailableSlot beforeDeadline) req
-          .&&. not (matches (AvailableSlot afterDeadline) req)
+          prio           = Emergency (EmergencyDue deadline)
+          req            = triageHealthcareRequest reqDetails sid prio now
+      pure $  matches beforeDeadline req
+          .&&. not (matches afterDeadline req)
+
+  describe "satisfyHealthcareRequest" $ do
+    prop "openAppointmentRequest preserves the triaged request" $ do
+      sid  <- arbitrary
+      did  <- arbitrary
+      slot <- genAvailableSlotFor sid did
+      req  <- genTriagedRequestFor sid
+      aid  <- arbitrary
+      pure $ case satisfyHealthcareRequest slot aid req of
+        Just oa -> openAppointmentRequest oa === req
+        Nothing -> property True
+
+    prop "hard-copies the slot's doctor/start/duration into the appointment" $ do
+      sid  <- arbitrary
+      did  <- arbitrary
+      slot <- genAvailableSlotFor sid did
+      req  <- genTriagedRequestFor sid
+      aid  <- arbitrary
+      pure $ case satisfyHealthcareRequest slot aid req of
+        Just (OpenAppointment _ _ doctorId' start' duration') ->
+              doctorId' === slot.doctorId
+          .&&. start'    === slot.start
+          .&&. duration' === slot.duration
+        Nothing -> property True
+
+  describe "reassignSlot" $
+    prop "delegates to satisfyHealthcareRequest against the new slot" $ do
+      sid  <- arbitrary
+      did1 <- arbitrary
+      did2 <- arbitrary
+      slot1 <- genAvailableSlotFor sid did1
+      slot2 <- genAvailableSlotFor sid did2
+      req  <- genTriagedRequestFor sid
+      aid  <- arbitrary
+      pure $ case satisfyHealthcareRequest slot1 aid req of
+        Nothing -> property True
+        Just oa -> reassignSlot oa slot2 === satisfyHealthcareRequest slot2 aid req
 
   describe "checkWaitlist" $ do
     prop "chooses Emergency over Urgent and Routine" $ do
-      sid         <- arbitrary
-      did         <- arbitrary
-      slotDetails <- genSlotDetailsFor sid did
-      now         <- genMoment
-      reqDetails  <- genRequestDetails
-      let slotStart  = slotDetails.start
+      sid        <- arbitrary
+      did        <- arbitrary
+      slot       <- genAvailableSlotFor sid did
+      now        <- genMoment
+      reqDetails <- genRequestDetails
+      let slotStart  = slot.start
           deadline   = addUTCTime 86400 slotStart
           mkReq prio = triageHealthcareRequest reqDetails sid prio now
           emergency  = mkReq (Emergency (EmergencyDue deadline))
           urgent     = mkReq (Urgent    (UrgentDue    deadline))
           routine    = mkReq (Routine   RoutineAnytime)
-          slot       = AvailableSlot slotDetails
       aid <- arbitrary
       pure $ case checkWaitlist slot aid [routine, urgent, emergency] of
-        Just (OpenAppointment _ req _) ->
-          req.priority === Emergency (EmergencyDue deadline)
+        Just oa -> (openAppointmentRequest oa).priority === Emergency (EmergencyDue deadline)
         Nothing -> property False
 
     prop "returns Nothing when no request matches" $ do
-      sid1        <- arbitrary
-      sid2        <- arbitrary `suchThat` (/= sid1)
-      did         <- arbitrary
-      slotDetails <- genSlotDetailsFor sid1 did
-      req         <- genTriagedRequestFor sid2
-      aid         <- arbitrary
-      pure $ checkWaitlist (AvailableSlot slotDetails) aid [req] === Nothing
-
-  describe "satisfyHealthcareRequest" $
-    prop "openAppointmentRequest preserves the triaged request" $ do
-      sid         <- arbitrary
-      did         <- arbitrary
-      slotDetails <- genSlotDetailsFor sid did
-      req         <- genTriagedRequestFor sid
-      aid         <- arbitrary
-      pure $ case satisfyHealthcareRequest (AvailableSlot slotDetails) aid req of
-        Just oa -> openAppointmentRequest oa === req
-        Nothing -> property True
-
-  describe "closeAppointment" $
-    prop "frees the slot with its original SlotDetails and pairs the appointment with the reason" $ do
-      sid         <- arbitrary
-      did         <- arbitrary
-      slotDetails <- genSlotDetailsFor sid did
-      req         <- genTriagedRequestFor sid
-      aid         <- arbitrary
-      closeReason <- genCloseReason
-      pure $ case satisfyHealthcareRequest (AvailableSlot slotDetails) aid req of
-        Nothing -> property True
-        Just oa ->
-          let (freed, closed)        = closeAppointment oa closeReason
-              AvailableSlot freedDetails = freed
-          in freedDetails === slotDetails .&&. closed === ClosedAppointment oa closeReason
+      sid1 <- arbitrary
+      sid2 <- arbitrary `suchThat` (/= sid1)
+      did  <- arbitrary
+      slot <- genAvailableSlotFor sid1 did
+      req  <- genTriagedRequestFor sid2
+      aid  <- arbitrary
+      pure $ checkWaitlist slot aid [req] === Nothing

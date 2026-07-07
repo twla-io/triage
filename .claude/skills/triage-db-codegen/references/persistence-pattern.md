@@ -1,8 +1,8 @@
-# Worked Examples: Row / toDomain / fromDomain
+# Worked Examples: Row / toDomainX / fromDomainX
 
-Four representative cases, not exhaustive coverage of every aggregate — apply the same pattern to whatever isn't shown here. Like `migrations/0001_init.sql`, this is illustrative reference material; the actual `Persistence.hs` should be generated fresh from `Domain.hs`, not copied from this file verbatim.
+Representative cases, not exhaustive coverage of every aggregate. Like `migrations/0001_init.sql`, this is illustrative reference material; the actual `Persistence.hs` should be generated fresh from `Domain.hs`, not copied from this file verbatim — it has already gone stale once (a prior version of this file assumed `Slot`/`BookedSlot` existed as a sum type; they don't anymore).
 
-One error type, shared across every `toDomain` in this file — collecting every failure mode actually used below, per `fail-loudly-on-decode`:
+One error type, shared across every `toDomainX` in this file:
 
 ```haskell
 data DecodeError
@@ -11,19 +11,30 @@ data DecodeError
   | InvalidState Text
   | InvalidCloseReason Text
   | InvalidWithin UTCTime UTCTime
+  | InvalidPriorityShape Text
+  | InvalidTriagedRowShape Text
   deriving (Show, Eq)
 ```
 
+`InvalidPriorityShape`/`InvalidTriagedRowShape` are both defensive, not expected to ever fire — see `fail-loudly-on-decode`'s note on checking things that should already be impossible per a `CHECK` constraint.
+
 ## Case 1 — A simple type: `HealthcareService`
 
-No sum type, no sealed constructor, nothing to reconstruct carefully. The baseline case everything else compares against. Duration now has three values, not two — `decodeDuration`/`encodeDuration` cover all three.
+No sum type, nothing sealed. The baseline everything else compares against.
 
 ```haskell
 data HealthcareServiceRow = HealthcareServiceRow
-  { rowId              :: UUID
-  , rowName            :: Text
-  , rowDurationMinutes :: Int
+  { id              :: UUID
+  , name            :: Text
+  , durationMinutes :: Int
   }
+
+instance FromRow HealthcareServiceRow where
+  fromRow =
+    HealthcareServiceRow
+      <$> field  -- id
+      <*> field  -- name
+      <*> field  -- duration_minutes
 
 decodeDuration :: Int -> Either DecodeError Duration
 decodeDuration 15 = Right QuarterOfAnHour
@@ -36,127 +47,116 @@ encodeDuration QuarterOfAnHour = 15
 encodeDuration HalfAnHour      = 30
 encodeDuration OneHour         = 60
 
-toDomain :: HealthcareServiceRow -> Either DecodeError HealthcareService
-toDomain row = do
-  d <- decodeDuration row.rowDurationMinutes
-  Right HealthcareService
-    { id = HealthcareServiceId row.rowId, name = row.rowName, duration = d }
+toDomainHealthcareService :: HealthcareServiceRow -> Either DecodeError HealthcareService
+toDomainHealthcareService row =
+  (\d -> HealthcareService { id = HealthcareServiceId row.id, name = row.name, duration = d })
+    <$> decodeDuration row.durationMinutes
 
-fromDomain :: HealthcareService -> HealthcareServiceRow
-fromDomain s =
+fromDomainHealthcareService :: HealthcareService -> HealthcareServiceRow
+fromDomainHealthcareService s =
   let HealthcareServiceId u = s.id
-  in HealthcareServiceRow
-       { rowId = u, rowName = s.name, rowDurationMinutes = encodeDuration s.duration }
+  in HealthcareServiceRow { id = u, name = s.name, durationMinutes = encodeDuration s.duration }
 ```
 
-`fromDomain` is total. `toDomain` can fail exactly where `decodeDuration` can, per `fail-loudly-on-decode`.
+`<$>` is used rather than `do`-notation: exactly one fallible sub-computation (`decodeDuration`) feeding pure construction.
 
-## Case 2 — A sum type needing `sealed-type-replay` reconstruction: `Slot`
+## Case 2 — `AvailableSlot`: also simple now, but ephemeral (`deleted-on-match`)
 
-`AvailableSlot` is open and carries no extra state — reconstructing it is trivial, no replay needed:
-
-```haskell
-toDomainAvailable :: SlotDetails -> AvailableSlot
-toDomainAvailable = AvailableSlot  -- constructor is open; nothing to protect
-```
-
-`BookedSlot` is still sealed. Its only producers are `satisfyHealthcareRequest` and `reassignSlot` — but `reassignSlot` now delegates to `satisfyHealthcareRequest` internally rather than gating independently:
-
-```haskell
-reassignSlot
-  :: OpenAppointment
-  -> BookedSlot      -- appointment's current slot; caller's responsibility to pass the correct one, not checked here
-  -> AvailableSlot   -- proposed new slot
-  -> Maybe (AvailableSlot, BookedSlot, OpenAppointment)
-reassignSlot (OpenAppointment aid req _) (BookedSlot oldDetails _) newSlot =
-  (\(bs, oa) -> (AvailableSlot oldDetails, bs, oa)) <$> satisfyHealthcareRequest newSlot aid req
-```
-
-So there is exactly one place `matches` needs verifying, not two — reconstruction has to make that single gate provably succeed, not just avoid reading unused fields (unlike the old skill's `PatientId nil` case, which worked because the relevant function simply never touched that field):
+Before the `Slot` redesign, this case needed `sealed-type-replay` to reconstruct a sealed `BookedSlot`. That entire problem is gone: `AvailableSlot` is the only slot type, open, no invariant to protect. The interesting part of this case isn't decoding — it's that a `slots` row's *lifetime* is what's unusual, not its shape.
 
 ```haskell
 data SlotRow = SlotRow
-  { rowId                  :: UUID
-  , rowDoctorId            :: UUID
-  , rowHealthcareServiceId :: UUID
-  , rowStartTime           :: UTCTime
-  , rowDurationMinutes     :: Int
-  , rowState               :: Text
-  , rowAppointmentId       :: Maybe UUID
+  { id                  :: UUID
+  , doctorId            :: UUID
+  , healthcareServiceId :: UUID
+  , startTime           :: UTCTime
+  , durationMinutes     :: Int
   }
 
--- BookedSlot's constructor (BookedSlot slot appointmentId) never reads
--- `request` at all — only `matches` does, to gate whether
--- satisfyHealthcareRequest fires.
--- healthcareServiceId is real (must equal the slot's own, or matches
--- fails). doctorRequirement = AnyDoctor and priority = Routine
--- RoutineAnytime are the unique constructors that make
--- matchesDoctorRequirement/matchesTime unconditionally True, verified
--- against their current bodies — not assumed. id/patientId/narrative/
--- createdAt/triagedAt are sentinel — discarded either way, since only the
--- BookedSlot half of the result is kept.
---
--- fromJust is safe here specifically because matches is proven, not
--- merely expected, to succeed given this placeholder — this is the one
--- place in generated Persistence code where fromJust is acceptable, and
--- only because of that proof.
-rebuildBookedSlot :: SlotDetails -> AppointmentId -> BookedSlot
-rebuildBookedSlot details aid =
-  fst . fromJust $ satisfyHealthcareRequest (AvailableSlot details) aid placeholderRequest
-  where
-    placeholderRequest = TriagedHealthcareRequest
-      { details  = HealthcareRequestDetails
-          { id = HealthcareRequestId nil, patientId = PatientId nil
-          , narrative = "", doctorRequirement = AnyDoctor
-          , createdAt = posixSecondsToUTCTime 0 }
-      , healthcareServiceId = details.healthcareServiceId
-      , priority  = Routine RoutineAnytime
-      , triagedAt = posixSecondsToUTCTime 0
-      }
+instance FromRow SlotRow where
+  fromRow =
+    SlotRow
+      <$> field  -- id
+      <*> field  -- doctor_id
+      <*> field  -- healthcare_service_id
+      <*> field  -- start_time
+      <*> field  -- duration_minutes
 
--- Shared with HealthcareService's example above — the same Int -> Duration
--- decode, not duplicated per-aggregate.
-decodeSlotDetails :: SlotRow -> Either DecodeError SlotDetails
-decodeSlotDetails row = do
-  d <- decodeDuration row.rowDurationMinutes
-  Right SlotDetails
-    { id                  = SlotId row.rowId
-    , doctorId            = DoctorId row.rowDoctorId
-    , healthcareServiceId = HealthcareServiceId row.rowHealthcareServiceId
-    , start                = row.rowStartTime
-    , duration             = d
-    }
+toDomainSlot :: SlotRow -> Either DecodeError AvailableSlot
+toDomainSlot row =
+  (\d -> AvailableSlot
+    { id                  = SlotId row.id
+    , doctorId            = DoctorId row.doctorId
+    , healthcareServiceId = HealthcareServiceId row.healthcareServiceId
+    , start               = row.startTime
+    , duration            = d
+    })
+  <$> decodeDuration row.durationMinutes
 
-toDomain :: SlotRow -> Either DecodeError Slot
-toDomain row = do
-  d <- decodeSlotDetails row
-  case (row.rowState, row.rowAppointmentId) of
-    ("available", _)        -> Right (Available (toDomainAvailable d))
-    ("booked",    Just aid) -> Right (Booked (rebuildBookedSlot d (AppointmentId aid)))
-    (other,       _)        -> Left (InvalidState other)
-    -- "booked" with no appointment_id can't happen if the CHECK constraint
-    -- holds, but this is total rather than partial: a row that somehow
-    -- violates it surfaces as a decode failure, not a crash.
+fromDomainSlot :: AvailableSlot -> SlotRow
+fromDomainSlot s =
+  let SlotId sid                   = s.id
+      DoctorId did                  = s.doctorId
+      HealthcareServiceId hsid      = s.healthcareServiceId
+  in SlotRow
+       { id = sid, doctorId = did, healthcareServiceId = hsid
+       , startTime = s.start, durationMinutes = encodeDuration s.duration
+       }
+
+fetchSlot :: Connection -> SlotId -> IO (Either DecodeError (Maybe AvailableSlot))
+fetchSlot conn (SlotId sid) = do
+  rows <- query conn
+    "SELECT id, doctor_id, healthcare_service_id, start_time, duration_minutes \
+    \FROM slots WHERE id = ?"
+    (Only sid)
+  pure $ case rows of
+    []        -> Right Nothing
+    (row : _) -> Just <$> toDomainSlot row
+
+insertAvailableSlot :: Connection -> AvailableSlot -> IO ()
+insertAvailableSlot conn slot = do
+  let row = fromDomainSlot slot
+  _ <- execute conn
+    "INSERT INTO slots (id, doctor_id, healthcare_service_id, start_time, duration_minutes) \
+    \VALUES (?, ?, ?, ?, ?)"
+    (row.id, row.doctorId, row.healthcareServiceId, row.startTime, row.durationMinutes)
+  pure ()
+
+-- Not paired with an insert — this row simply stops existing once
+-- matched. Called only from inside the atomic-multi-table-write
+-- transactional functions in Case 4, never on its own; a standalone
+-- deleteSlot with no corresponding appointments write would violate
+-- atomic-multi-table-write.
+deleteSlot :: Connection -> SlotId -> IO ()
+deleteSlot conn (SlotId sid) = do
+  _ <- execute conn "DELETE FROM slots WHERE id = ?" (Only sid)
+  pure ()
 ```
 
-## Case 3 — `HealthcareRequest`: two-stage discriminator plus `nullability-as-discriminator` bijections
+## Case 3 — `HealthcareRequest`: two-stage discriminator plus nullability bijections
 
-Covers both the `submitted`/`triaged` discriminator (`discriminator-column-tables`) and the two nullability-as-discriminator cases from `nullability-as-discriminator`: `DoctorRequirement` (on every row) and `RoutineDue` (only within the `routine` tier).
+Unaffected by the `Slot` redesign — shown here unchanged, since `Appointment` (Case 4) depends on fetching a `TriagedHealthcareRequest` via join.
 
 ```haskell
 data HealthcareRequestRow = HealthcareRequestRow
-  { rowId                  :: UUID
-  , rowPatientId           :: UUID
-  , rowNarrative           :: Text
-  , rowRequiredDoctorId    :: Maybe UUID  -- nullability-as-discriminator: NULL = AnyDoctor
-  , rowCreatedAt           :: UTCTime
-  , rowState               :: Text        -- 'submitted' | 'triaged'
-  , rowHealthcareServiceId :: Maybe UUID
-  , rowTier                :: Maybe Text  -- 'emergency' | 'urgent' | 'routine'
-  , rowDueNotBefore        :: Maybe UTCTime
-  , rowDueNotAfter         :: Maybe UTCTime
-  , rowTriagedAt           :: Maybe UTCTime
+  { id                  :: UUID
+  , patientId           :: UUID
+  , narrative           :: Text
+  , requiredDoctorId    :: Maybe UUID
+  , createdAt           :: UTCTime
+  , state               :: Text
+  , healthcareServiceId :: Maybe UUID
+  , tier                :: Maybe Text
+  , dueNotBefore        :: Maybe UTCTime
+  , dueNotAfter         :: Maybe UTCTime
+  , triagedAt           :: Maybe UTCTime
   }
+
+instance FromRow HealthcareRequestRow where
+  fromRow =
+    HealthcareRequestRow
+      <$> field <*> field <*> field <*> field <*> field
+      <*> field <*> field <*> field <*> field <*> field <*> field
 
 decodeDoctorRequirement :: Maybe UUID -> DoctorRequirement
 decodeDoctorRequirement Nothing  = AnyDoctor
@@ -166,9 +166,6 @@ encodeDoctorRequirement :: DoctorRequirement -> Maybe UUID
 encodeDoctorRequirement AnyDoctor              = Nothing
 encodeDoctorRequirement (SpecificDoctor docId) = let DoctorId u = docId in Just u
 
--- nullability-as-discriminator's bijection, decode direction. Goes through mkRoutineWithin per
--- fail-loudly-on-decode — the same validation protecting in-memory construction has to
--- protect the read-from-storage path too.
 decodeRoutineDue :: Maybe UTCTime -> Maybe UTCTime -> Either DecodeError RoutineDue
 decodeRoutineDue Nothing   Nothing   = Right RoutineAnytime
 decodeRoutineDue (Just lo) Nothing   = Right (RoutineNotBefore lo)
@@ -176,156 +173,260 @@ decodeRoutineDue Nothing   (Just hi) = Right (RoutineNotAfter hi)
 decodeRoutineDue (Just lo) (Just hi) =
   maybe (Left (InvalidWithin lo hi)) Right (mkRoutineWithin lo hi)
 
+-- Emergency/Urgent should be structurally impossible to violate given the
+-- CHECK constraint — checked anyway, per fail-loudly-on-decode.
 decodePriority :: Text -> Maybe UTCTime -> Maybe UTCTime -> Either DecodeError HealthcareRequestPriority
-decodePriority "emergency" _  (Just hi) = Right (Emergency (EmergencyDue hi))
-decodePriority "urgent"    _  (Just hi) = Right (Urgent (UrgentDue hi))
-decodePriority "routine"   lo hi        = Routine <$> decodeRoutineDue lo hi
-decodePriority t           _  _         = Left (InvalidTier t)
+decodePriority "emergency" Nothing  (Just hi) = Right (Emergency (EmergencyDue hi))
+decodePriority "urgent"    Nothing  (Just hi) = Right (Urgent (UrgentDue hi))
+decodePriority "routine"   lo       hi        = Routine <$> decodeRoutineDue lo hi
+decodePriority t           (Just _) _
+  | t == "emergency" || t == "urgent" = Left (InvalidPriorityShape t)
+decodePriority t           _        Nothing
+  | t == "emergency" || t == "urgent" = Left (InvalidPriorityShape t)
+decodePriority t           _        _         = Left (InvalidTier t)
 
+-- NOTE: an earlier version of this file pattern-matched `RoutineWithin lo
+-- hi` directly here. That does not compile — RoutineWithin's constructor
+-- is not exported (see sealed-value-decomposition), so it cannot be
+-- pattern-matched from outside Domain.hs. routineWithinBounds is the
+-- correct, read-only accessor for this — check it first (Just case);
+-- only fall through to the other three constructors if it's Nothing.
 encodePriority :: HealthcareRequestPriority -> (Text, Maybe UTCTime, Maybe UTCTime)
-encodePriority (Emergency (EmergencyDue hi))    = ("emergency", Nothing, Just hi)
-encodePriority (Urgent (UrgentDue hi))          = ("urgent", Nothing, Just hi)
-encodePriority (Routine RoutineAnytime)         = ("routine", Nothing, Nothing)
-encodePriority (Routine (RoutineNotBefore lo))  = ("routine", Just lo, Nothing)
-encodePriority (Routine (RoutineNotAfter hi))   = ("routine", Nothing, Just hi)
-encodePriority (Routine (RoutineWithin lo hi))  = ("routine", Just lo, Just hi)
+encodePriority (Emergency (EmergencyDue hi)) = ("emergency", Nothing, Just hi)
+encodePriority (Urgent (UrgentDue hi))       = ("urgent", Nothing, Just hi)
+encodePriority (Routine due)                 = ("routine", lo, hi)
+  where
+    (lo, hi) = case routineWithinBounds due of
+      Just (from, to) -> (Just from, Just to)
+      Nothing         -> case due of
+        RoutineAnytime        -> (Nothing, Nothing)
+        RoutineNotBefore from -> (Just from, Nothing)
+        RoutineNotAfter  to   -> (Nothing, Just to)
+        _                     -> (Nothing, Nothing)  -- unreachable: routineWithinBounds covers RoutineWithin
 
-toDomain :: HealthcareRequestRow -> Either DecodeError HealthcareRequest
-toDomain row = do
-  let details = HealthcareRequestDetails
-        { id                = HealthcareRequestId row.rowId
-        , patientId         = PatientId row.rowPatientId
-        , narrative         = row.rowNarrative
-        , doctorRequirement = decodeDoctorRequirement row.rowRequiredDoctorId
-        , createdAt         = row.rowCreatedAt
-        }
-  case row.rowState of
-    "submitted" -> Right (Submitted details)
+decodeDetails :: HealthcareRequestRow -> HealthcareRequestDetails
+decodeDetails row = HealthcareRequestDetails
+  { id = HealthcareRequestId row.id, patientId = PatientId row.patientId
+  , narrative = row.narrative, doctorRequirement = decodeDoctorRequirement row.requiredDoctorId
+  , createdAt = row.createdAt
+  }
+
+-- Branches on state — a fetch doesn't know in advance which constructor a
+-- row holds, so the case split belongs here, not pushed onto every caller.
+toDomainHealthcareRequest :: HealthcareRequestRow -> Either DecodeError HealthcareRequest
+toDomainHealthcareRequest row =
+  case row.state of
+    "submitted" -> Right (Submitted (decodeDetails row))
     "triaged"   ->
-      case (row.rowHealthcareServiceId, row.rowTier, row.rowTriagedAt) of
-        (Just svcId, Just tier, Just triagedAt) -> do
-          priority <- decodePriority tier row.rowDueNotBefore row.rowDueNotAfter
-          Right . Triaged $ TriagedHealthcareRequest
-            { details             = details
-            , healthcareServiceId = HealthcareServiceId svcId
-            , priority            = priority
-            , triagedAt           = triagedAt
-            }
-        _ -> Left (InvalidState "triaged row missing required triage columns")
+      case (row.healthcareServiceId, row.tier, row.triagedAt) of
+        (Just svcId, Just tier', Just triagedAt') ->
+          (\p -> Triaged TriagedHealthcareRequest
+            { details = decodeDetails row, healthcareServiceId = HealthcareServiceId svcId
+            , priority = p, triagedAt = triagedAt'
+            })
+          <$> decodePriority tier' row.dueNotBefore row.dueNotAfter
+        _ -> Left (InvalidTriagedRowShape row.state)
     other -> Left (InvalidState other)
 
-fromDomain :: HealthcareRequest -> HealthcareRequestRow
-fromDomain (Submitted d) = HealthcareRequestRow
-  { rowId               = let HealthcareRequestId u = d.id in u
-  , rowPatientId        = let PatientId u = d.patientId in u
-  , rowNarrative        = d.narrative
-  , rowRequiredDoctorId = encodeDoctorRequirement d.doctorRequirement
-  , rowCreatedAt        = d.createdAt
-  , rowState            = "submitted"
-  , rowHealthcareServiceId = Nothing
-  , rowTier                = Nothing
-  , rowDueNotBefore        = Nothing
-  , rowDueNotAfter         = Nothing
-  , rowTriagedAt           = Nothing
-  }
-fromDomain (Triaged t) =
-  let (tier, lo, hi) = encodePriority t.priority
-      HealthcareServiceId svcId = t.healthcareServiceId
-      d = t.details
+-- Split by constructor — the writing caller already knows which one it
+-- holds (unlike the read direction above).
+fromDomainSubmitted :: HealthcareRequestDetails -> HealthcareRequestRow
+fromDomainSubmitted d =
+  let HealthcareRequestId rid = d.id
+      PatientId pid            = d.patientId
   in HealthcareRequestRow
-       { rowId               = let HealthcareRequestId u = d.id in u
-       , rowPatientId        = let PatientId u = d.patientId in u
-       , rowNarrative        = d.narrative
-       , rowRequiredDoctorId = encodeDoctorRequirement d.doctorRequirement
-       , rowCreatedAt        = d.createdAt
-       , rowState            = "triaged"
-       , rowHealthcareServiceId = Just svcId
-       , rowTier                = Just tier
-       , rowDueNotBefore        = lo
-       , rowDueNotAfter         = hi
-       , rowTriagedAt           = Just t.triagedAt
+       { id = rid, patientId = pid, narrative = d.narrative
+       , requiredDoctorId = encodeDoctorRequirement d.doctorRequirement, createdAt = d.createdAt
+       , state = "submitted", healthcareServiceId = Nothing, tier = Nothing
+       , dueNotBefore = Nothing, dueNotAfter = Nothing, triagedAt = Nothing
        }
+
+fromDomainTriaged :: TriagedHealthcareRequest -> HealthcareRequestRow
+fromDomainTriaged t =
+  let d                         = t.details
+      HealthcareRequestId rid   = d.id
+      PatientId pid             = d.patientId
+      HealthcareServiceId svcId = t.healthcareServiceId
+      (tierText, lo, hi)        = encodePriority t.priority
+  in HealthcareRequestRow
+       { id = rid, patientId = pid, narrative = d.narrative
+       , requiredDoctorId = encodeDoctorRequirement d.doctorRequirement, createdAt = d.createdAt
+       , state = "triaged", healthcareServiceId = Just svcId, tier = Just tierText
+       , dueNotBefore = lo, dueNotAfter = hi, triagedAt = Just t.triagedAt
+       }
+
+-- no-delete-on-consumption's anti-join.
+fetchWaitlist :: Connection -> IO (Either DecodeError [TriagedHealthcareRequest])
+fetchWaitlist conn = do
+  rows <- query_ conn
+    "SELECT hr.id, hr.patient_id, hr.narrative, hr.required_doctor_id, hr.created_at, hr.state, \
+    \       hr.healthcare_service_id, hr.tier, hr.due_not_before, hr.due_not_after, hr.triaged_at \
+    \FROM healthcare_requests hr \
+    \LEFT JOIN appointments a ON a.healthcare_request_id = hr.id \
+    \WHERE hr.state = 'triaged' AND a.id IS NULL"
+  pure $ traverse toDomainTriagedOnly rows
+  where
+    toDomainTriagedOnly row = case toDomainHealthcareRequest row of
+      Right (Triaged t)   -> Right t
+      Right (Submitted _) -> Left (InvalidState "submitted row returned by fetchWaitlist's anti-join")
+      Left e              -> Left e
 ```
 
-## Case 4 — No delete-on-consumption, and a plain-join `Appointment`
+## Case 4 — `Appointment`: hard-copied slot facts, no FK, and the atomic match/reassign transactions
 
-Per `no-delete-on-consumption`, `healthcare_requests` rows are never deleted or flagged matched — the waitlist is a derived anti-join. Per `sealed-type-replay`, `OpenAppointment` and `ClosedAppointment` need no replay: both reconstruct from real row/join data directly, since neither has a gating predicate to satisfy at reconstruction time (unlike `BookedSlot` in Case 2).
+This is where the `Slot` redesign changes the most. `appointments` now carries `doctor_id`/`start_time`/`duration_minutes` directly — no `slot_id`, no join back to `slots` at all, since a matched slot's row no longer exists (`deleted-on-match`).
 
 ```haskell
 data AppointmentRow = AppointmentRow
-  { rowId                  :: UUID
-  , rowHealthcareRequestId :: UUID
-  , rowSlotId              :: UUID
-  , rowState               :: Text  -- 'open' | 'closed'
-  , rowCloseReason         :: Maybe Text
-  , rowClosedByParty       :: Maybe Text
+  { id                  :: UUID
+  , healthcareRequestId :: UUID
+  , doctorId            :: UUID
+  , startTime           :: UTCTime
+  , durationMinutes     :: Int
+  , state               :: Text  -- 'open' | 'closed'
+  , closeReason         :: Maybe Text
+  , closedByParty       :: Maybe Text
+  , cancelledAt         :: Maybe UTCTime
   }
+
+instance FromRow AppointmentRow where
+  fromRow =
+    AppointmentRow
+      <$> field <*> field <*> field <*> field <*> field
+      <*> field <*> field <*> field <*> field
 
 decodeParty :: Text -> Either DecodeError AppointmentParty
 decodeParty "doctor"  = Right ByDoctor
 decodeParty "patient" = Right ByPatient
 decodeParty other     = Left (InvalidCloseReason other)
 
-decodeCloseReason :: Maybe Text -> Maybe Text -> Either DecodeError (Maybe CloseReason)
-decodeCloseReason Nothing        _              = Right Nothing
-decodeCloseReason (Just "completed") _          = Right (Just Completed)
-decodeCloseReason (Just "cancelled") (Just p)   = Just . Cancelled <$> decodeParty p
-decodeCloseReason (Just "no_show")   (Just p)   = Just . NoShow    <$> decodeParty p
-decodeCloseReason (Just reason)      _          = Left (InvalidCloseReason reason)
+encodeParty :: AppointmentParty -> Text
+encodeParty ByDoctor  = "doctor"
+encodeParty ByPatient = "patient"
 
--- Takes the already-fetched TriagedHealthcareRequest (via the
--- healthcare_request_id join) rather than re-decoding it here — the
--- caller is responsible for the join, this function just assembles.
-toDomain :: AppointmentRow -> TriagedHealthcareRequest -> Either DecodeError Appointment
-toDomain row req = do
-  let openAppt = OpenAppointment (AppointmentId row.rowId) req (SlotId row.rowSlotId)
-  closeReason <- decodeCloseReason row.rowCloseReason row.rowClosedByParty
-  case (row.rowState, closeReason) of
-    ("open",   Nothing)  -> Right (Open openAppt)
-    ("closed", Just cr)  -> Right (Closed (closeAppointment openAppt cr))
-    (other,    _)        -> Left (InvalidState other)
+-- Cancelled now carries a UTCTime (when the cancellation occurred) — not
+-- validated against the appointment's own date, per Domain.hs's own
+-- comment: a booking manager's judgment call, recorded as given.
+decodeCloseReason :: Maybe Text -> Maybe Text -> Maybe UTCTime -> Either DecodeError (Maybe CloseReason)
+decodeCloseReason Nothing            _        _         = Right Nothing
+decodeCloseReason (Just "completed") _        _         = Right (Just Completed)
+decodeCloseReason (Just "cancelled") (Just p) (Just at) = (\party -> Just (Cancelled party at)) <$> decodeParty p
+decodeCloseReason (Just "no_show")   (Just p) _         = (\party -> Just (NoShow party)) <$> decodeParty p
+decodeCloseReason (Just reason)      _        _         = Left (InvalidCloseReason reason)
 
-fromDomain :: Appointment -> AppointmentRow
-fromDomain (Open (OpenAppointment aid req slotId)) = AppointmentRow
-  { rowId                  = let AppointmentId u = aid in u
-  , rowHealthcareRequestId = let HealthcareRequestId u = req.details.id in u
-  , rowSlotId              = let SlotId u = slotId in u
-  , rowState               = "open"
-  , rowCloseReason         = Nothing
-  , rowClosedByParty       = Nothing
-  }
-fromDomain (Closed closed) =
-  -- ClosedAppointment is sealed but has no invariant beyond "wraps an
-  -- OpenAppointment and a CloseReason" — Domain.hs would need an accessor
-  -- to pull those back out for encoding; assumed to exist as e.g.
-  -- `closedAppointmentParts :: ClosedAppointment -> (OpenAppointment, CloseReason)`.
-  -- Flag to the user if no such accessor exists yet — that's a Domain.hs
-  -- gap, not a Persistence-layer decision to route around.
-  let (openAppt@(OpenAppointment aid req slotId), reason) = closedAppointmentParts closed
-      (reasonText, partyText) = case reason of
-        Completed        -> ("completed", Nothing)
-        Cancelled ByDoctor  -> ("cancelled", Just "doctor")
-        Cancelled ByPatient -> ("cancelled", Just "patient")
-        NoShow ByDoctor     -> ("no_show", Just "doctor")
-        NoShow ByPatient    -> ("no_show", Just "patient")
+encodeCloseReason :: CloseReason -> (Text, Maybe Text, Maybe UTCTime)
+encodeCloseReason Completed            = ("completed", Nothing, Nothing)
+encodeCloseReason (Cancelled party at) = ("cancelled", Just (encodeParty party), Just at)
+encodeCloseReason (NoShow party)       = ("no_show", Just (encodeParty party), Nothing)
+
+-- NOTE: an earlier version of this file defaulted a NULL close_reason on
+-- a 'closed' row to `Completed` silently. That's a fail-loudly-on-decode
+-- violation — a closed row with no reason is exactly the kind of
+-- CHECK-constraint-should-prevent-this-but-verify-anyway case that rule
+-- exists for. Fixed below to surface it as a decode failure instead.
+toDomainAppointment :: AppointmentRow -> TriagedHealthcareRequest -> Either DecodeError Appointment
+toDomainAppointment row req = do
+  duration' <- decodeDuration row.durationMinutes
+  let openAppt = OpenAppointment (AppointmentId row.id) req (DoctorId row.doctorId) row.startTime duration'
+  case row.state of
+    "open" -> Right (Open openAppt)
+    "closed" -> do
+      mReason <- decodeCloseReason row.closeReason row.closedByParty row.cancelledAt
+      case mReason of
+        Just reason -> Right (Closed (ClosedAppointment openAppt reason))
+        Nothing     -> Left (InvalidState "closed appointment row has NULL close_reason")
+    other -> Left (InvalidState other)
+
+-- fromDomainOpen/fromDomainClosed: split by constructor, writing caller
+-- already knows which one it holds (same reasoning as
+-- fromDomainSubmitted/fromDomainTriaged in Case 3).
+fromDomainOpen :: OpenAppointment -> AppointmentRow
+fromDomainOpen (OpenAppointment aid req did startTime' duration') =
+  let AppointmentId appointmentUuid   = aid
+      HealthcareRequestId requestUuid = req.details.id
+      DoctorId doctorUuid             = did
   in AppointmentRow
-       { rowId                  = let AppointmentId u = aid in u
-       , rowHealthcareRequestId = let HealthcareRequestId u = req.details.id in u
-       , rowSlotId              = let SlotId u = slotId in u
-       , rowState               = "closed"
-       , rowCloseReason         = Just reasonText
-       , rowClosedByParty       = partyText
+       { id = appointmentUuid, healthcareRequestId = requestUuid
+       , doctorId = doctorUuid, startTime = startTime'
+       , durationMinutes = encodeDuration duration'
+       , state = "open", closeReason = Nothing, closedByParty = Nothing, cancelledAt = Nothing
        }
 
--- no-delete-on-consumption: the waitlist is derived, not stored. This is the anti-join
--- from SKILL.md's Persistence section, decoded through Case 3's toDomain,
--- filtered down to just the Triaged half (safe: the WHERE clause already
--- restricts to state = 'triaged', so Submitted never appears here — a
--- pattern-match failure on that would indicate the SQL and this function
--- have drifted out of sync).
-fetchWaitlistRows :: <connection> -> IO [HealthcareRequestRow]
-fetchWaitlistRows = {- SELECT ... per SKILL.md's anti-join, left as an
-                        open parameter pending the DB library decision -}
+fromDomainClosed :: ClosedAppointment -> AppointmentRow
+fromDomainClosed (ClosedAppointment openAppt reason) =
+  -- ClosedAppointment is open (no sealed-type-replay needed) — direct
+  -- pattern match, no accessor function required.
+  let baseRow                    = fromDomainOpen openAppt
+      (reasonText, party, cAt)   = encodeCloseReason reason
+  in baseRow { state = "closed", closeReason = Just reasonText, closedByParty = party, cancelledAt = cAt }
+
+fetchAppointment :: Connection -> AppointmentId -> IO (Either DecodeError (Maybe Appointment))
+fetchAppointment conn (AppointmentId aid) = do
+  rows <- query conn
+    "SELECT id, healthcare_request_id, doctor_id, start_time, duration_minutes, \
+    \       state, close_reason, closed_by_party, cancelled_at \
+    \FROM appointments WHERE id = ?"
+    (Only aid)
+  case rows of
+    []        -> pure (Right Nothing)
+    (row : _) -> do
+      reqResult <- fetchHealthcareRequest conn (HealthcareRequestId row.healthcareRequestId)
+      pure (reqResult >>= toDomainAppointmentFromRequest row)
+  where
+    toDomainAppointmentFromRequest _   Nothing =
+      Left (InvalidState "appointments row references missing healthcare_requests row")
+    toDomainAppointmentFromRequest _   (Just (Submitted _)) =
+      Left (InvalidState "appointments row references a submitted (non-triaged) healthcare_requests row")
+    toDomainAppointmentFromRequest row (Just (Triaged req)) =
+      toDomainAppointment row req
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- atomic-multi-table-write: the two operations that must insert/update
+-- appointments AND delete slots together, in one transaction.
+-- Transaction boundary owned internally — the caller passes a Connection
+-- and gets one atomic operation, per SKILL.md's Persistence module
+-- conventions.
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- Mirrors satisfyHealthcareRequest: caller already ran the pure domain
+-- function and holds the resulting OpenAppointment plus the SlotId of
+-- whichever AvailableSlot got consumed to produce it.
+persistMatchedAppointment :: Connection -> SlotId -> OpenAppointment -> IO ()
+persistMatchedAppointment conn (SlotId sid) openAppt =
+  withTransaction conn $ do
+    let row = fromDomainOpen openAppt
+    _ <- execute conn
+      "INSERT INTO appointments \
+      \(id, healthcare_request_id, doctor_id, start_time, duration_minutes, state, close_reason, closed_by_party, cancelled_at) \
+      \VALUES (?, ?, ?, ?, ?, 'open', NULL, NULL, NULL)"
+      (row.id, row.healthcareRequestId, row.doctorId, row.startTime, row.durationMinutes)
+    _ <- execute conn "DELETE FROM slots WHERE id = ?" (Only sid)
+    pure ()
+
+-- Mirrors reassignSlot: same treatment as an initial match — the new
+-- slot is deleted, the existing appointment's doctor/time/duration
+-- columns are updated in place (same row, same id, no new appointments
+-- row). Recreating the OLD vacated time is explicitly NOT this
+-- function's job — see deleted-on-match.
+persistReassignedAppointment :: Connection -> SlotId -> OpenAppointment -> IO ()
+persistReassignedAppointment conn (SlotId newSlotId) openAppt =
+  withTransaction conn $ do
+    let row = fromDomainOpen openAppt
+    _ <- execute conn
+      "UPDATE appointments SET doctor_id = ?, start_time = ?, duration_minutes = ? WHERE id = ?"
+      (row.doctorId, row.startTime, row.durationMinutes, row.id)
+    _ <- execute conn "DELETE FROM slots WHERE id = ?" (Only newSlotId)
+    pure ()
+
+-- Closing has no slot to delete — nothing to make atomic with anything
+-- else, single-table write.
+persistClosedAppointment :: Connection -> ClosedAppointment -> IO ()
+persistClosedAppointment conn closed = do
+  let row = fromDomainClosed closed
+  _ <- execute conn
+    "UPDATE appointments SET state = 'closed', close_reason = ?, closed_by_party = ?, cancelled_at = ? WHERE id = ?"
+    (row.closeReason, row.closedByParty, row.cancelledAt, row.id)
+  pure ()
 ```
 
-`closedAppointmentParts` above is flagged, not assumed silently, per the skill's "when unsure, flag rather than invent" closing rule — check `Domain.hs`'s actual export list for `ClosedAppointment` before relying on it; if no such accessor is exported, that's a real gap to raise, not something to route around with a new raw-state export (which would repeat the exact mistake `sealed-type-replay` exists to prevent).
+Note on `toDomainAppointment` above: `OpenAppointment`'s constructor takes `Duration` as its last argument, so decoding it requires binding (`do`) rather than `<$>`, since the result of `decodeDuration` has to be threaded into a partially-applied constructor rather than mapped over directly — a genuine multiple-fallible-step case, per the `<$>`-vs-`do` convention in `SKILL.md`.
