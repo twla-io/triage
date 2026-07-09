@@ -105,17 +105,39 @@ an earlier domain version.
 **Consequence:** "currently waiting" is a derived query — a triaged request
 with no corresponding `appointments` row (anti-join) — not a stored flag.
 
-## No lineage tracking across re-triage after failed reassignment (2026-07-01)
+## Doctor-originated requests reuse the existing flow unchanged
+
+**Decided:** A doctor scheduling a follow-up (e.g. "come back in 3 months")
+is modeled as an ordinary `HealthcareRequestDetails` + `triageHealthcareRequest`
+call — same flow as a patient-submitted request, with the doctor as both
+the author of `narrative`/`doctorRequirement` and the triager, potentially
+in the same transaction with no observable `Submitted`-only gap.
+
+**Why:** `HealthcareRequestDetails` and `triageHealthcareRequest` never
+required patient self-authorship or an elapsed gap between submission and
+triage — that was an implicit, unvalidated assumption, not something the
+types enforce. No new mechanism is needed.
+
+**Open, not yet decided:** whether doctor-authored vs. patient-authored
+requests need to be distinguishable (for reporting, or because a
+doctor-originated request arguably doesn't need the same triage scrutiny).
+Left alone — no function currently needs this distinction, and CLAUDE.md's
+standard is not to add it speculatively.
+
+## No lineage tracking across re-triage after failed reassignment (corrected)
 
 **Decided:** when a slot reassignment fails, the appointment is closed, and
 the same `HealthcareRequestDetails` is re-triaged, the new
-`TriagedHealthcareRequest` is a plain new row — no FK or other pointer back
-to the original.
+`TriagedHealthcareRequest` reuses the **original** `HealthcareRequestId` —
+`details` is extracted from the closed appointment's embedded request and
+passed to `triageHealthcareRequest` unchanged, so `details.id` is
+preserved. This is an in-place update via `persistTriagedRequest` (same
+row, new priority/triagedAt/service), not a new row.
 
-**Why:** `Domain.hs` itself doesn't track this lineage —
-`triageHealthcareRequest` doesn't thread an old `TriagedHealthcareRequest`
-through — so the schema doesn't invent tracking the domain model doesn't
-have. Revisit only if reporting/audit needs surface a concrete requirement.
+**Why no lineage tracking is needed:** there is nothing to link — it's the
+same record being re-triaged, not two records that need a pointer between
+them. (Superseded: an earlier version of this entry incorrectly stated a
+new `HealthcareRequestId` is minted — that was wrong; corrected here.)
 
 ## Matching is atomic insert-and-delete, not FK sync (2026-07 revision)
 

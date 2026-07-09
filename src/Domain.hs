@@ -3,9 +3,10 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 
 -- For conventions on generating downstream layers from these types, see:
---   triage-db-codegen  — database schema generation
---   triage-api-codegen — REST/GraphQL/RPC API generation
---   triage-ui-codegen  — frontend UI/UX generation
+--   triage-db-codegen      — database schema generation
+--   triage-service-codegen — Service.hs orchestration layer generation
+--   triage-api-codegen     — REST/GraphQL/RPC API generation
+--   triage-ui-codegen      — frontend UI/UX generation
 -- Read the relevant skill before generating any of these from this module.
 
 module Domain

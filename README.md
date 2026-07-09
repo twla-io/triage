@@ -110,11 +110,12 @@ no dedicated function.
 
 ### Generating downstream layers
 
-If you're generating a database schema, an API, or a UI from this domain
-model — whether by hand or with an AI coding agent — read the relevant
-skill under `.claude/skills/` first:
+If you're generating a database schema, a service layer, an API, or a UI
+from this domain model — whether by hand or with an AI coding agent — read
+the relevant skill under `.claude/skills/` first:
 
 - `triage-db-codegen` — database schema and persistence-layer conventions
+- `triage-service-codegen` — Service.hs orchestration-layer conventions
 - `triage-api-codegen` — API conventions
 - `triage-ui-codegen` — UI/UX conventions
 

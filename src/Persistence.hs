@@ -63,7 +63,7 @@ module Persistence
   , MatchPersistOutcome (..)
   , persistMatchedAppointment
   , persistReassignedAppointment
-  , persistClosedAppointment
+  , persistClosedAppointmentIfOpen
   ) where
 
 import Control.Exception                  (Exception, handle, throwIO)
@@ -740,14 +740,25 @@ persistReassignedAppointment conn newlyMatchedSlotId openAppt =
         pure Claimed
 
 -- Closing has no slot to delete — nothing to make atomic with anything
--- else, single-table write.
-persistClosedAppointment :: Connection -> ClosedAppointment -> IO ()
-persistClosedAppointment conn closed = do
+-- else, single-table write. Conditional on state = 'open': two concurrent
+-- closes on the same appointment would otherwise both pass a prior
+-- fetch-and-check and race on this UPDATE, silently overwriting which
+-- reason it closed for (unlike the slot-creation race, this loses
+-- information rather than just a visible duplicate row, so it gets the
+-- same affected-rows treatment as deleteSlot/insertIfUnclaimed rather than
+-- being deferred). Returns ClaimOutcome, not (); AlreadyClaimed means the
+-- appointment was no longer open by the time this write ran — the caller
+-- (Service.closeAppointment) reports this the same way as
+-- AppointmentAlreadyClosed found at the initial fetch, not as a new outcome
+-- category.
+persistClosedAppointmentIfOpen :: Connection -> ClosedAppointment -> IO ClaimOutcome
+persistClosedAppointmentIfOpen conn closed = do
   let row = fromDomainClosed closed
-  _ <- execute conn
-    "UPDATE appointments SET state = 'closed', close_reason = ?, closed_by_party = ?, cancelled_at = ? WHERE id = ?"
+  n <- execute conn
+    "UPDATE appointments SET state = 'closed', close_reason = ?, closed_by_party = ?, cancelled_at = ? \
+    \WHERE id = ? AND state = 'open'"
     (row.closeReason, row.closedByParty, row.cancelledAt, row.id)
-  pure ()
+  pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- ID generation (newDoctorId, newAppointmentId, etc.) has moved to
 -- Service.hs — an orchestration decision (when a new ID is minted), not a

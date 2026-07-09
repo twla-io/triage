@@ -29,9 +29,10 @@ every generated layer.
 `src/Domain.hs` carries this header comment — follow it:
 
 > For conventions on generating downstream layers from these types, see:
-> `triage-db-codegen` (database schema), `triage-api-codegen` (REST/GraphQL/RPC
-> API), `triage-ui-codegen` (frontend). Read the relevant skill before
-> generating any of these from this module.
+> `triage-db-codegen` (database schema), `triage-service-codegen` (Service.hs
+> orchestration layer), `triage-api-codegen` (REST/GraphQL/RPC API),
+> `triage-ui-codegen` (frontend). Read the relevant skill before generating
+> any of these from this module.
 
 ## Workflow discipline (non-negotiable)
 

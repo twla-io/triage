@@ -25,7 +25,7 @@ This skill encodes specific decisions already made for `triage`, not a menu of s
 | `no-delete-on-consumption` | Healthcare requests are never deleted or flagged matched; "waiting" is a derived anti-join |
 | `deleted-on-match` | Slots have no post-match existence; a matched slot's row is deleted, not flagged |
 | `sealed-value-decomposition` | Extracting fields from an already-held sealed value needs a read-only `Domain.hs` accessor — replay doesn't apply |
-| `uniqueness-races-are-outcomes` | A `UNIQUE` constraint enforcing a domain invariant needs affected-rows detection, never a caught exception |
+| `uniqueness-races-are-outcomes` | A write whose success depends on a row's observed shape staying put needs affected-rows detection, never a caught exception |
 
 ## Architecture this skill fits into
 
@@ -166,7 +166,7 @@ LEFT JOIN appointments a ON a.healthcare_request_id = hr.id
 WHERE hr.state = 'triaged' AND a.id IS NULL;
 ```
 
-`appointments.healthcare_request_id` is `UNIQUE`, so this join can never produce more than one `appointments` row per request. A failed `reassignSlot` doesn't free the original request back to this query's result set; it produces an entirely new `healthcare_requests` row via re-triage, with no stored lineage back to the original (deliberate — `Domain.hs` doesn't track that lineage, and the schema doesn't invent it).
+`appointments.healthcare_request_id` is `UNIQUE`, so this join can never produce more than one `appointments` row per request. A failed `reassignSlot` doesn't free the original request back to this query's result set; re-triage reuses the **same** `healthcare_requests` row (`details.id` is preserved from the closed appointment's embedded request, so `persistTriagedRequest` updates the existing row in place — see `docs/decisions.md`'s corrected "No lineage tracking..." entry). There is no lineage to track because there's only ever one row for that request, not two.
 
 This rule is the deliberate mirror image of `deleted-on-match` — the same "does the schema honor what `Domain.hs` actually asserts about a thing's persistence" discipline, applied to two aggregates that turned out to need opposite answers. Don't let the two rules' existence talk you into treating them as interchangeable, or into assuming one implies the other for a third aggregate — check `Domain.hs`'s own wording each time.
 
@@ -183,13 +183,17 @@ Two things this deliberately does **not** do, both real decisions rather than ov
 
 `appointments` additionally enforces `UNIQUE (doctor_id, start_time)` scoped to `state = 'open'` (a partial index) — since nothing at slot-creation time cross-checks against existing open appointments, this is the actual backstop against a double-booking making it all the way to two live appointments for the same doctor at the same time.
 
-## `uniqueness-races-are-outcomes` (new) — Any `UNIQUE` constraint relied on for correctness needs affected-rows detection, never a caught exception
+## `uniqueness-races-are-outcomes` (new) — A write whose success depends on a row's observed shape staying put needs affected-rows detection, never a caught exception
 
 If a `UNIQUE` constraint exists specifically to enforce a domain invariant (not just data hygiene) — e.g. `appointments.healthcare_request_id UNIQUE` enforcing "a request is matched at most once" — the `Persistence.hs` function writing against it must detect a violation via a conditional insert (`INSERT ... WHERE NOT EXISTS (...)`, checking `n > 0`, same pattern as `deleteSlot`), not by letting the database throw and catching/ignoring a `SqlError`. `deleted-on-match`'s `deleteSlot` was the first instance of this pattern; treat it as the template, not a one-off.
 
 When adding a new `UNIQUE` constraint anywhere in the schema, ask explicitly: is this hygiene (duplicate prevention on data that's never concurrently contested) or a race guard (two legitimate concurrent operations could both pass business-logic checks and only collide at the DB)? If the latter, it needs this treatment and a corresponding named outcome in whatever `Service.hs` function writes through it.
 
+The rule isn't limited to constraints literally named `UNIQUE` in the schema — `deleteSlot` (the original instance) guards a row's mere *existence* at delete time, not a `UNIQUE` violation, and `persistClosedAppointmentIfOpen` (below) guards a *state* (`state = 'open'`) rather than either. What all three share, and what actually triggers this rule, is: a write whose success depends on the row still being in the shape the caller last observed it in, where a concurrent writer could have changed that shape in between. Any such write needs the conditional-write-plus-affected-rows-check treatment, whether or not a `UNIQUE` constraint happens to be involved.
+
 **Live case:** `insertIfUnclaimed` in `Persistence.hs` guards `appointments.healthcare_request_id UNIQUE` this way for `persistMatchedAppointment` — two concurrent waitlist-to-slot matches can both pick up the same triaged request (via two different slots' scans) before either commits; the conditional insert's affected-row count, not a caught constraint-violation exception, is what tells `persistMatchedAppointment` which one lost. This also interacts with `atomic-multi-table-write`: because the slot-delete and the request-insert are two independent race checks inside the same operation, losing the *second* one after the *first* already succeeded requires rolling back the first, not just reporting the loss. `persistMatchedAppointment` still uses `withTransaction` for this (not manual `begin`/`commit`/`rollback` — that would give up `withTransaction`'s blanket rollback-on-any-exception safety for the narrower "rolls back only on the paths I explicitly coded" behavior, reintroducing the exact risk `atomic-multi-table-write` exists to prevent). Instead, an internal, unexported exception type (`MatchAbort`) is thrown to unwind out of `withTransaction`'s action and trigger its own rollback, then caught immediately outside it and translated back into the corresponding `MatchPersistOutcome` — the exception never escapes the function, so it doesn't cross a module boundary and doesn't touch this file's "no exceptions for business errors" discipline.
+
+**Second live case:** `persistClosedAppointmentIfOpen` guards a plain state-transition race, no `UNIQUE` constraint involved at all — `Service.closeAppointment` fetches an appointment, confirms it's `Open`, then writes; between the fetch and the write, a concurrent second close on the same row could pass the same fetch-time check and silently overwrite which reason the appointment closed for. The `UPDATE` is conditioned on `state = 'open'` (`WHERE id = ? AND state = 'open'`), and `AlreadyClaimed` (zero rows affected) is reported back as the same `AppointmentAlreadyClosed` the initial fetch would have produced — the caller doesn't need to distinguish "already closed when I checked" from "closed by someone else a moment later." Chosen over the slot-creation race (still deferred, pending practice validation) because this one silently destroys information (which `CloseReason` won) rather than just producing a visible, correctable duplicate row.
 
 ## The Persistence module
 
