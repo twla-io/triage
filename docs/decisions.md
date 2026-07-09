@@ -219,6 +219,53 @@ already-valid value. See `sealed-value-decomposition` in
 replay-through-a-gate-function doesn't apply; a plain read-only accessor
 does.
 
+## Concurrent-match races: affected-rows checks, not caught exceptions; a compound race needs rollback, not just reporting (2026-07-09)
+
+**Decided:** any `Persistence.hs` write guarding a `UNIQUE` constraint that
+enforces a domain invariant (not just data hygiene) detects a lost race via
+the affected-row count on a conditional write (`DELETE ... WHERE id = ?`,
+`INSERT ... WHERE NOT EXISTS (...)`) — never by letting Postgres throw a
+`SqlError` and catching it. See `uniqueness-races-are-outcomes` in
+`triage-db-codegen`'s `SKILL.md` for the general rule; `deleteSlot` was the
+original instance, applied to both `persistMatchedAppointment` and
+`persistReassignedAppointment` (slot-side race only — reassignment doesn't
+write against `healthcare_request_id`, so it needs no second guard).
+
+**Found:** `persistMatchedAppointment` actually guards *two* independent
+races, not one. Beyond the slot-delete race (two concurrent operations
+targeting the same `SlotId`), two concurrent matches can also target the
+same `healthcare_request_id` — two different slots' waitlist scans both
+picking up the same triaged request before either commits, guarded by
+`appointments.healthcare_request_id UNIQUE`. Fixed by adding
+`insertIfUnclaimed`, the same conditional-write pattern applied to the
+request side.
+
+**Found, and corrected before landing:** guarding both races isn't enough
+on its own — if the slot delete succeeds but the request insert then loses
+its race, the slot delete must be rolled back, or that slot vanishes from
+`slots` with no committed appointment to show for it (a phantom loss,
+exactly what `atomic-multi-table-write` exists to prevent). The first fix
+for this used manual `begin`/`commit`/`rollback` to express "commit here,
+roll back there" — but that gives up `withTransaction`'s own guarantee
+(rollback on *any* escaping exception, not just the paths explicitly coded
+for), reintroducing the class of risk `atomic-multi-table-write` exists to
+close, in the course of fixing one instance of it.
+
+**Kept:** `withTransaction` plus an internal, unexported exception type
+(`MatchAbort`, constructors `SlotGone`/`RequestGone`) thrown inside its
+action to trigger rollback, caught immediately outside and translated back
+into `MatchPersistOutcome`. The exception never crosses
+`persistMatchedAppointment`'s own boundary, so it doesn't touch this
+module's "decode failures return `Either`, never throw" discipline — that
+rule is about business-outcome reporting to callers, not about how a
+function undoes its own partial writes internally.
+
+**Why this belongs here, not just in code comments:** a future session
+touching `persistMatchedAppointment` without this reasoning on hand could
+plausibly "simplify" the `withTransaction`/`handle`/`throwIO` combination
+back toward manual transaction control, not realizing that reintroduces the
+exact bug this entry documents.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)

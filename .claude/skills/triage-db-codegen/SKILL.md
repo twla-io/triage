@@ -25,6 +25,7 @@ This skill encodes specific decisions already made for `triage`, not a menu of s
 | `no-delete-on-consumption` | Healthcare requests are never deleted or flagged matched; "waiting" is a derived anti-join |
 | `deleted-on-match` | Slots have no post-match existence; a matched slot's row is deleted, not flagged |
 | `sealed-value-decomposition` | Extracting fields from an already-held sealed value needs a read-only `Domain.hs` accessor — replay doesn't apply |
+| `uniqueness-races-are-outcomes` | A `UNIQUE` constraint enforcing a domain invariant needs affected-rows detection, never a caught exception |
 
 ## Architecture this skill fits into
 
@@ -182,6 +183,14 @@ Two things this deliberately does **not** do, both real decisions rather than ov
 
 `appointments` additionally enforces `UNIQUE (doctor_id, start_time)` scoped to `state = 'open'` (a partial index) — since nothing at slot-creation time cross-checks against existing open appointments, this is the actual backstop against a double-booking making it all the way to two live appointments for the same doctor at the same time.
 
+## `uniqueness-races-are-outcomes` (new) — Any `UNIQUE` constraint relied on for correctness needs affected-rows detection, never a caught exception
+
+If a `UNIQUE` constraint exists specifically to enforce a domain invariant (not just data hygiene) — e.g. `appointments.healthcare_request_id UNIQUE` enforcing "a request is matched at most once" — the `Persistence.hs` function writing against it must detect a violation via a conditional insert (`INSERT ... WHERE NOT EXISTS (...)`, checking `n > 0`, same pattern as `deleteSlot`), not by letting the database throw and catching/ignoring a `SqlError`. `deleted-on-match`'s `deleteSlot` was the first instance of this pattern; treat it as the template, not a one-off.
+
+When adding a new `UNIQUE` constraint anywhere in the schema, ask explicitly: is this hygiene (duplicate prevention on data that's never concurrently contested) or a race guard (two legitimate concurrent operations could both pass business-logic checks and only collide at the DB)? If the latter, it needs this treatment and a corresponding named outcome in whatever `Service.hs` function writes through it.
+
+**Live case:** `insertIfUnclaimed` in `Persistence.hs` guards `appointments.healthcare_request_id UNIQUE` this way for `persistMatchedAppointment` — two concurrent waitlist-to-slot matches can both pick up the same triaged request (via two different slots' scans) before either commits; the conditional insert's affected-row count, not a caught constraint-violation exception, is what tells `persistMatchedAppointment` which one lost. This also interacts with `atomic-multi-table-write`: because the slot-delete and the request-insert are two independent race checks inside the same operation, losing the *second* one after the *first* already succeeded requires rolling back the first, not just reporting the loss. `persistMatchedAppointment` still uses `withTransaction` for this (not manual `begin`/`commit`/`rollback` — that would give up `withTransaction`'s blanket rollback-on-any-exception safety for the narrower "rolls back only on the paths I explicitly coded" behavior, reintroducing the exact risk `atomic-multi-table-write` exists to prevent). Instead, an internal, unexported exception type (`MatchAbort`) is thrown to unwind out of `withTransaction`'s action and trigger its own rollback, then caught immediately outside it and translated back into the corresponding `MatchPersistOutcome` — the exception never escapes the function, so it doesn't cross a module boundary and doesn't touch this file's "no exceptions for business errors" discipline.
+
 ## The Persistence module
 
 All Persistence-layer code lives in a single module, `src/Persistence.hs` (module name `Persistence`) — mirroring `Domain.hs`'s own single-file convention. Do not create one file per aggregate; add new `Row` types and functions to this one file as the domain grows.
@@ -195,7 +204,7 @@ Conventions established for this module, settled across the schema and Persisten
 - **Decode failures return `Either DecodeError X`, never throw.** No exceptions for "this row didn't decode."
 - **Dedicated functions per domain operation, never a generic update dispatching on the value's shape.** E.g. `insertAvailableSlot`/`persistBookedSlot`(historical)/`persistFreedSlot`(historical), or `insertSubmittedRequest`/`persistTriagedRequest` — named to mirror the `Domain.hs` verb that produced the value being persisted, one clear meaning per function, no runtime dispatch a reader has to trace into.
 - **Transaction boundaries live inside the function that needs them, not pushed up to the caller.** A function performing an operation requiring `atomic-multi-table-write` (e.g. persisting a match, a reassignment) calls `withTransaction conn $ do { ... }` internally — the caller passes in a `Connection` and gets one atomic operation; it isn't responsible for remembering to wrap anything itself. This was a deliberate choice: "the business action already defines its transactional scope."
-- **ID generation** (`newAppointmentId`, `newHealthcareRequestId`, etc.) has a **provisional home in this module**, clearly marked as such — these conceptually belong in `Service.hs` (an orchestration decision, not a fetch or a store), but `Service.hs` doesn't exist yet. Move on its creation; do not treat the placement in `Persistence.hs` as settled.
+- **ID generation** (`newAppointmentId`, `newHealthcareRequestId`, etc.) lives in `Service.hs`, not here — minting a new ID is an orchestration decision, not a fetch or a store. `Persistence.hs` only ever receives an already-minted ID as an argument; it never generates one.
 
 For each domain aggregate with its own table(s), generate within `Persistence.hs`:
 

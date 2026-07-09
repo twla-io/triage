@@ -42,6 +42,7 @@ module Persistence
   , fromDomainSlot
   , fetchSlot
   , insertAvailableSlot
+  , ClaimOutcome (..)
 
     -- ── Healthcare Request ───────────────────────────────────────────────
   , HealthcareRequestRow (..)
@@ -59,26 +60,17 @@ module Persistence
   , fromDomainOpen
   , fromDomainClosed
   , fetchAppointment
+  , MatchPersistOutcome (..)
   , persistMatchedAppointment
   , persistReassignedAppointment
   , persistClosedAppointment
-
-    -- ── ID generation (provisional home — conceptually belongs in
-    --    Service.hs, an orchestration decision, but Service.hs doesn't
-    --    exist yet; see SKILL.md's note on this) ───────────────────────────
-  , newDoctorId
-  , newPatientId
-  , newHealthcareServiceId
-  , newHealthcareRequestId
-  , newSlotId
-  , newAppointmentId
   ) where
 
+import Control.Exception                  (Exception, handle, throwIO)
 import Data.Pool                          (Pool)
 import Data.Text                          (Text)
 import Data.Time                          (UTCTime)
 import Data.UUID                          (UUID)
-import Data.UUID.V4                       (nextRandom)
 import Database.PostgreSQL.Simple         (Connection, Only (..), execute, query, query_,
                                             withTransaction)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
@@ -336,14 +328,21 @@ insertAvailableSlot conn slot = do
     (row.id, row.doctorId, row.healthcareServiceId, row.startTime, row.durationMinutes)
   pure ()
 
+-- Reports whether the slot row actually existed to delete. Zero rows
+-- affected means a concurrent operation already claimed this slot first —
+-- a storage-layer fact (row absent at delete time), not a decode problem,
+-- so it's its own result type rather than folded into DecodeError.
+data ClaimOutcome = Claimed | AlreadyClaimed
+  deriving (Show, Eq)
+
 -- Not paired with an insert — this row simply stops existing once matched.
 -- Called only from inside the atomic-multi-table-write transactional
 -- functions below, never on its own; a standalone deleteSlot with no
 -- corresponding appointments write would violate atomic-multi-table-write.
-deleteSlot :: Connection -> SlotId -> IO ()
+deleteSlot :: Connection -> SlotId -> IO ClaimOutcome
 deleteSlot conn (SlotId sid) = do
-  _ <- execute conn "DELETE FROM slots WHERE id = ?" (Only sid)
-  pure ()
+  n <- execute conn "DELETE FROM slots WHERE id = ?" (Only sid)
+  pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- HEALTHCARE REQUEST
@@ -567,7 +566,7 @@ decodeCloseReason :: Maybe Text -> Maybe Text -> Maybe UTCTime -> Either DecodeE
 decodeCloseReason Nothing            _        _         = Right Nothing
 decodeCloseReason (Just "completed") _        _         = Right (Just Completed)
 decodeCloseReason (Just "cancelled") (Just p) (Just at) = (\party -> Just (Cancelled party at)) <$> decodeParty p
-decodeCloseReason (Just "no_show")   (Just p) _         = (Just . NoShow) <$> decodeParty p
+decodeCloseReason (Just "no_show")   (Just p) _         = Just . NoShow <$> decodeParty p
 decodeCloseReason (Just reason)      _        _         = Left (InvalidCloseReason reason)
 
 encodeCloseReason :: CloseReason -> (Text, Maybe Text, Maybe UTCTime)
@@ -643,33 +642,102 @@ fetchAppointment conn (AppointmentId aid) = do
 -- and gets one atomic operation.
 -- ═══════════════════════════════════════════════════════════════════════
 
+-- Guards the request side of an initial match: appointments.healthcare_request_id
+-- is UNIQUE (a request is matched at most once — see migrations/0001_init.sql),
+-- so a plain INSERT could lose a concurrent race to the database and throw a
+-- SqlError. Detected the same way as deleteSlot: a conditional INSERT ...
+-- WHERE NOT EXISTS, affected rows checked directly — never a caught
+-- exception. Not paired with the slot delete's transaction here; called only
+-- from inside persistMatchedAppointment below.
+insertIfUnclaimed :: Connection -> AppointmentRow -> IO ClaimOutcome
+insertIfUnclaimed conn row = do
+  n <- execute conn
+    "INSERT INTO appointments \
+    \(id, healthcare_request_id, doctor_id, start_time, duration_minutes, state, close_reason, closed_by_party, cancelled_at) \
+    \SELECT ?, ?, ?, ?, ?, 'open', NULL, NULL, NULL \
+    \WHERE NOT EXISTS (SELECT 1 FROM appointments WHERE healthcare_request_id = ?)"
+    (row.id, row.healthcareRequestId, row.doctorId, row.startTime, row.durationMinutes, row.healthcareRequestId)
+  pure (if n > 0 then Claimed else AlreadyClaimed)
+
+-- Combines persistMatchedAppointment's two independent race checks (slot
+-- side, request side) into which one, if either, lost. Named distinctly from
+-- ClaimOutcome's Claimed/AlreadyClaimed (which each individual check still
+-- uses) so Service.hs can translate this into its own business-outcome
+-- vocabulary without a constructor-name collision between the two modules.
+data MatchPersistOutcome
+  = MatchPersisted
+  | SlotAlreadyGone
+  | RequestAlreadyMatched
+  deriving (Show, Eq)
+
+-- Internal-only signal used to unwind out of withTransaction's action when
+-- the request-side race is lost after the slot-side one is already won —
+-- never exported, never escapes persistMatchedAppointment. withTransaction
+-- rolls back on ANY exception that escapes its action, not just the ones a
+-- caller explicitly coded for; throwing here and catching just outside it
+-- keeps that blanket exception-safety, unlike manual begin/commit/rollback,
+-- which only rolls back on the specific paths coded for and would silently
+-- leak an open transaction if some other, unanticipated exception fired
+-- first — exactly the class of risk atomic-multi-table-write exists to
+-- prevent.
+data MatchAbort = SlotGone | RequestGone
+  deriving Show
+
+instance Exception MatchAbort
+
 -- Mirrors satisfyHealthcareRequest: caller already ran the pure domain
 -- function and holds the resulting OpenAppointment plus the SlotId of
 -- whichever AvailableSlot got consumed to produce it.
-persistMatchedAppointment :: Connection -> SlotId -> OpenAppointment -> IO ()
+--
+-- Two independent races to guard, not one: the slot side (two concurrent
+-- matches/reassignments targeting the same SlotId) and the request side (two
+-- concurrent matches targeting the same healthcare_request_id — e.g. two
+-- different slots' waitlist scans both picking up the same request before
+-- either commits). Both are detected by affected-rows checks (deleteSlot,
+-- insertIfUnclaimed), never a caught SqlError.
+--
+-- If the slot delete succeeds but the request insert then loses its race,
+-- the slot delete must be rolled back too — that slot was never actually
+-- consumed by a real match, so it must not stay deleted without a committed
+-- appointment to show for it (the same phantom-slot-loss
+-- atomic-multi-table-write exists to prevent). Throwing MatchAbort inside
+-- withTransaction's action triggers exactly that rollback; handle just
+-- outside translates it back into the corresponding MatchPersistOutcome.
+persistMatchedAppointment :: Connection -> SlotId -> OpenAppointment -> IO MatchPersistOutcome
 persistMatchedAppointment conn matchedSlotId openAppt =
-  withTransaction conn $ do
-    let row = fromDomainOpen openAppt
-    _ <- execute conn
-      "INSERT INTO appointments \
-      \(id, healthcare_request_id, doctor_id, start_time, duration_minutes, state, close_reason, closed_by_party, cancelled_at) \
-      \VALUES (?, ?, ?, ?, ?, 'open', NULL, NULL, NULL)"
-      (row.id, row.healthcareRequestId, row.doctorId, row.startTime, row.durationMinutes)
-    deleteSlot conn matchedSlotId
+  handle recoverAbort $ withTransaction conn $ do
+    slotOutcome <- deleteSlot conn matchedSlotId
+    case slotOutcome of
+      AlreadyClaimed -> throwIO SlotGone
+      Claimed -> do
+        let row = fromDomainOpen openAppt
+        requestOutcome <- insertIfUnclaimed conn row
+        case requestOutcome of
+          AlreadyClaimed -> throwIO RequestGone
+          Claimed         -> pure MatchPersisted
+  where
+    recoverAbort :: MatchAbort -> IO MatchPersistOutcome
+    recoverAbort SlotGone    = pure SlotAlreadyGone
+    recoverAbort RequestGone = pure RequestAlreadyMatched
 
 -- Mirrors reassignSlot: same treatment as an initial match — the new slot
--- is deleted, the existing appointment's doctor/time/duration columns are
--- updated in place (same row, same id, no new appointments row).
--- Recreating the OLD vacated time is explicitly NOT this function's job —
--- see deleted-on-match.
-persistReassignedAppointment :: Connection -> SlotId -> OpenAppointment -> IO ()
+-- is deleted first, and the existing appointment's doctor/time/duration
+-- columns are only updated in place (same row, same id, no new
+-- appointments row) if that delete actually claimed a row. Recreating the
+-- OLD vacated time is explicitly NOT this function's job — see
+-- deleted-on-match.
+persistReassignedAppointment :: Connection -> SlotId -> OpenAppointment -> IO ClaimOutcome
 persistReassignedAppointment conn newlyMatchedSlotId openAppt =
   withTransaction conn $ do
-    let row = fromDomainOpen openAppt
-    _ <- execute conn
-      "UPDATE appointments SET doctor_id = ?, start_time = ?, duration_minutes = ? WHERE id = ?"
-      (row.doctorId, row.startTime, row.durationMinutes, row.id)
-    deleteSlot conn newlyMatchedSlotId
+    outcome <- deleteSlot conn newlyMatchedSlotId
+    case outcome of
+      AlreadyClaimed -> pure AlreadyClaimed
+      Claimed -> do
+        let row = fromDomainOpen openAppt
+        _ <- execute conn
+          "UPDATE appointments SET doctor_id = ?, start_time = ?, duration_minutes = ? WHERE id = ?"
+          (row.doctorId, row.startTime, row.durationMinutes, row.id)
+        pure Claimed
 
 -- Closing has no slot to delete — nothing to make atomic with anything
 -- else, single-table write.
@@ -681,26 +749,6 @@ persistClosedAppointment conn closed = do
     (row.closeReason, row.closedByParty, row.cancelledAt, row.id)
   pure ()
 
--- ═══════════════════════════════════════════════════════════════════════
--- ID GENERATION
--- Provisional home per SKILL.md — conceptually an orchestration decision
--- (Service.hs), not a fetch or a store, but Service.hs doesn't exist yet.
--- ═══════════════════════════════════════════════════════════════════════
-
-newDoctorId :: IO DoctorId
-newDoctorId = DoctorId <$> nextRandom
-
-newPatientId :: IO PatientId
-newPatientId = PatientId <$> nextRandom
-
-newHealthcareServiceId :: IO HealthcareServiceId
-newHealthcareServiceId = HealthcareServiceId <$> nextRandom
-
-newHealthcareRequestId :: IO HealthcareRequestId
-newHealthcareRequestId = HealthcareRequestId <$> nextRandom
-
-newSlotId :: IO SlotId
-newSlotId = SlotId <$> nextRandom
-
-newAppointmentId :: IO AppointmentId
-newAppointmentId = AppointmentId <$> nextRandom
+-- ID generation (newDoctorId, newAppointmentId, etc.) has moved to
+-- Service.hs — an orchestration decision (when a new ID is minted), not a
+-- fetch or a store. See Service.hs.
