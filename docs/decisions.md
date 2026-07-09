@@ -22,12 +22,18 @@ misinforms every layer generated from it.
 
 ## Persistence schema: discriminator column over side-tables (2026-06)
 
-**Decided:** Sealed sum types (`Slot`, `HealthcareRequest`) persist as a
-single table with a discriminator column, not one side-table per state.
+**Decided:** Sealed sum types persist as a single table with a discriminator
+column, not one side-table per state. Live cases: `HealthcareRequest`
+(`submitted`/`triaged`), `Appointment` (`open`/`closed`).
 
 **Why:** State transitions are frequent and the state set is small and
 closed. Side-tables would mean cross-table moves on every transition for no
 real query benefit at this scale.
+
+**Note:** `Slot` was originally a third case here (`available`/`booked`).
+It no longer applies — `AvailableSlot` is the only slot type as of the
+`deleted-on-match` redesign (see below); there is nothing left to
+discriminate.
 
 ## Event sourcing: explored, rejected (2026-06)
 
@@ -56,12 +62,15 @@ function is where smart-constructor validation actually happens.
 ## Rescheduling: reassignSlot, not a CloseReason variant (2026-07-01)
 
 **Decided:** Moving an open appointment to a different slot is modeled as
-`reassignSlot` — it frees the old `BookedSlot`, books the new one, and
-updates `OpenAppointment`'s `SlotId`, re-checking the same structural
-eligibility (`matches`) against the proposed slot. The appointment stays
-`Open` throughout.
+`reassignSlot :: OpenAppointment -> AvailableSlot -> Maybe OpenAppointment`
+— it re-checks the same structural eligibility (`matches`) against the
+proposed slot and, on success, produces a new `OpenAppointment` with the
+new slot's doctor/time/duration hard-copied in. The old slot's facts are
+discarded, not freed or returned — there is no slot-level state to
+transition (see `deleted-on-match`). The appointment stays `Open`
+throughout; its `AppointmentId` and embedded request are unchanged.
 
-**Rejected:** the previous representation, `CloseReason`'s `Rescheduled
+**Rejected:** the original representation, `CloseReason`'s `Rescheduled
 AppointmentParty` constructor — closing the appointment to reschedule
 conflated "this appointment is done" with "this appointment moved," losing
 the open appointment's identity across the move.
@@ -108,18 +117,107 @@ to the original.
 through — so the schema doesn't invent tracking the domain model doesn't
 have. Revisit only if reporting/audit needs surface a concrete requirement.
 
-## slots/appointments cross-table consistency: transaction discipline, not a trigger (2026-07-01)
+## Matching is atomic insert-and-delete, not FK sync (2026-07 revision)
 
-**Decided:** `slots.appointment_id` and `appointments.slot_id` are kept
-consistent by transaction discipline in `Persistence.hs` — both rows
-written together in one transaction for `satisfyHealthcareRequest` and
-`reassignSlot` — not by a database trigger. Both FKs are `DEFERRABLE
-INITIALLY DEFERRED` to allow this.
+**Superseded:** the original version of this entry described keeping
+`slots.appointment_id` and `appointments.slot_id` in sync via transaction
+discipline (both `DEFERRABLE INITIALLY DEFERRED`). That FK pair no longer
+exists.
 
-**Why:** per db-codegen's `transactional-cross-table-consistency`, a trigger
-is justified only when nothing else catches a mismatch; here the
-Persistence-layer transaction already does. Rejected adding one "to be
-safe."
+**Decided:** `appointments` doesn't reference `slots` at all — matching
+hard-copies doctor/time/duration into the `appointments` row and deletes
+the matched `slots` row, both within one transaction
+(`atomic-multi-table-write`). No trigger; the atomicity is enforced by the
+Persistence function's own `withTransaction` scope.
+
+**Why:** once `OpenAppointment` stopped referencing a slot by ID (see
+`deleted-on-match`), there was no cross-table pair left to keep in sync —
+the remaining risk is a crash between insert and delete leaving a phantom
+available slot or an appointment whose slot was never actually claimed,
+which the same single-transaction discipline still closes.
+
+## Slot has no existence after being matched (2026-07)
+
+**Decided:** `Slot`, `SlotDetails`, and `BookedSlot` do not exist as types.
+`AvailableSlot` is the only slot representation. Once matched, a slot's
+facts are copied into the resulting `OpenAppointment` and the original
+ceases to be referenced. In the schema, a matched `slots` row is deleted,
+not flagged (`deleted-on-match`).
+
+**Why:** a slot is a pre-declaration mechanism for matching, with no
+domain significance of its own afterward. Keeping a `Booked` slot state
+meant the same facts existed in two places (the slot's own record and the
+appointment it produced) with nothing forcing them to agree — a real bug
+was found this way: a freed `AvailableSlot` returned alongside a
+`ClosedAppointment` that still, internally, asserted the slot was booked.
+
+**Rejected:** keeping `Slot`'s two-state model and referencing it by
+`SlotId` from the appointment side. Rejected because that reference would
+be either permanently dangling (rows deleted on match) or require
+indefinite slot retention purely to keep an unused reference valid.
+
+**Consequence:** if a cancelled/reassigned appointment's original time
+should become bookable again, that's an explicit new `AvailableSlot`
+created by the caller — not an automatic domain-level transition.
+
+## OpenAppointment hard-copies doctor/time/duration, no slot reference (2026-07)
+
+**Decided:**
+
+```haskell
+data OpenAppointment =
+  OpenAppointment AppointmentId TriagedHealthcareRequest DoctorId UTCTime Duration
+```
+
+Exported openly — no invariant to protect.
+
+**Why:** once slots have no post-match existence, there's nothing left to
+reference. The facts that matter are copied at match time — same
+principle as embedding `TriagedHealthcareRequest`.
+
+**Rejected:** an interim `BookedSlot` sealed wrapper, kept briefly as
+"proof the slot passed `matches`." Removed once shown that any external
+caller can already trivially construct a `TriagedHealthcareRequest` that
+passes `matches` against any slot — the wrapper added no real protection,
+same trust boundary as `AppointmentId` freshness elsewhere.
+
+## ClosedAppointment embeds OpenAppointment unchanged; no dedicated close function (2026-07)
+
+**Decided:**
+
+```haskell
+data ClosedAppointment = ClosedAppointment OpenAppointment CloseReason
+```
+
+Exported openly. No `closeAppointment` function — callers construct
+`ClosedAppointment` directly.
+
+**Why:** once `OpenAppointment` no longer asserts any live/mutable state,
+embedding it whole is safe and free — "closing carries its full history."
+`ClosedAppointment` was briefly sealed in an earlier iteration, but the
+function gating it (`closeAppointment = ClosedAppointment`) was an
+unconditional alias with no predicate — sealing added a false signal.
+
+## CloseReason: Rescheduled removed, Cancelled carries a timestamp (2026-07)
+
+**Decided:** `CloseReason = Completed | Cancelled AppointmentParty UTCTime
+| NoShow AppointmentParty`. See "Rescheduling" entry above for why
+`Rescheduled` was removed. The `UTCTime` on `Cancelled` records when the
+cancellation occurred (distinct from the appointment's own date) — not
+validated against the appointment's date structurally; whether something
+is `Cancelled` vs. `NoShow` is the booking manager's judgment call,
+recorded as given.
+
+## RoutineWithin needs a read-only bounds accessor (2026-07)
+
+**Decided:** `routineWithinBounds :: RoutineDue -> Maybe (UTCTime, UTCTime)`
+added to `Domain.hs`, since `RoutineWithin`'s constructor is
+deliberately unexported (protecting `mkRoutineWithin`'s `from <= to`) but
+Persistence still needs to read its bounds back out to encode an
+already-valid value. See `sealed-value-decomposition` in
+`triage-db-codegen` — this is decomposition, not reconstruction, so
+replay-through-a-gate-function doesn't apply; a plain read-only accessor
+does.
 
 ---
 
