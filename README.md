@@ -13,7 +13,7 @@ into the type system, so the file doubles as a specification other layers
 ### Core types
 
 **ID wrappers** — `DoctorId`, `PatientId`, `HealthcareServiceId`,
-`HealthcareRequestId`, `SlotId`, `AppointmentId`: `UUID`-backed identifiers.
+`IntakeRequestId`, `SlotId`: `UUID`-backed identifiers.
 
 **Duration** — `Duration = QuarterOfAnHour | HalfAnHour | OneHour`.
 
@@ -21,7 +21,9 @@ into the type system, so the file doubles as a specification other layers
 minimal pending a future external system.
 
 **Healthcare Service** — `HealthcareService`: `id`, `name`, `duration` (the
-canonical duration copied into each `Slot` at allocation time).
+canonical duration copied into each `Slot` at allocation time). Deliberately
+unrelated to `IntakeRequest`'s naming — this is the service catalog, a
+broader concept than any one request's front-door path.
 
 **Doctor Requirement** — `DoctorRequirement = AnyDoctor | SpecificDoctor
 DoctorId`. Structurally absent from `Emergency`/`Urgent` priority — those
@@ -30,35 +32,37 @@ tiers have no time slack to spend waiting on a specific doctor.
 **Priority / Due constraints** — `EmergencyDue`, `UrgentDue` (each a `UTCTime`
 deadline); `RoutineDue = RoutineAnytime | RoutineNotBefore UTCTime |
 RoutineNotAfter UTCTime | RoutineWithin UTCTime UTCTime`;
-`HealthcareRequestPriority = Emergency EmergencyDue | Urgent UrgentDue |
-Routine RoutineDue`. Priority is assigned by a triager, never self-declared
-by the patient.
+`IntakeRequestPriority = Emergency EmergencyDue | Urgent UrgentDue | Routine
+RoutineDue`. Priority is assigned by a triager, never self-declared by the
+patient.
 
-**Healthcare Request** — `HealthcareRequestDetails` (patient narrative only —
-no service or priority yet); `TriagedHealthcareRequest` (embeds
-`HealthcareRequestDetails` and adds `healthcareServiceId`, `priority`,
-`triagedAt`); `HealthcareRequest = Submitted HealthcareRequestDetails |
-Triaged TriagedHealthcareRequest`.
+**Intake Request** — `IntakeRequest` is the narrow front-door path from a
+patient's raw ask to a single appointment, not a general "appointment"
+aggregate; because the relationship is confirmed 1:1 permanently, there is no
+separate `Appointment` type. One linear embedding chain: `SubmittedIntakeRequest`
+(the base record — `id`, `patientId`, `narrative`, `doctorRequirement`,
+`createdAt`; no separate "Details" type) → `TriagedIntakeRequest` (embeds
+`submitted` and adds `healthcareServiceId`, `priority`, `triagedAt`) →
+`AppointedIntakeRequest` (embeds `triaged` and adds `doctorId`, `start`,
+`duration`). `WithdrawnIntakeRequest = WithdrawnFromSubmitted
+SubmittedIntakeRequest UTCTime (Maybe Text) | WithdrawnFromAccepted
+TriagedIntakeRequest UTCTime (Maybe Text)` — only two cases; ending an
+`Appointed` request is always `Closed` instead. `AppointmentParty = ByDoctor
+| ByPatient`. `CloseReason = Completed | Cancelled AppointmentParty UTCTime
+(Maybe Text) | NoShow AppointmentParty` — `Cancelled`'s `UTCTime` is when the
+cancellation occurred, distinct from the request's own scheduled date, not
+validated against it structurally; the trailing `Maybe Text` is an optional
+administrative note. `IntakeRequest = Submitted SubmittedIntakeRequest |
+Rejected SubmittedIntakeRequest UTCTime Text | Accepted TriagedIntakeRequest
+| Appointed AppointedIntakeRequest | Withdrawn WithdrawnIntakeRequest |
+Closed AppointedIntakeRequest CloseReason` — one sum type, one identity
+(`IntakeRequestId`) throughout; `Rejected`/`Withdrawn`/`Closed` are all
+permanently terminal, no transitions back out of any of them.
 
 **Slot** — `AvailableSlot`: `id`, `doctorId`, `healthcareServiceId`, `start`,
 `duration`. A slot has no existence independent of matching — available
-until claimed, then fully absorbed into the appointment; there is no
+until claimed, then fully absorbed into the appointed request; there is no
 post-booking slot state, no freeing, and no sealed "proof" wrapper.
-
-**Appointment** — `OpenAppointment` (embeds the full
-`TriagedHealthcareRequest` plus the matched `DoctorId`, `UTCTime`, and
-`Duration` copied from the slot at the moment of matching — the appointment
-IS the request, now bound to those hard-copied facts; the original slot is
-no longer referenced or exists once matched); `AppointmentParty = ByDoctor |
-ByPatient`.
-
-**Close reason** — `CloseReason = Completed | Cancelled AppointmentParty
-UTCTime | NoShow AppointmentParty`. `Cancelled`'s `UTCTime` is when the
-cancellation occurred, distinct from the appointment's own scheduled date;
-there's no structural check relating the two — Cancelled vs. NoShow is
-entirely the booking manager's judgment call. `ClosedAppointment` (embeds
-the `OpenAppointment` plus its `CloseReason`); `Appointment = Open
-OpenAppointment | Closed ClosedAppointment`.
 
 ### Sealed vs. open
 
@@ -70,43 +74,43 @@ Constructors are hidden only where there's an invariant to protect:
   read-only accessor a downstream layer needs to encode an already-valid
   value without the constructor itself being exported.
 
-Every other type (`HealthcareRequestPriority`, `AvailableSlot`,
-`TriagedHealthcareRequest`, `OpenAppointment`, `ClosedAppointment`, ...)
-exports its constructors openly — there's no invariant beyond what its own
-field types already enforce.
+Every other type (`IntakeRequestPriority`, `AvailableSlot`,
+`SubmittedIntakeRequest`, `TriagedIntakeRequest`, `AppointedIntakeRequest`,
+`WithdrawnIntakeRequest`, `IntakeRequest`, ...) exports its constructors
+openly — there's no invariant beyond what its own field types already
+enforce.
 
 ### Key functions
 
 ```haskell
 matches
-  :: AvailableSlot -> TriagedHealthcareRequest -> Bool
+  :: AvailableSlot -> TriagedIntakeRequest -> Bool
 
-satisfyHealthcareRequest
-  :: AvailableSlot -> AppointmentId -> TriagedHealthcareRequest
-  -> Maybe OpenAppointment
+reassignIntakeRequestSlot
+  :: AppointedIntakeRequest -> AvailableSlot -> Maybe AppointedIntakeRequest
 
-reassignSlot
-  :: OpenAppointment -> AvailableSlot -> Maybe OpenAppointment
+matchIntakeRequestToSlot
+  :: AvailableSlot -> TriagedIntakeRequest -> Maybe AppointedIntakeRequest
 
-checkWaitlist
-  :: AvailableSlot -> AppointmentId -> [TriagedHealthcareRequest]
-  -> Maybe OpenAppointment
+checkIntakeWaitlist
+  :: AvailableSlot -> [TriagedIntakeRequest] -> Maybe AppointedIntakeRequest
 ```
 
-`checkWaitlist` sorts the waitlist by priority and tries
-`satisfyHealthcareRequest` against each in order, taking the first success —
-no separate offer/accept step. `satisfyHealthcareRequest` returns the
-`OpenAppointment` alone: the matched slot's doctor/time/duration facts are
-copied once into the appointment at the moment of booking, and the original
-slot ceases to be referenced or exist thereafter. `reassignSlot` moves an
-already-open appointment to a different slot, re-checking the same
-structural eligibility against the proposed slot; the old slot/appointment
-facts are simply discarded, not freed or returned — if the vacated time
-should become bookable again, that's a new `AvailableSlot` created
-independently elsewhere, not this function's concern. There is no
-post-close slot recreation logic in this module — closing an appointment is
-direct construction of `ClosedAppointment` (`ClosedAppointment oa reason`),
-no dedicated function.
+`checkIntakeWaitlist` sorts the waitlist by priority and tries
+`matchIntakeRequestToSlot` against each in order, taking the first success —
+no separate offer/accept step. `matchIntakeRequestToSlot` returns the
+`AppointedIntakeRequest` alone: the matched slot's doctor/time/duration facts
+are copied once into the request at the moment of matching, and the original
+slot ceases to be referenced or exist thereafter. `reassignIntakeRequestSlot`
+moves an already-appointed request to a different slot, re-checking the same
+structural eligibility against the proposed slot; the old slot's facts are
+simply discarded, not freed or returned — if the vacated time should become
+bookable again, that's a new `AvailableSlot` created independently elsewhere,
+not this function's concern. On failure, retrying isn't this function's job
+either — the caller closes the current request (`Cancelled`-shaped) and
+submits and accepts a brand new `IntakeRequest`. There is no
+`rejectIntakeRequest` function either — rejection is direct construction
+(`Rejected submitted rejectedAt reason`), no dedicated function.
 
 ### Generating downstream layers
 

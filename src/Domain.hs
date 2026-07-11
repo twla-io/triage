@@ -14,9 +14,8 @@ module Domain
     DoctorId (..)
   , PatientId (..)
   , HealthcareServiceId (..)
-  , HealthcareRequestId (..)
+  , IntakeRequestId (..)
   , SlotId (..)
-  , AppointmentId (..)
 
   -- ── Duration ─────────────────────────────────────────────────────────────
   , Duration (..)
@@ -38,31 +37,27 @@ module Domain
   , RoutineDue (RoutineAnytime, RoutineNotBefore, RoutineNotAfter)
   , mkRoutineWithin
   , routineWithinBounds
-  , HealthcareRequestPriority (..)
+  , IntakeRequestPriority (..)
 
-  -- ── Healthcare Request ───────────────────────────────────────────────────
-  , HealthcareRequestDetails (..)
-  , TriagedHealthcareRequest (..)
-  , HealthcareRequest (..)
-  , triageHealthcareRequest
+  -- ── Intake Request ───────────────────────────────────────────────────────
+  , SubmittedIntakeRequest (..)  -- constructor open — no invariant to protect
+  , TriagedIntakeRequest (..)    -- constructor open — no invariant to protect
+  , AppointedIntakeRequest (..)  -- constructor open — no invariant to protect
+  , WithdrawnIntakeRequest (..)  -- constructor open — no invariant to protect
+  , AppointmentParty (..)
+  , CloseReason (..)
+  , IntakeRequest (..)           -- constructor open — no invariant to protect
+  , acceptIntakeRequest
 
   -- ── Slot ─────────────────────────────────────────────────────────────────
   , AvailableSlot (..)
   , slotEnd
 
-  -- ── Appointment ──────────────────────────────────────────────────────────
-  , OpenAppointment (..)  -- constructor open — no invariant to protect
-  , ClosedAppointment (..)  -- constructor open — no invariant to protect
-  , Appointment (..)
-  , AppointmentParty (..)
-  , CloseReason (..)
-  , openAppointmentRequest
-
   -- ── Protocol ─────────────────────────────────────────────────────────────
-  , satisfyHealthcareRequest
-  , reassignSlot
-  , checkWaitlist
   , matches
+  , reassignIntakeRequestSlot
+  , matchIntakeRequestToSlot
+  , checkIntakeWaitlist
   ) where
 
 import Data.List  (sortOn)
@@ -78,9 +73,8 @@ import Data.UUID  (UUID)
 newtype DoctorId            = DoctorId            UUID deriving (Show, Eq, Ord)
 newtype PatientId           = PatientId           UUID deriving (Show, Eq, Ord)
 newtype HealthcareServiceId = HealthcareServiceId UUID deriving (Show, Eq, Ord)
-newtype HealthcareRequestId = HealthcareRequestId UUID deriving (Show, Eq, Ord)
+newtype IntakeRequestId     = IntakeRequestId      UUID deriving (Show, Eq, Ord)
 newtype SlotId              = SlotId              UUID deriving (Show, Eq, Ord)
-newtype AppointmentId       = AppointmentId       UUID deriving (Show, Eq, Ord)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DURATION
@@ -117,6 +111,8 @@ data Patient = Patient
 -- ═══════════════════════════════════════════════════════════════════════════
 -- HEALTHCARE SERVICE
 -- Defines the canonical duration copied into each Slot at allocation time.
+-- Deliberately unrelated to IntakeRequest's naming — this is the service
+-- catalog, a broader concept than any one request's front-door path.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data HealthcareService = HealthcareService
@@ -146,7 +142,7 @@ data DoctorRequirement
 -- window (or Anytime).
 --
 -- RoutineWithin excluded from exports — use mkRoutineWithin (enforces
--- from <= to, the same structural invariant as the old mkWithin).
+-- from <= to, the only structural invariant in this module).
 -- ═══════════════════════════════════════════════════════════════════════════
 
 newtype EmergencyDue = EmergencyDue UTCTime
@@ -190,14 +186,14 @@ instance Ord RoutineDue where
   compare _                     (RoutineNotBefore _)  = GT
   compare RoutineAnytime        RoutineAnytime         = EQ
 
-data HealthcareRequestPriority
+data IntakeRequestPriority
   = Emergency EmergencyDue
   | Urgent    UrgentDue
   | Routine   RoutineDue
   deriving (Show, Eq)
 
 -- Emergency < Urgent < Routine; within tier, tighter deadline ranks first.
-instance Ord HealthcareRequestPriority where
+instance Ord IntakeRequestPriority where
   compare (Emergency l) (Emergency r) = compare l r
   compare (Emergency _) _             = LT
   compare _             (Emergency _) = GT
@@ -207,19 +203,27 @@ instance Ord HealthcareRequestPriority where
   compare (Routine l)   (Routine r)   = compare l r
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- HEALTHCARE REQUEST
+-- INTAKE REQUEST
 --
--- Submitted: patient describes need via narrative — no service or priority
--- yet; the patient doesn't know those. Triaged: a qualified triager has
--- assigned service and priority. Only Triaged requests can be matched to
--- slots and become appointments.
--- Triage is a trusted human judgment — deadline sanity relative to
--- triagedAt is clinical judgment, not a structural invariant to enforce here
--- (unlike mkRoutineWithin's from <= to, which is incoherent at any scale).
+-- IntakeRequest is the narrow front-door path from a patient's raw ask to a
+-- single appointment — not a general "appointment" aggregate. Because the
+-- request/appointment relationship is confirmed 1:1 permanently, there is no
+-- separate Appointment type: the whole lifecycle (submitted through
+-- closed/withdrawn/rejected) is one sum type under one identity,
+-- IntakeRequestId, carried on SubmittedIntakeRequest and never reassigned.
+--
+-- Each stage embeds the prior stage whole and adds only the fields that
+-- stage itself contributes — no type duplicates a fact another type already
+-- owns. SubmittedIntakeRequest IS the base record; there is no separate
+-- "Details" type underneath it. A prior draft split this into an
+-- IntakeRequestDetails record plus a zero-field newtype wrapper around it —
+-- that split was pure indirection with no invariant and no fan-out (no
+-- sibling type needed the same fields with different extras) and has been
+-- removed. Do not reintroduce it.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data HealthcareRequestDetails = HealthcareRequestDetails
-  { id                :: HealthcareRequestId
+data SubmittedIntakeRequest = SubmittedIntakeRequest
+  { id                :: IntakeRequestId
   , patientId         :: PatientId
   , narrative         :: Text
   , doctorRequirement :: DoctorRequirement
@@ -227,27 +231,83 @@ data HealthcareRequestDetails = HealthcareRequestDetails
   }
   deriving (Show, Eq)
 
-data TriagedHealthcareRequest = TriagedHealthcareRequest
-  { details             :: HealthcareRequestDetails
+data TriagedIntakeRequest = TriagedIntakeRequest
+  { submitted           :: SubmittedIntakeRequest
   , healthcareServiceId :: HealthcareServiceId
-  , priority            :: HealthcareRequestPriority
-  , triagedAt           :: UTCTime
+  , priority             :: IntakeRequestPriority
+  , triagedAt            :: UTCTime
   }
   deriving (Show, Eq)
 
-data HealthcareRequest
-  = Submitted HealthcareRequestDetails
-  | Triaged   TriagedHealthcareRequest
+data AppointedIntakeRequest = AppointedIntakeRequest
+  { triaged  :: TriagedIntakeRequest
+  , doctorId :: DoctorId
+  , start    :: UTCTime
+  , duration :: Duration
+  }
   deriving (Show, Eq)
 
-triageHealthcareRequest
-  :: HealthcareRequestDetails
+-- Only two cases, deliberately. Withdrawal only exists as a concept BEFORE
+-- an appointment exists. There is no WithdrawnFromAppointed — ending an
+-- Appointed request is always Closed (Cancelled ByPatient ...), since that
+-- already asserts the identical fact (same precondition type, same
+-- timestamp, "who ended it" already answered by AppointmentParty). Do not
+-- add a third case here.
+data WithdrawnIntakeRequest
+  = WithdrawnFromSubmitted SubmittedIntakeRequest UTCTime (Maybe Text)
+  | WithdrawnFromAccepted  TriagedIntakeRequest   UTCTime (Maybe Text)
+  deriving (Show, Eq)
+
+-- ByDoctor/ByPatient avoid collision with the real Doctor/Patient entity types.
+data AppointmentParty
+  = ByDoctor
+  | ByPatient
+  deriving (Show, Eq)
+
+-- Stays nested under Closed, deliberately not flattened into top-level
+-- IntakeRequest constructors — "why a closed appointment ended" is an
+-- orthogonal axis to "what lifecycle stage this is," and flattening would
+-- mix those two axes at one level. Do not promote Completed/Cancelled/
+-- NoShow to IntakeRequest constructors.
+--
+-- Cancelled's UTCTime records when the cancellation occurred, distinct from
+-- the appointment's own scheduled date (embedded via AppointedIntakeRequest
+-- below) — not validated against it structurally; whether something is
+-- Cancelled vs. NoShow is entirely the booking manager's judgment call,
+-- recorded as given. The trailing Maybe Text on Cancelled is an optional
+-- free-text reason, same shape as Rejected's/Withdrawn's own free-text notes.
+data CloseReason
+  = Completed
+  | Cancelled AppointmentParty UTCTime (Maybe Text)
+  | NoShow    AppointmentParty
+  deriving (Show, Eq)
+
+-- All of Rejected/Withdrawn/Closed are permanently terminal — no
+-- transitions out of any of them. A displaced or redisplaced patient always
+-- becomes a brand new IntakeRequest (new IntakeRequestId), never a
+-- transition back out of a terminal case. Do not add one.
+data IntakeRequest
+  = Submitted SubmittedIntakeRequest
+  | Rejected  SubmittedIntakeRequest UTCTime Text
+  | Accepted  TriagedIntakeRequest
+  | Appointed AppointedIntakeRequest
+  | Withdrawn WithdrawnIntakeRequest
+  | Closed    AppointedIntakeRequest CloseReason
+  deriving (Show, Eq)
+
+acceptIntakeRequest
+  :: SubmittedIntakeRequest
   -> HealthcareServiceId
-  -> HealthcareRequestPriority
+  -> IntakeRequestPriority
   -> UTCTime
-  -> TriagedHealthcareRequest
-triageHealthcareRequest details healthcareServiceId priority triagedAt =
-  TriagedHealthcareRequest { details, healthcareServiceId, priority, triagedAt }
+  -> TriagedIntakeRequest
+acceptIntakeRequest submitted healthcareServiceId priority triagedAt =
+  TriagedIntakeRequest { submitted, healthcareServiceId, priority, triagedAt }
+
+-- No rejectIntakeRequest function. Rejection is direct construction —
+-- Rejected submitted rejectedAt reason — same precedent as
+-- ClosedAppointment in prior revisions of this file: callers construct
+-- directly, no dedicated close/reject function.
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SLOT
@@ -255,7 +315,7 @@ triageHealthcareRequest details healthcareServiceId priority triagedAt =
 -- claimed, then fully absorbed into the appointment. There is no post-booking
 -- slot state, no freeing, and no sealed "proof" wrapper — matches is business
 -- logic for trusted callers, not a guard against fabrication (an external
--- caller could already trivially construct a passing TriagedHealthcareRequest,
+-- caller could already trivially construct a passing TriagedIntakeRequest,
 -- so a sealed wrapper added no real protection).
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -272,89 +332,25 @@ slotEnd :: AvailableSlot -> UTCTime
 slotEnd s = addUTCTime (durationToNominalDiffTime s.duration) s.start
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- APPOINTMENT
--- OpenAppointment embeds the full TriagedHealthcareRequest — the appointment
--- IS the request, now bound to a slot. No separate patientId/priority fields:
--- one fact in one place, no duplication. It hard-copies the doctor/time/
--- duration facts at the moment of matching rather than referencing a slot of
--- any kind — the original slot ceases to be referenced or exist once matched.
--- ═══════════════════════════════════════════════════════════════════════════
-
-data OpenAppointment =
-  OpenAppointment AppointmentId TriagedHealthcareRequest DoctorId UTCTime Duration
-  deriving (Show, Eq)
-
--- ByDoctor/ByPatient avoid collision with the real Doctor/Patient entity types.
-data AppointmentParty
-  = ByDoctor
-  | ByPatient
-  deriving (Show, Eq)
-
--- ═══════════════════════════════════════════════════════════════════════════
--- CLOSE REASON
--- Cancelled carries when the cancellation occurred, distinct from the
--- appointment's own scheduled date (embedded via OpenAppointment below).
--- There is no structural check relating this timestamp to the appointment's
--- date — whether something is Cancelled vs. NoShow is entirely the booking
--- manager's judgment call, recorded as given, not re-derived or validated.
--- ═══════════════════════════════════════════════════════════════════════════
-
-data CloseReason
-  = Completed
-  | Cancelled AppointmentParty UTCTime  -- when the cancellation occurred; not validated against the appointment's date — the manager's call
-  | NoShow    AppointmentParty
-  deriving (Show, Eq)
-
--- Embeds the OpenAppointment unchanged — closing carries its full history
--- for free, with nothing left to duplicate or go stale, since
--- OpenAppointment no longer asserts any live/mutable state. Constructor
--- open — no invariant to protect. Closing an appointment is direct
--- construction of ClosedAppointment (ClosedAppointment oa reason); there is
--- no dedicated function.
-data ClosedAppointment = ClosedAppointment OpenAppointment CloseReason
-  deriving (Show, Eq)
-
-data Appointment
-  = Open   OpenAppointment
-  | Closed ClosedAppointment
-  deriving (Show, Eq)
-
--- The embedded request is the single source of truth for patient/priority.
-openAppointmentRequest :: OpenAppointment -> TriagedHealthcareRequest
-openAppointmentRequest (OpenAppointment _ req _ _ _) = req
-
--- ═══════════════════════════════════════════════════════════════════════════
 -- PROTOCOL
 --
--- Every appointment originates from a TriagedHealthcareRequest. Requests are
--- tried in priority order (tightest deadline first); the first eligible match
--- commits atomically. No intermediate offer/accept step.
---
--- satisfyHealthcareRequest checks eligibility AND commits. It can be called
--- directly by a manager to bypass the automatic scan while still enforcing
--- structural eligibility (service match, doctor requirement, time window) —
--- those are never overridable, even by a manager. It returns the
--- OpenAppointment alone: the matched slot's doctor/time/duration facts are
--- copied once into the appointment at the moment of booking, and the
--- original slot ceases to be referenced or exist thereafter. checkWaitlist,
--- built on top of it, follows the same shape.
---
--- reassignSlot moves an already-open appointment to a different slot,
--- re-checking the same structural eligibility against the proposed slot. The
--- old slot/appointment facts are simply discarded, not freed or returned; if
--- the vacated time should become bookable again, that's a new AvailableSlot
--- created independently elsewhere, not this function's concern.
---
--- There is no post-close slot recreation logic in Domain.hs — that's always
--- a fresh AvailableSlot, decided by the caller. Closing an appointment is
--- direct construction of ClosedAppointment, no dedicated function.
+-- reassignIntakeRequestSlot moves an already-appointed request to a
+-- different slot, re-checking the same structural eligibility (service
+-- match, doctor requirement, time window) against the proposed slot; on
+-- success the same TriagedIntakeRequest is carried through unchanged, only
+-- doctorId/start/duration are replaced. On failure (matches fails), that is
+-- NOT this function's problem to retry — the correct caller-side response
+-- is: close the current appointment (Cancelled-shaped), then submit and
+-- accept a brand new IntakeRequest. Do not add a composed function for
+-- that — it's just two existing operations called in sequence by the
+-- caller.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 matchesDoctorRequirement :: AvailableSlot -> DoctorRequirement -> Bool
 matchesDoctorRequirement _    AnyDoctor              = True
 matchesDoctorRequirement slot (SpecificDoctor reqId) = slot.doctorId == reqId
 
-matchesTime :: HealthcareRequestPriority -> UTCTime -> Bool
+matchesTime :: IntakeRequestPriority -> UTCTime -> Bool
 matchesTime (Emergency (EmergencyDue deadline))       slotStart = slotStart <= deadline
 matchesTime (Urgent    (UrgentDue    deadline))       slotStart = slotStart <= deadline
 matchesTime (Routine   RoutineAnytime)                _         = True
@@ -363,31 +359,43 @@ matchesTime (Routine   (RoutineNotAfter  latest))     slotStart = slotStart <= l
 matchesTime (Routine   (RoutineWithin earliest latest)) slotStart =
   slotStart >= earliest && slotStart <= latest
 
-matches :: AvailableSlot -> TriagedHealthcareRequest -> Bool
-matches slot TriagedHealthcareRequest { healthcareServiceId, priority, details } =
+matches :: AvailableSlot -> TriagedIntakeRequest -> Bool
+matches slot TriagedIntakeRequest { healthcareServiceId, priority, submitted } =
      slot.healthcareServiceId == healthcareServiceId
-  && matchesDoctorRequirement slot details.doctorRequirement
+  && matchesDoctorRequirement slot submitted.doctorRequirement
   && matchesTime priority slot.start
 
-satisfyHealthcareRequest
-  :: AvailableSlot
-  -> AppointmentId
-  -> TriagedHealthcareRequest
-  -> Maybe OpenAppointment
-satisfyHealthcareRequest slot appointmentId request
-  | matches slot request =
-      Just (OpenAppointment appointmentId request slot.doctorId slot.start slot.duration)
+reassignIntakeRequestSlot
+  :: AppointedIntakeRequest
+  -> AvailableSlot
+  -> Maybe AppointedIntakeRequest
+reassignIntakeRequestSlot appointed newSlot
+  | matches newSlot appointed.triaged =
+      Just AppointedIntakeRequest
+        { triaged  = appointed.triaged
+        , doctorId = newSlot.doctorId
+        , start    = newSlot.start
+        , duration = newSlot.duration
+        }
   | otherwise = Nothing
 
-reassignSlot :: OpenAppointment -> AvailableSlot -> Maybe OpenAppointment
-reassignSlot (OpenAppointment aid req _ _ _) newSlot = satisfyHealthcareRequest newSlot aid req
-
-checkWaitlist
+matchIntakeRequestToSlot
   :: AvailableSlot
-  -> AppointmentId
-  -> [TriagedHealthcareRequest]
-  -> Maybe OpenAppointment
-checkWaitlist slot appointmentId =
-  listToMaybe
-    . mapMaybe (satisfyHealthcareRequest slot appointmentId)
-    . sortOn priority
+  -> TriagedIntakeRequest
+  -> Maybe AppointedIntakeRequest
+matchIntakeRequestToSlot slot triaged
+  | matches slot triaged =
+      Just AppointedIntakeRequest
+        { triaged
+        , doctorId = slot.doctorId
+        , start    = slot.start
+        , duration = slot.duration
+        }
+  | otherwise = Nothing
+
+checkIntakeWaitlist
+  :: AvailableSlot
+  -> [TriagedIntakeRequest]
+  -> Maybe AppointedIntakeRequest
+checkIntakeWaitlist slot =
+  listToMaybe . mapMaybe (matchIntakeRequestToSlot slot) . sortOn priority

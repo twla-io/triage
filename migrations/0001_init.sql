@@ -1,6 +1,8 @@
 -- triage: initial schema
 -- Generated from Domain.hs. See SKILL.md (triage-db-codegen) for the rules
--- this schema follows and the reasoning behind each one.
+-- this schema follows and the reasoning behind each one. This is the
+-- initial schema for the current IntakeRequest-based domain model — no
+-- prior schema has ever been deployed against this database.
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- DOCTORS / PATIENTS
@@ -33,16 +35,17 @@ CREATE TABLE healthcare_services (
 -- SLOTS
 -- deleted-on-match: AvailableSlot is the only slot type. A row here means
 -- exactly one thing — "available, not yet matched" — nothing else. No
--- state column, no appointment reference: once satisfyHealthcareRequest
--- or reassignSlot matches a row, it is DELETED in the same transaction
--- that writes the appointments row (atomic-multi-table-write), not
--- flagged or transitioned. There is no schema-level record of a slot's
--- existence after it's matched — that fact lives only inside the
--- appointments row it became, with no back-reference.
+-- state column, no appointment reference: once matchIntakeRequestToSlot
+-- or reassignIntakeRequestSlot matches a row, it is DELETED in the same
+-- transaction that updates the intake_requests row
+-- (atomic-multi-table-write), not flagged or transitioned. There is no
+-- schema-level record of a slot's existence after it's matched — that
+-- fact lives only inside the intake_requests row it became, with no
+-- back-reference.
 --
--- Recreating a vacated time after a reassignSlot is NOT automatic —
--- that's a separate, explicit call to insert a new row here, by
--- deliberate choice (mirrors Domain.hs's own refusal to decide this).
+-- Recreating a vacated time after a reassignIntakeRequestSlot is NOT
+-- automatic — that's a separate, explicit call to insert a new row here,
+-- by deliberate choice (mirrors Domain.hs's own refusal to decide this).
 -- ═══════════════════════════════════════════════════════════════════════
 
 CREATE TABLE slots (
@@ -54,95 +57,113 @@ CREATE TABLE slots (
 );
 
 -- ═══════════════════════════════════════════════════════════════════════
--- HEALTHCARE REQUESTS
--- Unaffected by the Slot/Appointment redesign — see SKILL.md's
--- discriminator-column-tables, nullability-as-discriminator,
--- ord-ranking-check, and no-delete-on-consumption for the reasoning.
+-- INTAKE REQUESTS
+-- discriminator-column-tables: one table, one state column, six values
+-- (submitted/rejected/accepted/appointed/withdrawn/closed) — mirroring
+-- Domain.hs's IntakeRequest sum type exactly, one identity
+-- (IntakeRequestId) throughout. IntakeRequest folds what would otherwise
+-- be a separate Appointment aggregate into itself, since the two are
+-- permanently 1:1.
+--
+-- No FK to slots at all (deleted-on-match) — appointed_doctor_id/
+-- start_time/duration_minutes are hard-copied directly at matching time,
+-- mirroring exactly what AppointedIntakeRequest itself hard-copies rather
+-- than referencing a slot by id.
+--
+-- healthcare_service_id doubles as the discriminator between
+-- WithdrawnFromSubmitted (NULL — withdrawn before triage) and
+-- WithdrawnFromAccepted (NOT NULL — withdrawn after triage) within
+-- state = 'withdrawn'. Deliberate, not an oversight: no separate
+-- sub-state column, reusing the same nullability-as-discriminator
+-- convention already used elsewhere in this schema (required_doctor_id,
+-- due_not_before/due_not_after).
+--
+-- cancellation_note (nullability-as-discriminator): populated only
+-- optionally alongside close_reason = 'cancelled', mirroring
+-- CloseReason's Cancelled AppointmentParty UTCTime (Maybe Text) — an
+-- optional free-text note, independent of whether closed_by_party/
+-- cancelled_at are set.
 -- ═══════════════════════════════════════════════════════════════════════
 
-CREATE TABLE healthcare_requests (
+CREATE TABLE intake_requests (
   id                     UUID NOT NULL PRIMARY KEY,
   patient_id             UUID NOT NULL REFERENCES patients(id),
   narrative              TEXT NOT NULL,
   required_doctor_id     UUID NULL REFERENCES doctors(id),  -- NULL = AnyDoctor
   created_at             TIMESTAMPTZ NOT NULL,
 
-  state                  TEXT NOT NULL CHECK (state IN ('submitted', 'triaged')),
+  state                  TEXT NOT NULL CHECK (state IN
+    ('submitted', 'rejected', 'accepted', 'appointed', 'withdrawn', 'closed')),
 
-  -- Triage-only columns. All NULL while state = 'submitted'.
+  rejected_at            TIMESTAMPTZ NULL,
+  rejection_reason       TEXT NULL,
+
   healthcare_service_id  UUID NULL REFERENCES healthcare_services(id),
   tier                   TEXT NULL CHECK (tier IN ('emergency', 'urgent', 'routine')),
   due_not_before         TIMESTAMPTZ NULL,
   due_not_after          TIMESTAMPTZ NULL,
   triaged_at             TIMESTAMPTZ NULL,
 
+  appointed_doctor_id    UUID NULL REFERENCES doctors(id),
+  start_time             TIMESTAMPTZ NULL,
+  duration_minutes       SMALLINT NULL CHECK (duration_minutes IN (15, 30, 60)),
+
+  withdrawn_at           TIMESTAMPTZ NULL,
+  withdrawal_note        TEXT NULL,
+
+  close_reason           TEXT NULL CHECK (close_reason IN ('completed', 'cancelled', 'no_show')),
+  closed_by_party        TEXT NULL CHECK (closed_by_party IN ('doctor', 'patient')),
+  cancelled_at           TIMESTAMPTZ NULL,
+  cancellation_note      TEXT NULL,
+
   CHECK (
-    (state = 'submitted' AND healthcare_service_id IS NULL AND tier IS NULL
-       AND due_not_before IS NULL AND due_not_after IS NULL AND triaged_at IS NULL)
+    (state = 'submitted' AND
+       rejected_at IS NULL AND healthcare_service_id IS NULL AND
+       appointed_doctor_id IS NULL AND withdrawn_at IS NULL AND close_reason IS NULL)
     OR
-    (state = 'triaged' AND healthcare_service_id IS NOT NULL AND tier IS NOT NULL
-       AND triaged_at IS NOT NULL)
+    (state = 'rejected' AND
+       rejected_at IS NOT NULL AND rejection_reason IS NOT NULL AND
+       healthcare_service_id IS NULL AND appointed_doctor_id IS NULL AND
+       withdrawn_at IS NULL AND close_reason IS NULL)
+    OR
+    (state = 'accepted' AND
+       healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
+       rejected_at IS NULL AND appointed_doctor_id IS NULL AND
+       withdrawn_at IS NULL AND close_reason IS NULL)
+    OR
+    (state = 'appointed' AND
+       healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
+       appointed_doctor_id IS NOT NULL AND start_time IS NOT NULL AND duration_minutes IS NOT NULL AND
+       rejected_at IS NULL AND withdrawn_at IS NULL AND close_reason IS NULL)
+    OR
+    (state = 'withdrawn' AND
+       withdrawn_at IS NOT NULL AND
+       rejected_at IS NULL AND appointed_doctor_id IS NULL AND close_reason IS NULL)
+    OR
+    (state = 'closed' AND
+       healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
+       appointed_doctor_id IS NOT NULL AND start_time IS NOT NULL AND duration_minutes IS NOT NULL AND
+       close_reason IS NOT NULL AND
+       rejected_at IS NULL AND withdrawn_at IS NULL)
   ),
 
   -- Emergency/Urgent: exactly one deadline (due_not_after), never a window.
   CHECK (
     tier IS NULL OR tier = 'routine' OR
     (due_not_before IS NULL AND due_not_after IS NOT NULL)
-  )
-);
-
--- ═══════════════════════════════════════════════════════════════════════
--- APPOINTMENTS
--- discriminator-column-tables: one table, discriminator column
--- (open/closed).
---
--- No FK to slots at all (deleted-on-match) — doctor_id/start_time/
--- duration_minutes are hard-copied directly at matching time, mirroring
--- exactly what OpenAppointment itself hard-copies rather than
--- referencing a slot by id. A matched slot's row is gone by the time
--- this row exists; there is nothing left to join back to.
---
--- healthcare_request_id is UNIQUE: a given triaged request is consumed by
--- at most one appointment, ever (no-delete-on-consumption).
---
--- (doctor_id, start_time) is UNIQUE among OPEN appointments only (partial
--- index) — the actual backstop against two live appointments for the
--- same doctor at the same time, since nothing at slot-creation time
--- cross-checks against existing appointments.
---
--- cancelled_at (nullability-as-discriminator): populated only when
--- close_reason = 'cancelled', mirroring CloseReason's
--- Cancelled AppointmentParty UTCTime — the timestamp of when the
--- cancellation occurred, not validated against start_time (a booking
--- manager's judgment call, recorded as given).
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE TABLE appointments (
-  id                     UUID NOT NULL PRIMARY KEY,
-  healthcare_request_id  UUID NOT NULL UNIQUE REFERENCES healthcare_requests(id),
-
-  -- Hard-copied slot facts — no FK, no join, per deleted-on-match.
-  doctor_id              UUID NOT NULL REFERENCES doctors(id),
-  start_time             TIMESTAMPTZ NOT NULL,
-  duration_minutes       SMALLINT NOT NULL CHECK (duration_minutes IN (15, 30, 60)),
-
-  state                  TEXT NOT NULL CHECK (state IN ('open', 'closed')),
-
-  -- Close-reason columns. NULL while state = 'open'.
-  close_reason           TEXT NULL CHECK (close_reason IN ('completed', 'cancelled', 'no_show')),
-  closed_by_party        TEXT NULL CHECK (closed_by_party IN ('doctor', 'patient')),
-  cancelled_at           TIMESTAMPTZ NULL,
+  ),
 
   CHECK (
-    (state = 'open'   AND close_reason IS NULL AND closed_by_party IS NULL AND cancelled_at IS NULL) OR
-    (state = 'closed' AND close_reason = 'completed' AND closed_by_party IS NULL AND cancelled_at IS NULL) OR
-    (state = 'closed' AND close_reason = 'cancelled' AND closed_by_party IS NOT NULL AND cancelled_at IS NOT NULL) OR
-    (state = 'closed' AND close_reason = 'no_show'   AND closed_by_party IS NOT NULL AND cancelled_at IS NULL)
+    close_reason IS NULL OR
+    (close_reason = 'completed' AND closed_by_party IS NULL AND cancelled_at IS NULL) OR
+    (close_reason = 'cancelled' AND closed_by_party IS NOT NULL AND cancelled_at IS NOT NULL) OR
+    (close_reason = 'no_show'   AND closed_by_party IS NOT NULL AND cancelled_at IS NULL)
   )
 );
 
 -- Backstop against two live appointments for the same doctor at the same
--- time — see comment above.
-CREATE UNIQUE INDEX appointments_doctor_start_open_key
-  ON appointments (doctor_id, start_time)
-  WHERE state = 'open';
+-- time — the actual guard, since nothing at slot-creation time
+-- cross-checks against existing appointed rows.
+CREATE UNIQUE INDEX intake_requests_doctor_start_appointed_key
+  ON intake_requests (appointed_doctor_id, start_time)
+  WHERE state = 'appointed';
