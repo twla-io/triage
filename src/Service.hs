@@ -49,6 +49,8 @@ module Service
   , SlotCreationOutcome (..)
 
     -- ── Operations ───────────────────────────────────────────────────────
+  , createDoctor
+  , createPatient
   , createAvailableSlot
   , submitIntakeRequest
   , acceptSubmittedIntakeRequest
@@ -77,12 +79,14 @@ import Domain
   ( AppointedIntakeRequest
   , AvailableSlot (..)
   , CloseReason
+  , Doctor (..)
   , DoctorId (..)
   , DoctorRequirement
   , HealthcareServiceId (..)
   , IntakeRequest (..)
   , IntakeRequestId (..)
   , IntakeRequestPriority
+  , Patient (..)
   , PatientId (..)
   , SlotId (..)
   , SubmittedIntakeRequest (..)
@@ -100,6 +104,8 @@ import Persistence
   , fetchIntakeRequest
   , fetchIntakeWaitlist
   , insertAvailableSlot
+  , insertDoctor
+  , insertPatient
   , insertSubmittedIntakeRequest
   , persistClosedIntakeRequestIfAppointed
   , persistMatchedIntakeRequest
@@ -222,6 +228,33 @@ createAvailableSlot pool slot = withResource pool $ \conn -> do
   pure $ case result of
     Right () -> SlotCreated slot
     Left _   -> SlotConflict
+
+-- Creates a new Doctor. Doctor is an open record with no invariant beyond
+-- its field types (id-types-plain, minimal-types-minimal-tables) —
+-- nothing here can fail beyond an infra error, which nothing else in this
+-- module represents either, so this returns a bare IO, no Either. Named
+-- createDoctor, not registerDoctor — "register" implies a meaningful
+-- enrollment process, but per CLAUDE.md, Doctor is deliberately minimal
+-- and expected to move to a separate system later; "create" doesn't
+-- overclaim significance for what's just making a row exist, and leaves
+-- "register" free for a future, real registration workflow if this type
+-- ever grows one.
+createDoctor :: ConnectionPool -> Text -> IO Doctor
+createDoctor pool name = withResource pool $ \conn -> do
+  doctorId <- newDoctorId
+  let doctor = Doctor { id = doctorId, name }
+  insertDoctor conn doctor
+  pure doctor
+
+-- Creates a new Patient. Same reasoning as createDoctor above, applied to
+-- Patient — open record, no invariant, bare IO, "create" over "register"
+-- for the identical CLAUDE.md reason.
+createPatient :: ConnectionPool -> Text -> IO Patient
+createPatient pool name = withResource pool $ \conn -> do
+  patientId <- newPatientId
+  let patient = Patient { id = patientId, name }
+  insertPatient conn patient
+  pure patient
 
 -- Creates a new Submitted request. SubmittedIntakeRequest is an open
 -- record with no invariant beyond its field types (id-types-plain,
