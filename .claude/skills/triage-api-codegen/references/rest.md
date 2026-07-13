@@ -1,8 +1,10 @@
 # API Strategy: REST
 
-`Service.hs`'s 11 current operations map almost directly into route design — every one of them mutates (see `commands-vs-queries-naming` in `SKILL.md`), so every one becomes a `POST` or `PATCH`. There are currently no `GET`-worthy reads exposed at the `Service.hs` layer to map here at all.
+`Service.hs`'s 11 mutating operations map almost directly into route design — every one of them mutates, so every one becomes a `POST` or `PATCH`. Its 11 read functions (see `commands-vs-queries-naming` in `SKILL.md`) map just as directly to `GET` routes, one per `fetch*` function.
 
 ## Mapping
+
+### Commands (mutations)
 
 | `Service.hs` function | HTTP | Route (example) |
 |---|---|---|
@@ -24,6 +26,26 @@ Per `checkwaitlist-not-an-endpoint` (`SKILL.md`), `matchWaitlistToSlot` does **n
 POST /slots → createAvailableSlot → matchWaitlistToSlot → response reflects the resulting
                                                             SlotCreationOutcome/MatchOutcome
 ```
+
+### Reads (queries)
+
+Route naming mirrors each function's own name, per `commands-vs-queries-naming` (`SKILL.md`): singular `fetch<Noun>` takes an ID path parameter, plural `fetch<Noun>s` lists. Range/filter parameters (`UTCTime` bounds, optional `DoctorId`/`HealthcareServiceId`) are query parameters, not path segments, since none of them identify a single resource.
+
+| `Service.hs` function | HTTP | Route (example) |
+|---|---|---|
+| `fetchDoctor :: ConnectionPool -> DoctorId -> IO (Maybe Doctor)` | `GET` | `/doctors/:id` |
+| `fetchPatient :: ConnectionPool -> PatientId -> IO (Maybe Patient)` | `GET` | `/patients/:id` |
+| `fetchHealthcareService :: ConnectionPool -> HealthcareServiceId -> IO (Either DecodeError (Maybe HealthcareService))` | `GET` | `/healthcare-services/:id` |
+| `fetchDoctors :: ConnectionPool -> IO [Doctor]` | `GET` | `/doctors` |
+| `fetchPatients :: ConnectionPool -> IO [Patient]` | `GET` | `/patients` |
+| `fetchHealthcareServices :: ConnectionPool -> IO (Either DecodeError [HealthcareService])` | `GET` | `/healthcare-services` |
+| `fetchAvailableSlots :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId -> Maybe HealthcareServiceId -> IO (Either DecodeError [AvailableSlot])` | `GET` | `/slots?start=...&end=...&doctorId=...&healthcareServiceId=...` |
+| `fetchIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either DecodeError (Maybe IntakeRequest))` | `GET` | `/intake-requests/:id` (example) |
+| `fetchIntakeWaitlist :: ConnectionPool -> IO (Either DecodeError [TriagedIntakeRequest])` | `GET` | `/intake-requests/waitlist` (example) |
+| `fetchAppointedIntakeRequests :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId -> IO (Either DecodeError [AppointedIntakeRequest])` | `GET` | `/intake-requests/appointed?start=...&end=...&doctorId=...` |
+| `fetchCalendarView :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId -> IO (Either DecodeError [CalendarEntry])` | `GET` | `/calendar?start=...&end=...&doctorId=...` |
+
+`CalendarEntry`'s two constructors (`Slot AvailableSlot` / `Appointment AppointedIntakeRequest`) need a wire shape before `/calendar`'s response body can be written — not decided here, same status as the six-state `IntakeRequest` shape below.
 
 ## Request/response shapes
 

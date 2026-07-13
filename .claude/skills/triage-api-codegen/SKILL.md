@@ -13,7 +13,7 @@ description: Conventions for generating a REST, GraphQL, or RPC API from triage'
 
 | Name | One-line summary |
 |---|---|
-| `commands-vs-queries-naming` | Open question — `Service.hs` currently exports zero pure reads, so there's nothing to derive a naming convention from yet |
+| `commands-vs-queries-naming` | Settled — reads are `fetch`-prefixed, name-identical to their `Persistence.hs` counterparts; every `Persistence.hs` read now has a `Service.hs` wrapper, no exceptions remaining |
 | `checkwaitlist-not-an-endpoint` | `checkIntakeWaitlist` never gets its own route — it's the body of whatever handler responds to a slot becoming available |
 | `opaque-uuid-ids` | IDs are plain UUID strings on the wire, never wrapped — generic convention, retained but not re-verified |
 | `error-vs-outcome-mapping` | `ServiceError` and the outcome types (`MatchOutcome`, `SlotCreationOutcome`) must map to two different response shapes — which shapes, not yet decided |
@@ -33,13 +33,17 @@ API           — routes/resolvers/RPC handlers over Service.hs (this skill)
 
 `Domain.hs` has no serialization of any kind — no `ToJSON`/`FromJSON`, no `Generic` deriving for that purpose — and nothing generated from this skill should assume otherwise or reintroduce that coupling.
 
-## `commands-vs-queries-naming` — Open question, not a decision to make now
+## `commands-vs-queries-naming` — Settled: reads are `fetch`-prefixed, name-identical to Persistence.hs
 
-An earlier version of this rule claimed the Command/Query split was mechanically derivable from `Domain.hs`'s export list, which used to group functions under `-- Commands` and `-- Queries` section comments. **That grouping no longer exists.** The current export list groups by domain concept instead (`ID wrappers`, `Priority / Due constraints`, `Intake Request`, `Slot`, `Protocol`, ...) — there is nothing left to mechanically derive a Command/Query naming convention from.
+An earlier version of this rule claimed the Command/Query split was mechanically derivable from `Domain.hs`'s export list, which used to group functions under `-- Commands` and `-- Queries` section comments. **That grouping no longer exists.** The current export list groups by domain concept instead (`ID wrappers`, `Priority / Due constraints`, `Intake Request`, `Slot`, `Protocol`, ...) — there is nothing left to mechanically derive a Command/Query naming convention from that way.
 
-More fundamentally: **`Service.hs` currently exports zero pure reads.** All 11 of its current operations (`createDoctor`, `createPatient`, `createHealthcareService`, `createAvailableSlot`, `submitIntakeRequest`, `acceptSubmittedIntakeRequest`, `rejectSubmittedIntakeRequest`, `matchWaitlistToSlot`, `matchAcceptedIntakeRequestToSlot`, `reclaimAppointedIntakeRequest`, `closeAppointedIntakeRequest`) mutate — verified against `Service.hs`'s actual export list and each function's body. The two read functions that exist at all (`fetchIntakeRequest`, `fetchIntakeWaitlist`) live in `Persistence.hs` and are not exposed at the `Service.hs` layer.
+**This rule used to be blocked on `Service.hs` exporting zero pure reads. That premise no longer holds.** `Service.hs` now exports eleven read functions (verified against its current export list): `fetchDoctor`, `fetchPatient`, `fetchHealthcareService`, `fetchDoctors`, `fetchPatients`, `fetchHealthcareServices`, `fetchAvailableSlots`, `fetchAppointedIntakeRequests`, `fetchIntakeRequest`, `fetchIntakeWaitlist`, `fetchCalendarView`. All eleven keep their `Persistence.hs` counterparts' names verbatim — `fetch`-prefixed, no Command/Query-style renaming, no precondition-driven divergence — because per `triage-service-codegen`'s `verifies-the-precondition` rule (see that skill's own note on why it doesn't apply to reads), these pass-throughs have no `Domain.hs` verb to collide with in the first place, so there was never a naming decision to make for them beyond "keep the `Persistence.hs` name."
 
-**This is deliberately left as an open question, not a naming decision made here.** There is no rule to propose a replacement derivation for, because an API layer generated today would have no `Service.hs`-level read operations to name consistently in the first place — a `GET` endpoint for, say, fetching one intake request's current state would have to be built against `Persistence.fetchIntakeRequest` directly, bypassing `Service.hs` entirely, which is itself a design question (does a read need to go through `Service.hs` at all, or is `Persistence.hs` a legitimate direct dependency for reads?) that belongs to a `Service.hs` design pass, not to API-codegen. Don't invent a Command/Query naming convention to fill this gap — flag it and ask, per this skill's own closing rule.
+**The naming convention itself is settled, not an open question anymore:** every `Service.hs` read is `fetch<Noun>`, singular or plural depending on cardinality (`fetchDoctor` vs. `fetchDoctors`), matching its `Persistence.hs` counterpart's name exactly. An API layer generated today has a real, checkable pattern to mirror for all eleven — a `GET` endpoint's handler/route name can derive directly from the `Service.hs` function name.
+
+**The one remaining gap flagged in the previous version of this rule is now closed.** `fetchIntakeRequest` and `fetchIntakeWaitlist` — previously imported unqualified into `Service.hs` and used only internally by `acceptSubmittedIntakeRequest`, `rejectSubmittedIntakeRequest`, `matchAcceptedIntakeRequestToSlot`, `reclaimAppointedIntakeRequest`, `closeAppointedIntakeRequest` (`fetchIntakeRequest`), and `matchWaitlistToSlot` (`fetchIntakeWaitlist`) — now both have their own `Service.hs`-level wrappers in the READS section, same thin `fetch`-prefixed pass-through shape as the other nine. **Every `Persistence.hs` read now has a `Service.hs` wrapper, no exceptions remaining.** An API layer generated today can build a `GET /intake-requests/:id` and a waitlist-listing route against `Service.fetchIntakeRequest`/`Service.fetchIntakeWaitlist` directly, without reaching past `Service.hs` into `Persistence.hs` — the situation this rule originally warned about no longer exists for any current read.
+
+**Not yet updated:** `references/rest.md`'s read-route table still has a stale note on its `fetchAppointedIntakeRequests` row claiming `fetchIntakeRequest`/`fetchIntakeWaitlist` "still lack a `Service.hs` wrapper" — that's no longer true as of this update and needs its own pass to add `GET` rows for these two and drop the stale note. Flagged, not fixed here — out of scope for this rule's own update.
 
 ## `checkwaitlist-not-an-endpoint` — `checkIntakeWaitlist` is a protocol decision, not an endpoint
 
@@ -64,7 +68,7 @@ Whatever API layer gets generated must preserve this split as two genuinely diff
 
 ## Strategy choices — pick one, or ask the user
 
-- `references/rest.md` — Commands become `POST`/`PATCH` endpoints; reads (where they eventually exist — see `commands-vs-queries-naming`) become `GET` endpoints. Default choice if there's an existing REST API elsewhere in the codebase.
+- `references/rest.md` — Commands become `POST`/`PATCH` endpoints; reads become `GET` endpoints (see `commands-vs-queries-naming` for the naming pattern now that `Service.hs` reads exist). Default choice if there's an existing REST API elsewhere in the codebase.
 - `references/event-sourced.md` — a documented, available option, **not currently favored**. `docs/decisions.md`'s "Event sourcing: explored, rejected (2026-06)" entry already settled this question — for cost reasons unrelated to API design specifically — and nothing since has reopened it. Revisit only if scale assumptions genuinely change; do not treat this as a partially-adopted direction.
 
 If the team already has an API style in use elsewhere, match it rather than introducing a new one for this domain alone.
@@ -73,7 +77,6 @@ If the team already has an API style in use elsewhere, match it rather than intr
 
 Per CLAUDE.md's workflow discipline, none of the following should be decided in code without validating with the user first:
 
-- **Command/Query naming convention** — see `commands-vs-queries-naming` above; blocked on a `Service.hs` design pass (does a read-side operation belong in `Service.hs` at all?), not an API-codegen decision.
 - **Transport/DTO layer ownership** — whether a `Transport.hs` DTO-twin-type layer gets built as part of this skill, or is a separate skill's responsibility introduced when API generation actually starts building routes.
 - **Six-state JSON serialization shape** — how `IntakeRequest`'s six states (`Submitted`/`Rejected`/`Accepted`/`Appointed`/`Withdrawn`/`Closed`) serialize over JSON: a tagged sum, a discriminator field alongside a flat shape, or one response shape per state. Not decided.
 - **Error/outcome wire mapping** — see `error-vs-outcome-mapping` above; the two-category split is settled, the actual status codes and envelope format are not.
