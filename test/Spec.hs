@@ -104,27 +104,32 @@ main = hspec $ do
       doc2        <- arbitrary `suchThat` (/= doc1)
       slotMatch   <- genAvailableSlotFor sid doc1
       slotNoMatch <- genAvailableSlotFor sid doc2
-      submitted   <- genSubmittedIntakeRequest
+      baseRequest <- genSubmittedIntakeRequest
       now         <- genMoment
       let req = acceptIntakeRequest
-                  submitted { doctorRequirement = SpecificDoctor doc1 }
+                  baseRequest { doctorRequirement = SpecificDoctor doc1 }
                   sid (Routine RoutineAnytime) now
       pure $  matches slotMatch req
           .&&. not (matches slotNoMatch req)
 
     prop "Emergency requires slotStart <= deadline" $ do
-      sid       <- arbitrary
-      did       <- arbitrary
-      slot      <- genAvailableSlotFor sid did
-      offset    <- choose (1, 100000 :: Integer)
-      now       <- genMoment
-      submitted <- genSubmittedIntakeRequest
+      sid         <- arbitrary
+      did         <- arbitrary
+      slot        <- genAvailableSlotFor sid did
+      offset      <- choose (1, 100000 :: Integer)
+      now         <- genMoment
+      baseRequest <- genSubmittedIntakeRequest
       let deadline       = addUTCTime (fromIntegral offset) slot.start
           beforeDeadline = slot
-          afterDeadline  = (slot :: AvailableSlot)
-            { start = addUTCTime (fromIntegral offset + 1) deadline }
+          afterDeadline  = AvailableSlot
+            { id                  = slot.id
+            , doctorId            = slot.doctorId
+            , healthcareServiceId = slot.healthcareServiceId
+            , start               = addUTCTime (fromIntegral offset + 1) deadline
+            , duration            = slot.duration
+            }
           prio           = Emergency (EmergencyDue deadline)
-          req            = acceptIntakeRequest submitted sid prio now
+          req            = acceptIntakeRequest baseRequest sid prio now
       pure $  matches beforeDeadline req
           .&&. not (matches afterDeadline req)
 
@@ -164,14 +169,14 @@ main = hspec $ do
 
   describe "checkIntakeWaitlist" $ do
     prop "chooses Emergency over Urgent and Routine" $ do
-      sid  <- arbitrary
-      did  <- arbitrary
-      slot <- genAvailableSlotFor sid did
-      now  <- genMoment
-      submitted <- genSubmittedIntakeRequest
+      sid         <- arbitrary
+      did         <- arbitrary
+      slot        <- genAvailableSlotFor sid did
+      now         <- genMoment
+      baseRequest <- genSubmittedIntakeRequest
       let slotStart  = slot.start
           deadline   = addUTCTime 86400 slotStart
-          mkReq prio = acceptIntakeRequest submitted sid prio now
+          mkReq prio = acceptIntakeRequest baseRequest sid prio now
           emergency  = mkReq (Emergency (EmergencyDue deadline))
           urgent     = mkReq (Urgent    (UrgentDue    deadline))
           routine    = mkReq (Routine   RoutineAnytime)
