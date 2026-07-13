@@ -46,10 +46,10 @@ module Service
     ServiceError (..)
   , MatchOutcome (..)
   , ReassignmentOutcome (..)
-  , SlotSubmissionOutcome (..)
+  , SlotCreationOutcome (..)
 
     -- ── Operations ───────────────────────────────────────────────────────
-  , submitAvailableSlot
+  , createAvailableSlot
   , submitIntakeRequest
   , acceptSubmittedIntakeRequest
   , rejectSubmittedIntakeRequest
@@ -197,8 +197,8 @@ data ReassignmentOutcome
 -- pattern-matched by name here (matched via a wildcard below) — same
 -- never-leak-a-bare-Persistence-type convention as MatchPersistOutcome/
 -- ClaimOutcome elsewhere in this module.
-data SlotSubmissionOutcome
-  = SlotSubmitted AvailableSlot
+data SlotCreationOutcome
+  = SlotCreated AvailableSlot
   | SlotConflict
   deriving (Show, Eq)
 
@@ -210,12 +210,17 @@ data SlotSubmissionOutcome
 -- AvailableSlot is an open record with no smart constructor, same as
 -- SubmittedIntakeRequest below — so this is a thin pass-through to
 -- Persistence.insertAvailableSlot, translating its SlotOverlap result
--- into this module's own SlotSubmissionOutcome.
-submitAvailableSlot :: ConnectionPool -> AvailableSlot -> IO SlotSubmissionOutcome
-submitAvailableSlot pool slot = withResource pool $ \conn -> do
+-- into this module's own SlotCreationOutcome. Named createAvailableSlot,
+-- not submitAvailableSlot — "submit" implies something flowing to an
+-- authority for acceptance/rejection (correct for SubmittedIntakeRequest,
+-- which awaits a triager's judgment); a slot is declared into existence
+-- by the authority itself, no acceptance step, so "create" is the
+-- accurate verb here.
+createAvailableSlot :: ConnectionPool -> AvailableSlot -> IO SlotCreationOutcome
+createAvailableSlot pool slot = withResource pool $ \conn -> do
   result <- insertAvailableSlot conn slot
   pure $ case result of
-    Right () -> SlotSubmitted slot
+    Right () -> SlotCreated slot
     Left _   -> SlotConflict
 
 -- Creates a new Submitted request. SubmittedIntakeRequest is an open
