@@ -17,26 +17,34 @@
 -- functions the way `appointment.reassignSlot(...)` would) is a real,
 -- separate reason the wrapper needs *some* different name regardless.
 --
--- Checked against both existing wrappers:
---   * reassignSlot / reassignAppointmentSlot: Domain.reassignSlot checks
---     only structural eligibility (matches) against values already in
---     hand — it can't and doesn't verify the appointment is genuinely
---     still Open or the new slot genuinely still available in storage.
---     reassignAppointmentSlot verifies both (fetch-and-check the
---     appointment; affected-rows-check the slot at write time). The name
---     folds in "Appointment" not to dodge the collision but because the
---     wrapper is precise about *what* is being reassigned (the
---     appointment's slot binding, never its identity) — same spirit as the
---     precondition test, applied to precision-of-meaning rather than a
---     literal fetched precondition.
+-- Checked against the one remaining existing wrapper:
 --   * checkWaitlist / matchWaitlistToSlot: Domain.checkWaitlist takes a
 --     bare `[TriagedHealthcareRequest]` — it has no way to check, and
 --     doesn't check, that the list it's given is actually "the waitlist"
 --     (no-delete-on-consumption's derived anti-join). matchWaitlistToSlot
 --     is what performs that real fetch (fetchWaitlist) before scanning it,
 --     so it's the one entitled to the name "waitlist" in its own name.
--- Neither needed renaming under this test; both already happened to be
--- named correctly. acceptIntakeRequest / acceptSubmittedIntakeRequest is the
+-- Needed no renaming under this test; already named correctly.
+--
+-- A second worked example used to live here — reassignSlot /
+-- reassignAppointmentSlot — illustrating a "precision-of-meaning" case:
+-- the extra noun ("Appointment") disambiguated *what* was being acted on,
+-- not a literal fetched precondition. Both functions are gone — the
+-- reassignment mechanism they implemented had a real bug and was replaced
+-- entirely by a simpler design; see docs/decisions.md's "Reassignment and
+-- displacement both compose from reclaimAppointedIntakeRequest, not a
+-- dedicated transition" entry. Deliberately not replaced with a new
+-- pairing here: neither matchAcceptedIntakeRequestToSlot nor
+-- closeAppointedIntakeRequest makes the same point.
+-- matchAcceptedIntakeRequestToSlot's "Accepted" is a literal fetched
+-- precondition (the same shape as acceptSubmittedIntakeRequest below, not
+-- the precision-of-meaning shape this bullet used to show), and
+-- closeAppointedIntakeRequest has no Domain.hs verb to collide with in
+-- the first place (same reason reclaimAppointedIntakeRequest doesn't fit
+-- this test either — see its own comment). Forcing either into this
+-- bullet's old shape would misstate what it actually demonstrates.
+--
+-- acceptIntakeRequest / acceptSubmittedIntakeRequest is the
 -- clearer worked example, since there "Submitted" is a precondition in the
 -- literal sense (a stored state, fetched and checked) rather than a
 -- structural-precision distinction.
@@ -45,7 +53,6 @@ module Service
   ( -- ── Errors / outcomes ────────────────────────────────────────────────
     ServiceError (..)
   , MatchOutcome (..)
-  , ReassignmentOutcome (..)
   , SlotCreationOutcome (..)
 
     -- ── Operations ───────────────────────────────────────────────────────
@@ -57,7 +64,7 @@ module Service
   , rejectSubmittedIntakeRequest
   , matchWaitlistToSlot
   , matchAcceptedIntakeRequestToSlot
-  , reassignAppointedIntakeRequestSlot
+  , reclaimAppointedIntakeRequest
   , closeAppointedIntakeRequest
 
     -- ── ID generation (moved from Persistence.hs — an orchestration
@@ -76,7 +83,7 @@ import Data.UUID.V4               (nextRandom)
 import Database.PostgreSQL.Simple (Connection)
 
 import Domain
-  ( AppointedIntakeRequest
+  ( AppointedIntakeRequest (..)
   , AvailableSlot (..)
   , CloseReason
   , Doctor (..)
@@ -94,7 +101,6 @@ import Domain
   , acceptIntakeRequest
   , checkIntakeWaitlist
   , matchIntakeRequestToSlot
-  , reassignIntakeRequestSlot
   )
 import Persistence
   ( ClaimOutcome (..)
@@ -109,7 +115,7 @@ import Persistence
   , insertSubmittedIntakeRequest
   , persistClosedIntakeRequestIfAppointed
   , persistMatchedIntakeRequest
-  , persistReassignedIntakeRequest
+  , persistReclaimedIntakeRequest
   , persistRejectedIntakeRequest
   , persistTriagedIntakeRequest
   )
@@ -133,8 +139,8 @@ data ServiceError
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- OUTCOMES
--- NoEligibleRequest/RequestIneligible/Ineligible/SlotAlreadyClaimed/
--- RequestAlreadyClaimed/NewSlotAlreadyClaimed are normal branches of
+-- NoEligibleRequest/RequestIneligible/SlotAlreadyClaimed/
+-- RequestAlreadyClaimed are normal branches of
 -- business logic the caller reacts to, each differently — not errors:
 --   * NoEligibleRequest: no one on the waitlist fits this slot (automatic
 --     scan, matchWaitlistToSlot); the slot stays available, nothing to
@@ -162,12 +168,8 @@ data ServiceError
 --     caller doesn't need to know whether the request was already
 --     appointed when it looked vs. a moment later, only that it's
 --     already scheduled and should be dropped from further consideration.
---   * Ineligible: the proposed new slot doesn't satisfy the request's own
---     priority/deadline — the not-yet-implemented re-triage flow.
---   * NewSlotAlreadyClaimed: a concurrent operation claimed the proposed new
---     slot first — try a different slot.
--- SlotAlreadyClaimed/NewSlotAlreadyClaimed are translated from
--- Persistence.MatchPersistOutcome/ClaimOutcome; RequestAlreadyClaimed from
+-- SlotAlreadyClaimed is translated from Persistence.MatchPersistOutcome's
+-- SlotAlreadyGone; RequestAlreadyClaimed from
 -- Persistence.MatchPersistOutcome's RequestAlreadyMatched, which now
 -- guards claimAcceptedIntakeRequest's UPDATE ... WHERE state = 'accepted'
 -- (two concurrent matches both trying to move the same intake_requests
@@ -187,12 +189,6 @@ data MatchOutcome
   | RequestIneligible
   | SlotAlreadyClaimed
   | RequestAlreadyClaimed
-  deriving (Show, Eq)
-
-data ReassignmentOutcome
-  = Reassigned AppointedIntakeRequest
-  | Ineligible
-  | NewSlotAlreadyClaimed
   deriving (Show, Eq)
 
 -- SlotConflict translates Persistence.SlotOverlap — a legitimate
@@ -420,52 +416,48 @@ persistMatch conn slot appointed = do
     SlotAlreadyGone       -> SlotAlreadyClaimed
     RequestAlreadyMatched -> RequestAlreadyClaimed
 
--- Mirrors Domain.reassignIntakeRequestSlot: move an already-appointed
--- request to a different slot, re-checking structural eligibility against
--- it. A request not currently Appointed can't be reassigned —
--- Domain.reassignIntakeRequestSlot only accepts an AppointedIntakeRequest,
--- so any other fetched state is the caller's own assumption being wrong,
--- hence ServiceError rather than an outcome.
+-- Reclaims an Appointed request back to Accepted. Mirrors
+-- Domain's appointed.triaged field access directly — there is no
+-- Domain-level "reclaim" function to wrap, same as
+-- rejectSubmittedIntakeRequest/closeAppointedIntakeRequest construct
+-- their result directly rather than calling a Domain verb. This
+-- wrapper's whole job is the precondition check: fetch by
+-- IntakeRequestId, confirm Right (Just (Appointed appointed)), reject
+-- otherwise.
 --
--- Named reassignAppointedIntakeRequestSlot, not reassignIntakeRequestSlot
--- or reassignRequestSlot — per verifies-the-precondition, same reasoning
--- as matchAcceptedIntakeRequestToSlot's rename: Domain's function is now
--- one word away from this wrapper's old name, and this wrapper is defined
--- by the check Domain.reassignIntakeRequestSlot doesn't and can't perform
--- — fetches by IntakeRequestId, confirms
--- Right (Just (Appointed appointed)), rejects otherwise. Only the slot
--- binding changes here, never the request's own identity (same
--- IntakeRequestId, same embedded triaged request).
+-- Reassignment and displacement are no longer separate operations —
+-- both compose from this plus matchAcceptedIntakeRequestToSlot (see
+-- docs/decisions.md). Whether the vacated original time becomes
+-- bookable again is the caller's separate, explicit createAvailableSlot
+-- call, not automatic here.
 --
--- All six IntakeRequest cases handled explicitly, no wildcard — so GHC's
--- exhaustiveness check keeps this honest if a future case is ever added.
--- Submitted/Rejected/Accepted/Withdrawn all collapse to the single
--- RequestNotAppointed ServiceError; Closed gets its own
--- RequestAlreadyClosed, same distinct-signal reasoning as
--- closeAppointedIntakeRequest below.
-reassignAppointedIntakeRequestSlot
+-- All six IntakeRequest cases handled explicitly, no wildcard, same
+-- collapsing as closeAppointedIntakeRequest: Submitted/Rejected/
+-- Accepted/Withdrawn all collapse to RequestNotAppointed; Closed gets
+-- its own RequestAlreadyClosed.
+reclaimAppointedIntakeRequest
   :: ConnectionPool
   -> IntakeRequestId
-  -> AvailableSlot
-  -> IO (Either ServiceError ReassignmentOutcome)
-reassignAppointedIntakeRequestSlot pool requestId newSlot = withResource pool $ \conn -> do
+  -> IO (Either ServiceError TriagedIntakeRequest)
+reclaimAppointedIntakeRequest pool requestId = withResource pool $ \conn -> do
   reqResult <- fetchIntakeRequest conn requestId
   case reqResult of
-    Left err                          -> pure (Left (PersistenceDecodeError err))
-    Right Nothing                     -> pure (Left (RequestNotFound requestId))
-    Right (Just (Submitted _))        -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Rejected {}))        -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Accepted _))         -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Withdrawn _))        -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Closed {}))          -> pure (Left (RequestAlreadyClosed requestId))
-    Right (Just (Appointed appointed)) ->
-      case reassignIntakeRequestSlot appointed newSlot of
-        Nothing         -> pure (Right Ineligible)
-        Just reassigned -> do
-          claim <- persistReassignedIntakeRequest conn reassigned
-          pure . Right $ case claim of
-            Claimed        -> Reassigned reassigned
-            AlreadyClaimed -> NewSlotAlreadyClaimed
+    Left err                           -> pure (Left (PersistenceDecodeError err))
+    Right Nothing                      -> pure (Left (RequestNotFound requestId))
+    Right (Just (Submitted _))         -> pure (Left (RequestNotAppointed requestId))
+    Right (Just (Rejected {}))         -> pure (Left (RequestNotAppointed requestId))
+    Right (Just (Accepted _))          -> pure (Left (RequestNotAppointed requestId))
+    Right (Just (Withdrawn _))         -> pure (Left (RequestNotAppointed requestId))
+    Right (Just (Closed {}))           -> pure (Left (RequestAlreadyClosed requestId))
+    Right (Just (Appointed appointed)) -> do
+      claim <- persistReclaimedIntakeRequest conn requestId
+      pure $ case claim of
+        Claimed        -> Right appointed.triaged
+        AlreadyClaimed -> Left (RequestAlreadyClosed requestId)
+        -- AlreadyClaimed here means the request left 'appointed' between
+        -- this function's own fetch and its write (e.g. concurrently
+        -- closed) — same "caller doesn't need to distinguish when"
+        -- reasoning as every other double-guarded write in this module.
 
 -- Closes an appointed request. No Domain.hs verb to collide with here —
 -- IntakeRequest's Closed constructor is open and there is deliberately no

@@ -67,6 +67,16 @@ function is where smart-constructor validation actually happens.
 
 ## Rescheduling: reassignIntakeRequestSlot, not a CloseReason variant (2026-07-11)
 
+**Superseded (2026-07-13):** by "Reassignment and displacement both compose
+from reclaimAppointedIntakeRequest, not a dedicated transition" below —
+`reassignIntakeRequestSlot` no longer exists; a real bug in its
+Persistence-layer counterpart led to a simpler design that removes the
+dedicated transition entirely rather than fixing it in place. Kept here
+for history. The rejection below (a `CloseReason`-variant representation)
+still holds independently of which mechanism replaced the
+dedicated-transition approach — the new design doesn't reintroduce it
+either.
+
 **Decided:** Moving an appointed request to a different slot is modeled as
 `reassignIntakeRequestSlot :: AppointedIntakeRequest -> AvailableSlot ->
 Maybe AppointedIntakeRequest` — it re-checks the same structural eligibility
@@ -483,6 +493,83 @@ is not derived from `intake_requests`' schema automatically. This is judged
 acceptable at 2-3 doctor scale; revisit if the schema around `intake_requests`
 churns often enough to make this a recurring source of missed updates.
 
+## Reassignment and displacement both compose from reclaimAppointedIntakeRequest, not a dedicated transition (2026-07-13)
+
+**Found:** `persistReassignedIntakeRequest` had a real bug — it updated
+`intake_requests`' `appointed_doctor_id`/`start_time`/`duration_minutes`
+to the new slot's values but never deleted the `slots` row that slot came
+from. Because `doctor_calendar`'s cross-table `EXCLUDE` constraint (see
+"Overlap prevention" above) tracks `slots` rows as live intervals, the
+still-present slot row and the newly-written appointment interval for the
+same doctor/time would collide against each other, so the write would
+reject via the `23P01` exclusion-violation path it's already wired to
+catch — the caller would see `NewSlotAlreadyClaimed` for a slot that was
+in fact free. Found while investigating a documentation pass on the
+`triage-db-codegen` skill, not by design.
+
+**Rejected fix:** simply add the missing `deleteSlot` call to
+`persistReassignedIntakeRequest`, wrapped in `withTransaction` like
+`persistMatchedIntakeRequest`. This would have worked, but it would make
+reassignment a second, parallel implementation of exactly what matching
+already does correctly — the same delete-a-slot-and-update-the-request
+transaction, duplicated for no gain, now two places to keep in sync
+instead of one.
+
+**The actual insight:** `AppointedIntakeRequest` already embeds the
+`TriagedIntakeRequest` it came from, unchanged, as its `triaged` field
+(see "AppointedIntakeRequest hard-copies doctor/time/duration, embeds
+TriagedIntakeRequest whole" above). Reclaiming an `Appointed` request back
+to `Accepted` is therefore free — `appointed.triaged` already *is* the
+value to return to. No re-triage happens, no new information is produced,
+the same `IntakeRequestId`/`triagedAt`/priority survive exactly. No new
+`Domain.hs` function is needed for this either, same precedent as
+`Rejected`/`Closed`: direct field access, not a wrapped transformation.
+
+**Decided:** `reassignIntakeRequestSlot`, `persistReassignedIntakeRequest`,
+and `reassignAppointedIntakeRequestSlot` are removed entirely, replaced by
+one new primitive — `reclaimAppointedIntakeRequest` (`Service.hs`), backed
+by `persistReclaimedIntakeRequest` (`Persistence.hs`), a single-table
+`UPDATE ... WHERE state = 'appointed'` moving the row back to `'accepted'`
+and nulling `appointed_doctor_id`/`start_time`/`duration_minutes`. Nothing
+about `doctor_calendar` needs to change — its existing trigger already
+deletes the corresponding row on any `'appointed'` → non-`'appointed'`
+transition.
+
+"Reassignment" and "displacement" are not two different mechanisms
+needing their own dedicated transition — they're both compositions of
+this one primitive with an operation that already exists and is already
+correct:
+
+- **Reassignment** = `reclaimAppointedIntakeRequest`, then
+  `matchAcceptedIntakeRequestToSlot` against a different slot, same
+  doctor, back-to-back.
+- **Displacement** = `reclaimAppointedIntakeRequest` alone — the request
+  falls back into the ordinary waitlist (`state = 'accepted'`), no new
+  `IntakeRequest`, no lost history.
+
+Whether the vacated original time becomes bookable again is still not
+automatic either way — that's a separate, explicit `createAvailableSlot`
+call by the caller, per `deleted-on-match`'s existing convention. This was
+already true of the old `reassignIntakeRequestSlot` design and isn't
+changed by this one.
+
+**A side effect worth naming explicitly:** this resolves half of the
+fairness-reversal concern flagged in "IntakeRequest: Appointment folded
+into one sum type, one identity" above — the worry that a displaced
+patient's original wait time and clinical judgment would be lost unless
+the doctor happened to write it into a new request's narrative. That
+concern doesn't apply here: displacement now reuses
+`reclaimAppointedIntakeRequest`, which preserves the *same*
+`IntakeRequestId`, `triagedAt`, and `priority` exactly — nothing is lost
+structurally, and no narrative-writing habit is needed to preserve it.
+This is a consequence of the design, not a mitigation layered on top.
+
+**What this does NOT decide:** whether a displaced patient's priority
+should be *bumped* as a compensating policy (e.g. moved up a tier, or
+given an earlier deadline, for having been displaced) is a separate,
+genuinely open question, untouched by this change — see Open Questions
+below.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
@@ -497,10 +584,15 @@ churns often enough to make this a recurring source of missed updates.
 - Explicit command types (`BookSlot`, `CancelBooking`, ...) vs. direct
   function calls on Domain values — not yet decided whether commands earn
   their keep at this scale.
-- if a patient is displaced and resubmitted, the system keeps no record
-  linking their old wait time to their new spot in line unless the doctor
-  writes it into the new request's narrative — is that acceptable, and
-  should doing so be a stated habit rather than ad hoc?
+- **Narrowed (2026-07-13):** the record-loss half of this question is now
+  resolved by design, not doctor habit — see "Reassignment and
+  displacement both compose from reclaimAppointedIntakeRequest..." above;
+  a displaced patient's `IntakeRequestId`/`triagedAt`/priority survive
+  `reclaimAppointedIntakeRequest` exactly, no narrative-writing habit
+  needed. What remains open: should a displaced patient's priority be
+  *bumped* as a compensating policy (e.g. moved up a tier, or given an
+  earlier deadline, for having been displaced)? Not yet validated with
+  the domain expert.
 
 Do not resolve these speculatively in code. Validate with the domain expert
 first, per the workflow discipline in CLAUDE.md.

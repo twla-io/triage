@@ -55,7 +55,6 @@ module Domain
 
   -- ── Protocol ─────────────────────────────────────────────────────────────
   , matches
-  , reassignIntakeRequestSlot
   , matchIntakeRequestToSlot
   , checkIntakeWaitlist
   ) where
@@ -241,6 +240,8 @@ data TriagedIntakeRequest = TriagedIntakeRequest
 
 data AppointedIntakeRequest = AppointedIntakeRequest
   { triaged  :: TriagedIntakeRequest
+    -- ^ Also how a request is reclaimed back to Accepted — appointed.triaged
+    -- is already that value; no dedicated reclaim function needed.
   , doctorId :: DoctorId
   , start    :: UTCTime
   , duration :: Duration
@@ -333,17 +334,6 @@ slotEnd s = addUTCTime (durationToNominalDiffTime s.duration) s.start
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- PROTOCOL
---
--- reassignIntakeRequestSlot moves an already-appointed request to a
--- different slot, re-checking the same structural eligibility (service
--- match, doctor requirement, time window) against the proposed slot; on
--- success the same TriagedIntakeRequest is carried through unchanged, only
--- doctorId/start/duration are replaced. On failure (matches fails), that is
--- NOT this function's problem to retry — the correct caller-side response
--- is: close the current appointment (Cancelled-shaped), then submit and
--- accept a brand new IntakeRequest. Do not add a composed function for
--- that — it's just two existing operations called in sequence by the
--- caller.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 matchesDoctorRequirement :: AvailableSlot -> DoctorRequirement -> Bool
@@ -364,20 +354,6 @@ matches slot TriagedIntakeRequest { healthcareServiceId, priority, submitted } =
      slot.healthcareServiceId == healthcareServiceId
   && matchesDoctorRequirement slot submitted.doctorRequirement
   && matchesTime priority slot.start
-
-reassignIntakeRequestSlot
-  :: AppointedIntakeRequest
-  -> AvailableSlot
-  -> Maybe AppointedIntakeRequest
-reassignIntakeRequestSlot appointed newSlot
-  | matches newSlot appointed.triaged =
-      Just AppointedIntakeRequest
-        { triaged  = appointed.triaged
-        , doctorId = newSlot.doctorId
-        , start    = newSlot.start
-        , duration = newSlot.duration
-        }
-  | otherwise = Nothing
 
 matchIntakeRequestToSlot
   :: AvailableSlot

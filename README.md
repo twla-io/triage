@@ -44,7 +44,8 @@ separate `Appointment` type. One linear embedding chain: `SubmittedIntakeRequest
 `createdAt`; no separate "Details" type) → `TriagedIntakeRequest` (embeds
 `submitted` and adds `healthcareServiceId`, `priority`, `triagedAt`) →
 `AppointedIntakeRequest` (embeds `triaged` and adds `doctorId`, `start`,
-`duration`). `WithdrawnIntakeRequest = WithdrawnFromSubmitted
+`duration`; `triaged` is also how an `Appointed` request is reclaimed back to
+`Accepted` — direct field access, no dedicated function). `WithdrawnIntakeRequest = WithdrawnFromSubmitted
 SubmittedIntakeRequest UTCTime (Maybe Text) | WithdrawnFromAccepted
 TriagedIntakeRequest UTCTime (Maybe Text)` — only two cases; ending an
 `Appointed` request is always `Closed` instead. `AppointmentParty = ByDoctor
@@ -86,9 +87,6 @@ enforce.
 matches
   :: AvailableSlot -> TriagedIntakeRequest -> Bool
 
-reassignIntakeRequestSlot
-  :: AppointedIntakeRequest -> AvailableSlot -> Maybe AppointedIntakeRequest
-
 matchIntakeRequestToSlot
   :: AvailableSlot -> TriagedIntakeRequest -> Maybe AppointedIntakeRequest
 
@@ -101,16 +99,13 @@ checkIntakeWaitlist
 no separate offer/accept step. `matchIntakeRequestToSlot` returns the
 `AppointedIntakeRequest` alone: the matched slot's doctor/time/duration facts
 are copied once into the request at the moment of matching, and the original
-slot ceases to be referenced or exist thereafter. `reassignIntakeRequestSlot`
-moves an already-appointed request to a different slot, re-checking the same
-structural eligibility against the proposed slot; the old slot's facts are
-simply discarded, not freed or returned — if the vacated time should become
-bookable again, that's a new `AvailableSlot` created independently elsewhere,
-not this function's concern. On failure, retrying isn't this function's job
-either — the caller closes the current request (`Cancelled`-shaped) and
-submits and accepts a brand new `IntakeRequest`. There is no
-`rejectIntakeRequest` function either — rejection is direct construction
-(`Rejected submitted rejectedAt reason`), no dedicated function.
+slot ceases to be referenced or exist thereafter. There is no dedicated
+reassignment function: an `Appointed` request is reclaimed back to `Accepted`
+via plain field access (`appointed.triaged`, already the value to return to),
+then re-matched like any other waitlisted request — the caller composes
+these two existing operations rather than a third one existing for this.
+There is no `rejectIntakeRequest` function either — rejection is direct
+construction (`Rejected submitted rejectedAt reason`), no dedicated function.
 
 ### Generating downstream layers
 

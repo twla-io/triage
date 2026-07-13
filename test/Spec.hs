@@ -155,18 +155,6 @@ main = hspec $ do
           .&&. appointed.duration === slot.duration
         Nothing -> property True
 
-  describe "reassignIntakeRequestSlot" $
-    prop "delegates to matchIntakeRequestToSlot against the new slot" $ do
-      sid   <- arbitrary
-      did1  <- arbitrary
-      did2  <- arbitrary
-      slot1 <- genAvailableSlotFor sid did1
-      slot2 <- genAvailableSlotFor sid did2
-      req   <- genTriagedRequestFor sid
-      pure $ case matchIntakeRequestToSlot slot1 req of
-        Nothing        -> property True
-        Just appointed -> reassignIntakeRequestSlot appointed slot2 === matchIntakeRequestToSlot slot2 req
-
   describe "checkIntakeWaitlist" $ do
     prop "chooses Emergency over Urgent and Routine" $ do
       sid         <- arbitrary

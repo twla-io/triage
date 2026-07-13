@@ -63,7 +63,7 @@ module Persistence
   , insertSubmittedIntakeRequest
   , persistTriagedIntakeRequest
   , persistRejectedIntakeRequest
-  , persistReassignedIntakeRequest
+  , persistReclaimedIntakeRequest
   , persistClosedIntakeRequestIfAppointed
   , MatchPersistOutcome (..)
   , claimAcceptedIntakeRequest
@@ -679,29 +679,28 @@ persistRejectedIntakeRequest conn submitted rejectedAt reason = do
     (row.rejectedAt, row.rejectionReason, row.id)
   pure ()
 
--- Conditioned on state = 'appointed', unlike an earlier version of this
--- write that had no state guard at all — a concurrent close racing
--- against a reassignment could otherwise silently overwrite doctor/time/
--- duration on an already-closed row. Guarded the same way
--- persistClosedIntakeRequestIfAppointed guards itself below.
--- Wrapped in try/catch for 23P01 the same way claimAcceptedIntakeRequest
--- is above: this UPDATE can now also lose to doctor_calendar's EXCLUDE
--- constraint (the proposed new interval overlaps another commitment for
--- this doctor), on top of the pre-existing state = 'appointed' guard.
--- Both fold to AlreadyClaimed, which Service.reassignAppointedIntakeRequestSlot
--- already reports as NewSlotAlreadyClaimed — "try a different slot" is
--- accurate advice for either cause here, unlike the matching path below.
-persistReassignedIntakeRequest :: Connection -> AppointedIntakeRequest -> IO ClaimOutcome
-persistReassignedIntakeRequest conn appointed = do
-  let row = fromDomainAppointed appointed
-  result <- try $ execute conn
-    "UPDATE intake_requests SET appointed_doctor_id = ?, start_time = ?, duration_minutes = ? \
+-- Reclaims an Appointed request back to Accepted — a single-table
+-- UPDATE, no slots interaction at all (the original slot that produced
+-- this appointment was already deleted when it was first matched; there
+-- is no slot row to touch here). Guarded on state = 'appointed', same
+-- affected-rows pattern as every other conditional write in this
+-- module. Nulls appointed_doctor_id/start_time/duration_minutes for row
+-- hygiene, not because the CHECK constraint demands it — the 'accepted'
+-- branch of the six-way CHECK only requires appointed_doctor_id NULL, not
+-- the other two. An 'accepted' row still shouldn't carry stale
+-- appointment-shaped data left over from before it was reclaimed, so all
+-- three are nulled anyway. doctor_calendar's own trigger already handles
+-- the 'appointed' -> non-'appointed' transition (deletes the
+-- corresponding row) via its existing OLD.state = 'appointed' AND
+-- NEW.state != 'appointed' branch — no trigger changes needed for this.
+persistReclaimedIntakeRequest :: Connection -> IntakeRequestId -> IO ClaimOutcome
+persistReclaimedIntakeRequest conn (IntakeRequestId rid) = do
+  n <- execute conn
+    "UPDATE intake_requests \
+    \SET state = 'accepted', appointed_doctor_id = NULL, start_time = NULL, duration_minutes = NULL \
     \WHERE id = ? AND state = 'appointed'"
-    (row.appointedDoctorId, row.startTime, row.durationMinutes, row.id)
-  case result of
-    Right n                        -> pure (if n > 0 then Claimed else AlreadyClaimed)
-    Left e | sqlState e == "23P01" -> pure AlreadyClaimed
-           | otherwise             -> throwIO (e :: SqlError)
+    (Only rid)
+  pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- Conditioned on state = 'appointed': the initial fetch in Service.hs
 -- catches the common case (already closed by the time this is called),
