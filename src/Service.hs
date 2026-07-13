@@ -46,8 +46,10 @@ module Service
     ServiceError (..)
   , MatchOutcome (..)
   , ReassignmentOutcome (..)
+  , SlotSubmissionOutcome (..)
 
     -- ── Operations ───────────────────────────────────────────────────────
+  , submitAvailableSlot
   , submitIntakeRequest
   , acceptSubmittedIntakeRequest
   , rejectSubmittedIntakeRequest
@@ -97,6 +99,7 @@ import Persistence
   , MatchPersistOutcome (..)
   , fetchIntakeRequest
   , fetchIntakeWaitlist
+  , insertAvailableSlot
   , insertSubmittedIntakeRequest
   , persistClosedIntakeRequestIfAppointed
   , persistMatchedIntakeRequest
@@ -186,9 +189,34 @@ data ReassignmentOutcome
   | NewSlotAlreadyClaimed
   deriving (Show, Eq)
 
+-- SlotConflict translates Persistence.SlotOverlap — a legitimate
+-- concurrent/business outcome (this doctor already has an overlapping
+-- commitment for the proposed time), never a caller mistake or infra
+-- failure, so per error-vs-outcome-types it belongs here, not folded
+-- into ServiceError. Persistence.SlotOverlap itself is not re-exported or
+-- pattern-matched by name here (matched via a wildcard below) — same
+-- never-leak-a-bare-Persistence-type convention as MatchPersistOutcome/
+-- ClaimOutcome elsewhere in this module.
+data SlotSubmissionOutcome
+  = SlotSubmitted AvailableSlot
+  | SlotConflict
+  deriving (Show, Eq)
+
 -- ═══════════════════════════════════════════════════════════════════════
 -- OPERATIONS
 -- ═══════════════════════════════════════════════════════════════════════
+
+-- Creates a new AvailableSlot. Nothing in Domain.hs to wrap here —
+-- AvailableSlot is an open record with no smart constructor, same as
+-- SubmittedIntakeRequest below — so this is a thin pass-through to
+-- Persistence.insertAvailableSlot, translating its SlotOverlap result
+-- into this module's own SlotSubmissionOutcome.
+submitAvailableSlot :: ConnectionPool -> AvailableSlot -> IO SlotSubmissionOutcome
+submitAvailableSlot pool slot = withResource pool $ \conn -> do
+  result <- insertAvailableSlot conn slot
+  pure $ case result of
+    Right () -> SlotSubmitted slot
+    Left _   -> SlotConflict
 
 -- Creates a new Submitted request. SubmittedIntakeRequest is an open
 -- record with no invariant beyond its field types (id-types-plain,

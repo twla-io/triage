@@ -420,6 +420,69 @@ touching this function without this reasoning on hand could plausibly
 "simplify" the guard back out, not realizing it closes a real (if latent)
 bug rather than adding unneeded ceremony.
 
+## Overlap prevention: trigger-maintained doctor_calendar shadow table with a single cross-table EXCLUDE constraint (2026-07-11)
+
+**Problem:** no two intervals may overlap for the same doctor, where an
+interval is either an available `slots` row or an `intake_requests` row with
+`state = 'appointed'`. Touching endpoints do not count as overlapping
+(half-open intervals). This spans two tables, and a single-table `EXCLUDE`
+constraint — Postgres's native tool for "no two rows with matching keys may
+have overlapping ranges" — can only see one table at a time. Declaring it on
+`slots` alone can't see appointed `intake_requests` rows, and vice versa.
+
+**Rejected alternatives, and why:**
+
+- **Naive check-then-insert** (query for overlapping rows across both
+  tables, then insert if none found): races under `READ COMMITTED` — two
+  concurrent inserts can both see no overlap and both commit, since neither
+  sees the other's uncommitted row.
+- **`pg_advisory_xact_lock`** keyed on doctor id: works, and is cheaper than
+  the chosen design, but is convention-enforced, not schema-enforced — any
+  write path (a future migration script, a backdoor `psql` session, code
+  that forgets to take the lock) can silently violate the invariant. Rejected
+  for that reason despite the lower cost, consistent with this codebase's
+  standing preference (`discriminator-column-tables`'s own reasoning) for
+  invariants the schema itself enforces over ones only convention enforces.
+- **`SELECT ... FOR UPDATE`** on the candidate range: can't lock rows that
+  don't exist yet — this doesn't help two inserts racing into empty space,
+  which is the actual failure mode here.
+- **`SERIALIZABLE` isolation:** closes the race, but shares the advisory
+  lock's rejection reason — it's a transaction-level *convention* every
+  writer must opt into, not something the schema enforces on writes that
+  don't. Also higher overhead (retry-on-conflict machinery) for no schema-
+  level guarantee gained over the chosen design.
+
+**Decided:** a trigger-maintained shadow table, `doctor_calendar`, carrying
+one `EXCLUDE USING gist (doctor_id WITH =, during WITH &&)` constraint that
+sees both sources at once. `AFTER INSERT` on `slots` and `AFTER INSERT OR
+UPDATE` on `intake_requests` triggers keep it in sync; `slot_id`'s `ON DELETE
+CASCADE` handles slot removal without a second trigger. See
+`migrations/0001_init.sql` for the full schema and trigger bodies.
+
+**Why this closes the gap the others don't:** the constraint lives in the
+schema itself, not in any particular code path's discipline — it fires
+regardless of which trigger inserted the conflicting row, which process
+issued the write, or whether the writer remembered any convention at all.
+
+**The deliberate, contained exception to the no-caught-SqlError convention:**
+`uniqueness-races-are-outcomes` (this codebase's standing rule: detect a lost
+race via an affected-rows check on a conditional write, never a caught
+`SqlError`) still holds everywhere else in `Persistence.hs`. It cannot hold
+here: an `EXCLUDE` violation has no affected-rows equivalent, because there
+is no `WHERE` clause that expresses "does this range overlap any existing
+one" — that check only exists inside the index Postgres itself maintains.
+`insertAvailableSlot`, `claimAcceptedIntakeRequest`, and
+`persistReassignedIntakeRequest` each now catch `SqlError` and match on
+`sqlState == "23P01"` (`exclusion_violation`) as the one narrow, contained
+exception to the rule, rethrowing anything else unchanged.
+
+**Accepted cost:** trigger maintenance surface. Any future column that
+changes what counts as "appointed" (a new way to enter or leave that state)
+needs `sync_intake_request_to_doctor_calendar` updated by hand — the trigger
+is not derived from `intake_requests`' schema automatically. This is judged
+acceptable at 2-3 doctor scale; revisit if the schema around `intake_requests`
+churns often enough to make this a recurring source of missed updates.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)

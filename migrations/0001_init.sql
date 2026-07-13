@@ -161,9 +161,82 @@ CREATE TABLE intake_requests (
   )
 );
 
--- Backstop against two live appointments for the same doctor at the same
--- time — the actual guard, since nothing at slot-creation time
--- cross-checks against existing appointed rows.
-CREATE UNIQUE INDEX intake_requests_doctor_start_appointed_key
-  ON intake_requests (appointed_doctor_id, start_time)
-  WHERE state = 'appointed';
+-- ═══════════════════════════════════════════════════════════════════════
+-- DOCTOR CALENDAR
+-- See docs/decisions.md's overlap-prevention entry for the full reasoning
+-- and rejected alternatives.
+-- ═══════════════════════════════════════════════════════════════════════
+
+CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+-- doctor_calendar: shadow table enforcing "no two intervals overlap for
+-- the same doctor" across BOTH slots and intake_requests(state =
+-- 'appointed'), which a single-table EXCLUDE constraint cannot express
+-- on its own. Trigger-maintained from both source tables (see below).
+-- Deliberately has NO primary key: nothing references a row here by its
+-- own identity — slot_id/intake_request_id (both UNIQUE, mutually
+-- exclusive per the CHECK) are the natural keys every trigger actually
+-- acts on, and no query or join needs a synthetic id. If logical
+-- replication is ever introduced, REPLICA IDENTITY FULL will need
+-- setting explicitly on this table — irrelevant at current scope, noted
+-- for later.
+CREATE TABLE doctor_calendar (
+  doctor_id         UUID NOT NULL,
+  during            TSTZRANGE NOT NULL,
+  source            TEXT NOT NULL CHECK (source IN ('slot', 'appointment')),
+  slot_id           UUID UNIQUE REFERENCES slots(id) ON DELETE CASCADE,
+  intake_request_id UUID UNIQUE REFERENCES intake_requests(id),
+  CHECK (
+    (source = 'slot'        AND slot_id IS NOT NULL AND intake_request_id IS NULL) OR
+    (source = 'appointment' AND intake_request_id IS NOT NULL AND slot_id IS NULL)
+  ),
+  EXCLUDE USING gist (doctor_id WITH =, during WITH &&)
+);
+
+-- Trigger 1: slots -> doctor_calendar. INSERT only — DELETE is handled
+-- automatically by slot_id's ON DELETE CASCADE above, so no separate
+-- delete trigger is needed (would be a redundant second mechanism doing
+-- the same thing).
+CREATE OR REPLACE FUNCTION sync_slot_to_doctor_calendar() RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO doctor_calendar (doctor_id, during, source, slot_id)
+  VALUES (NEW.doctor_id, tstzrange(NEW.start_time, NEW.start_time + make_interval(mins => NEW.duration_minutes)), 'slot', NEW.id);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER slots_sync_doctor_calendar
+  AFTER INSERT ON slots
+  FOR EACH ROW EXECUTE FUNCTION sync_slot_to_doctor_calendar();
+
+-- Trigger 2: intake_requests -> doctor_calendar. Fires on INSERT and on
+-- ANY UPDATE (deliberately no "OF column" restriction — comparing
+-- OLD/NEW inside the function body instead means this can't silently
+-- miss a future appointed-relevant column addition the way an OF-list
+-- would). Three cases: entering 'appointed' (from INSERT or from any
+-- other state) inserts/replaces the row; the appointed interval itself
+-- changing (reassignment: start_time/duration_minutes/
+-- appointed_doctor_id change while state stays 'appointed') replaces
+-- the row; leaving 'appointed' deletes it.
+CREATE OR REPLACE FUNCTION sync_intake_request_to_doctor_calendar() RETURNS TRIGGER AS $$
+BEGIN
+  IF NEW.state = 'appointed' AND (
+       TG_OP = 'INSERT'
+       OR OLD.state IS DISTINCT FROM 'appointed'
+       OR OLD.start_time IS DISTINCT FROM NEW.start_time
+       OR OLD.duration_minutes IS DISTINCT FROM NEW.duration_minutes
+       OR OLD.appointed_doctor_id IS DISTINCT FROM NEW.appointed_doctor_id
+     ) THEN
+    DELETE FROM doctor_calendar WHERE intake_request_id = NEW.id;
+    INSERT INTO doctor_calendar (doctor_id, during, source, intake_request_id)
+    VALUES (NEW.appointed_doctor_id, tstzrange(NEW.start_time, NEW.start_time + make_interval(mins => NEW.duration_minutes)), 'appointment', NEW.id);
+  ELSIF TG_OP = 'UPDATE' AND OLD.state = 'appointed' AND NEW.state != 'appointed' THEN
+    DELETE FROM doctor_calendar WHERE intake_request_id = NEW.id;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER intake_requests_sync_doctor_calendar
+  AFTER INSERT OR UPDATE ON intake_requests
+  FOR EACH ROW EXECUTE FUNCTION sync_intake_request_to_doctor_calendar();

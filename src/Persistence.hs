@@ -43,6 +43,7 @@ module Persistence
   , fromDomainSlot
   , fetchSlot
   , insertAvailableSlot
+  , SlotOverlap (..)
   , ClaimOutcome (..)
 
     -- ── Intake Request ───────────────────────────────────────────────────
@@ -69,13 +70,13 @@ module Persistence
   , persistMatchedIntakeRequest
   ) where
 
-import Control.Exception                  (Exception, handle, throwIO)
+import Control.Exception                  (Exception, handle, throwIO, try)
 import Data.Pool                          (Pool)
 import Data.Text                          (Text)
 import Data.Time                          (UTCTime)
 import Data.UUID                          (UUID)
-import Database.PostgreSQL.Simple         (Connection, Only (..), execute, query, query_,
-                                            withTransaction)
+import Database.PostgreSQL.Simple         (Connection, Only (..), SqlError (..), execute, query,
+                                            query_, withTransaction)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 
 import Domain
@@ -325,14 +326,31 @@ fetchSlot conn (SlotId sid) = do
     []        -> Right Nothing
     (row : _) -> Just <$> toDomainSlot row
 
-insertAvailableSlot :: Connection -> AvailableSlot -> IO ()
+-- doctor_calendar's EXCLUDE constraint (migrations/0001_init.sql) has no
+-- affected-rows equivalent — there's no WHERE clause that expresses "does
+-- this range overlap any existing one" — so this is the one deliberate,
+-- contained exception to this module's no-caught-SqlError convention
+-- (uniqueness-races-are-outcomes). See docs/decisions.md's overlap-
+-- prevention entry.
+data SlotOverlap = SlotOverlap
+  deriving (Show, Eq)
+-- One constructor, not SlotConflict/AppointedConflict — doctor_calendar's
+-- EXCLUDE constraint doesn't distinguish which source (slot vs.
+-- appointment) it collided with at violation time in any way the caller
+-- can act on differently; both mean the same thing operationally ("this
+-- time is unavailable").
+
+insertAvailableSlot :: Connection -> AvailableSlot -> IO (Either SlotOverlap ())
 insertAvailableSlot conn slot = do
   let row = fromDomainSlot slot
-  _ <- execute conn
+  result <- try $ execute conn
     "INSERT INTO slots (id, doctor_id, healthcare_service_id, start_time, duration_minutes) \
     \VALUES (?, ?, ?, ?, ?)"
     (row.id, row.doctorId, row.healthcareServiceId, row.startTime, row.durationMinutes)
-  pure ()
+  case result of
+    Right _                        -> pure (Right ())
+    Left e | sqlState e == "23P01" -> pure (Left SlotOverlap)
+           | otherwise             -> throwIO (e :: SqlError)
 
 -- Reports whether the slot row actually existed to delete. Zero rows
 -- affected means a concurrent operation already claimed this slot first —
@@ -666,14 +684,24 @@ persistRejectedIntakeRequest conn submitted rejectedAt reason = do
 -- against a reassignment could otherwise silently overwrite doctor/time/
 -- duration on an already-closed row. Guarded the same way
 -- persistClosedIntakeRequestIfAppointed guards itself below.
+-- Wrapped in try/catch for 23P01 the same way claimAcceptedIntakeRequest
+-- is above: this UPDATE can now also lose to doctor_calendar's EXCLUDE
+-- constraint (the proposed new interval overlaps another commitment for
+-- this doctor), on top of the pre-existing state = 'appointed' guard.
+-- Both fold to AlreadyClaimed, which Service.reassignAppointedIntakeRequestSlot
+-- already reports as NewSlotAlreadyClaimed — "try a different slot" is
+-- accurate advice for either cause here, unlike the matching path below.
 persistReassignedIntakeRequest :: Connection -> AppointedIntakeRequest -> IO ClaimOutcome
 persistReassignedIntakeRequest conn appointed = do
   let row = fromDomainAppointed appointed
-  n <- execute conn
+  result <- try $ execute conn
     "UPDATE intake_requests SET appointed_doctor_id = ?, start_time = ?, duration_minutes = ? \
     \WHERE id = ? AND state = 'appointed'"
     (row.appointedDoctorId, row.startTime, row.durationMinutes, row.id)
-  pure (if n > 0 then Claimed else AlreadyClaimed)
+  case result of
+    Right n                        -> pure (if n > 0 then Claimed else AlreadyClaimed)
+    Left e | sqlState e == "23P01" -> pure AlreadyClaimed
+           | otherwise             -> throwIO (e :: SqlError)
 
 -- Conditioned on state = 'appointed': the initial fetch in Service.hs
 -- catches the common case (already closed by the time this is called),
@@ -713,15 +741,27 @@ persistClosedIntakeRequestIfAppointed conn appointed reason = do
 -- is the version discriminator for this transition, no separate
 -- row_version column needed (nothing in this model changes state
 -- without it being a real lifecycle transition worth naming).
+-- Wrapped in try/catch for 23P01 alongside the pre-existing affected-rows
+-- check: this UPDATE can now lose two independently-caused ways once
+-- doctor_calendar exists — the WHERE state = 'accepted' guard matching
+-- zero rows (another match already claimed this request), or the guard
+-- matching a row but doctor_calendar's EXCLUDE constraint then rejecting
+-- the new interval (this doctor already has an overlapping commitment,
+-- e.g. a concurrent reassignment). Both fold to AlreadyClaimed — see
+-- persistMatchedIntakeRequest below for why that fold is deliberately not
+-- unpicked one level up, and the tradeoff that decision accepts.
 claimAcceptedIntakeRequest :: Connection -> IntakeRequestId -> AppointedIntakeRequest -> IO ClaimOutcome
 claimAcceptedIntakeRequest conn (IntakeRequestId rid) appointed = do
   let row = fromDomainAppointed appointed
-  n <- execute conn
+  result <- try $ execute conn
     "UPDATE intake_requests \
     \SET state = 'appointed', appointed_doctor_id = ?, start_time = ?, duration_minutes = ? \
     \WHERE id = ? AND state = 'accepted'"
     (row.appointedDoctorId, row.startTime, row.durationMinutes, rid)
-  pure (if n > 0 then Claimed else AlreadyClaimed)
+  case result of
+    Right n                        -> pure (if n > 0 then Claimed else AlreadyClaimed)
+    Left e | sqlState e == "23P01" -> pure AlreadyClaimed
+           | otherwise             -> throwIO (e :: SqlError)
 
 -- Combines persistMatchedIntakeRequest's two independent race checks
 -- (slot side, request side) into which one, if either, lost. Named
@@ -729,6 +769,24 @@ claimAcceptedIntakeRequest conn (IntakeRequestId rid) appointed = do
 -- individual check still uses) so Service.hs can translate this into its
 -- own business-outcome vocabulary without a constructor-name collision
 -- between the two modules.
+--
+-- No separate constructor for a doctor_calendar EXCLUDE violation on the
+-- request-side write, deliberately: claimAcceptedIntakeRequest above
+-- already folds that case into the same AlreadyClaimed its state-guard
+-- failure produces, so by the time the result reaches here there is no
+-- surviving information to build a distinct case from — doing so would
+-- require ClaimOutcome to grow a third constructor that every other
+-- ClaimOutcome consumer (persistReassignedIntakeRequest,
+-- persistClosedIntakeRequestIfAppointed) would then have to pattern-match
+-- on too, for a distinction none of them act on differently. The
+-- accepted tradeoff: RequestAlreadyMatched's caller-facing meaning
+-- ("this request is already scheduled, drop it") is a slight
+-- overstatement when the true cause was an interval conflict rather than
+-- a duplicate claim — the request itself is actually still 'accepted'
+-- and could in principle be retried against a different slot — but this
+-- is judged close enough (both mean "this attempt didn't go through")
+-- against the cost of threading a new outcome through every unrelated
+-- call site.
 data MatchPersistOutcome
   = MatchPersisted
   | SlotAlreadyGone
