@@ -1,36 +1,42 @@
 # API Strategy: REST
 
-Commands map to mutating HTTP verbs; Queries map to `GET`. The Command/Query split from `Domain.hs`'s exports translates almost directly into route design.
+`Service.hs`'s 11 current operations map almost directly into route design — every one of them mutates (see `commands-vs-queries-naming` in `SKILL.md`), so every one becomes a `POST` or `PATCH`. There are currently no `GET`-worthy reads exposed at the `Service.hs` layer to map here at all.
 
 ## Mapping
 
-| Domain function | HTTP | Route (example) |
+| `Service.hs` function | HTTP | Route (example) |
 |---|---|---|
-| `bookAppointment :: AvailableSlot -> AppointmentId -> PatientId -> (BookedSlot, Appointment)` | `POST` | `/slots/:id/book` |
-| `declineOffer :: OfferedSlot -> PendingSlot` | `POST` | `/slots/:id/decline` |
-| `freeSlot :: BookedSlot -> PendingSlot` (via appointment cancellation) | `POST` | `/appointments/:id/cancel` |
-| `matches :: PendingSlot -> AppointmentRequest -> Bool` | `GET` (internal use, not usually its own endpoint) | — |
-| `requestId`, `detailsOf`, `priorityOf` | (used internally to build response bodies, not endpoints themselves) | — |
+| `createDoctor :: ConnectionPool -> Text -> IO Doctor` | `POST` | `/doctors` |
+| `createPatient :: ConnectionPool -> Text -> IO Patient` | `POST` | `/patients` |
+| `createHealthcareService :: ConnectionPool -> Text -> Duration -> IO HealthcareService` | `POST` | `/healthcare-services` |
+| `createAvailableSlot :: ConnectionPool -> AvailableSlot -> IO SlotCreationOutcome` | `POST` | `/slots` |
+| `submitIntakeRequest :: ConnectionPool -> PatientId -> Text -> DoctorRequirement -> UTCTime -> IO SubmittedIntakeRequest` | `POST` | `/intake-requests` |
+| `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> UTCTime -> IO (Either ServiceError TriagedIntakeRequest)` | `POST`/`PATCH` | `/intake-requests/:id/accept` |
+| `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError IntakeRequest)` | `POST`/`PATCH` | `/intake-requests/:id/reject` |
+| `matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)` | (internal — not its own route, see below) | — |
+| `matchAcceptedIntakeRequestToSlot :: ConnectionPool -> IntakeRequestId -> AvailableSlot -> IO (Either ServiceError MatchOutcome)` | `POST` | `/intake-requests/:id/match` |
+| `reclaimAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either ServiceError TriagedIntakeRequest)` | `POST`/`PATCH` | `/intake-requests/:id/reclaim` — **whether this is exposed directly at all is an open question**, see `SKILL.md` |
+| `closeAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either ServiceError IntakeRequest)` | `POST`/`PATCH` | `/intake-requests/:id/close` |
 
-Notice that `checkWaitlist` does **not** get its own route — per the invariant in `SKILL.md`, it's the body of whatever handler responds to "a slot just became free":
+Per `checkwaitlist-not-an-endpoint` (`SKILL.md`), `matchWaitlistToSlot` does **not** get its own route — it runs inside whatever handler creates a new slot:
 
 ```
-POST /slots          → create slot → checkWaitlist → atomic write (Offered+Entry, or Available)
-POST /appointments/:id/cancel → freeSlot → checkWaitlist → atomic write
+POST /slots → createAvailableSlot → matchWaitlistToSlot → response reflects the resulting
+                                                            SlotCreationOutcome/MatchOutcome
 ```
 
 ## Request/response shapes
 
-Following invariant rules from `SKILL.md`:
-- IDs are plain UUID strings in JSON bodies, never wrapped.
-- A `Slot`'s current state (`Pending`/`Offered`/`Available`/`Booked`) should be represented in the response with a discriminator field (e.g. `"state": "booked"`), mirroring whichever DB strategy was chosen — don't invent a different shape at the API layer than the one chosen for storage, or you've added a translation layer for no reason.
+Following `SKILL.md`'s rules:
+- IDs are plain UUID strings in JSON bodies, never wrapped (`opaque-uuid-ids`).
+- `IntakeRequest`'s six states need a decided wire shape before response bodies for `/intake-requests/:id`-style routes can be written — **not decided**, see `SKILL.md`'s open questions. Don't invent a shape here to unblock this table; the routes above are named and verb-mapped without committing to what their response bodies look like.
 
-## Error responses
+## Error and outcome responses
 
-Per the totality invariant, domain transitions themselves don't fail — so REST error responses (4xx) come from boundary conditions, not domain logic:
-- `404` — the slot/entry/appointment ID doesn't resolve to anything.
-- `409 Conflict` — the resource exists but isn't in the state the operation requires (e.g. `POST /slots/:id/book` on a slot that's already `Booked`). This is the HTTP-level equivalent of "the type wouldn't have allowed this" — surface it as a conflict, not a generic 400.
-- `422` — request body failed a smart constructor (e.g. `mkMinutes` rejected the duration).
+Per `error-vs-outcome-mapping` (`SKILL.md`), the two categories below must map to genuinely different response shapes — but **which** shapes (status codes, envelope format) is not decided here:
+
+- **`ServiceError`** (`PersistenceDecodeError`, `RequestNotFound`, `RequestNotSubmittedAnymore`, `RequestNotAccepted`, `RequestNotYetTriaged`, `RequestNotAppointed`, `RequestAlreadyClosed`) — a caller mistake, a stale precondition, or an infrastructure failure. These are the closest analog to a conventional REST error response, but exactly which HTTP status each constructor maps to (a `404`-shaped one for `RequestNotFound` vs. a `409`-shaped one for the state-mismatch constructors vs. a `5xx`-shaped one for `PersistenceDecodeError` are all plausible, none chosen) is an open question.
+- **Outcome types** (`MatchOutcome`'s `Matched`/`NoEligibleRequest`/`RequestIneligible`/`SlotAlreadyClaimed`/`RequestAlreadyClaimed`; `SlotCreationOutcome`'s `SlotCreated`/`SlotConflict`) — legitimate business/concurrency branches, not errors. `NoEligibleRequest` and `SlotConflict` in particular are completely normal outcomes of correct concurrent operation, not failures — whatever status/shape they get should read as "this succeeded, here's what happened," not as an error response. Exact shape not decided.
 
 ## When to choose this
 
