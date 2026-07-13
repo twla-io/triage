@@ -36,7 +36,7 @@
 --     is what performs that real fetch (fetchWaitlist) before scanning it,
 --     so it's the one entitled to the name "waitlist" in its own name.
 -- Neither needed renaming under this test; both already happened to be
--- named correctly. triageHealthcareRequest / triageSubmittedRequest is the
+-- named correctly. acceptIntakeRequest / acceptSubmittedIntakeRequest is the
 -- clearer worked example, since there "Submitted" is a precondition in the
 -- literal sense (a stored state, fetched and checked) rather than a
 -- structural-precision distinction.

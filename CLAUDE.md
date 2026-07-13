@@ -58,14 +58,15 @@ every generated layer.
 ## Sealing in Domain.hs — selective, and that's the point
 
 Constructors are hidden (export list omits `(..)`) only where there's an
-invariant to protect:
-- `BookedSlot` — construct only via `satisfyHealthcareRequest`.
-- `ClosedAppointment` — construct only via `closeAppointment`.
+invariant to protect. Currently the only sealed case in the whole file:
 - `RoutineDue`'s `RoutineWithin` case — construct only via
   `mkRoutineWithin`, which enforces `from <= to`.
 
-Everywhere else (`HealthcareRequestPriority`, `Slot`, `TriagedHealthcareRequest`,
-`OpenAppointment`, ...) constructors are exported openly via `(..)` —
+No other type currently requires sealing.
+
+Everywhere else (`IntakeRequestPriority`, `AvailableSlot`,
+`SubmittedIntakeRequest`, `TriagedIntakeRequest`, `AppointedIntakeRequest`,
+`IntakeRequest`, ...) constructors are exported openly via `(..)` —
 deliberate, because those types have no invariant beyond what their own
 field types already enforce. Under the spec-for-codegen framing above, this
 distinction isn't incidental: sealed vs. open *is* part of the spec — it
@@ -74,12 +75,17 @@ downstream and where it doesn't. Don't seal a type "for consistency" without
 identifying the actual invariant it protects — that would be adding a false
 signal to the spec.
 
-## Layering (unverified against Transport/Persistence source — from prior discussion, not yet re-checked against code)
+## Layering
 
-Pure `Domain` (this file) → `Transport` (DTO twin types, Generic-derived
-Aeson, `toDomain`/`fromDomain` boundary functions) → `Persistence` (Row types
-shaped independently for storage, not mirrored from Domain). `Domain.hs`
-itself imports no Aeson and references no other modules, consistent with
-being the pure base layer — but the Transport/Persistence shape described
-here hasn't been confirmed against those files the way the Domain claims in
-this file have been. Re-verify before treating as settled.
+Two layers today, not three: pure `Domain` (this file) → `Persistence`
+(`src/Persistence.hs`, with its own `toDomainX`/`fromDomainX` boundary
+functions — row-shaped, not JSON-shaped) → `Service` (`src/Service.hs`),
+which orchestrates both. Confirmed by reading all three files in full — no
+stale references to pre-redesign types remain anywhere in the chain.
+
+There is currently no Transport layer, no DTO twin types, and no `aeson`
+dependency, because nothing in this repo has an external JSON-facing
+boundary yet (no API exists). A Transport layer is the right thing to
+introduce when API generation actually starts (see `triage-api-codegen`),
+shaped by whatever that API layer concretely needs — not before, and not
+speculatively now. Don't build one ahead of that need.
