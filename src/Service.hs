@@ -58,6 +58,7 @@ module Service
     -- ── Operations ───────────────────────────────────────────────────────
   , createDoctor
   , createPatient
+  , createHealthcareService
   , createAvailableSlot
   , submitIntakeRequest
   , acceptSubmittedIntakeRequest
@@ -89,6 +90,8 @@ import Domain
   , Doctor (..)
   , DoctorId (..)
   , DoctorRequirement
+  , Duration
+  , HealthcareService (..)
   , HealthcareServiceId (..)
   , IntakeRequest (..)
   , IntakeRequestId (..)
@@ -111,6 +114,7 @@ import Persistence
   , fetchIntakeWaitlist
   , insertAvailableSlot
   , insertDoctor
+  , insertHealthcareService
   , insertPatient
   , insertSubmittedIntakeRequest
   , persistClosedIntakeRequestIfAppointed
@@ -251,6 +255,16 @@ createPatient pool name = withResource pool $ \conn -> do
   let patient = Patient { id = patientId, name }
   insertPatient conn patient
   pure patient
+
+-- Creates a new HealthcareService. Same reasoning as createDoctor/
+-- createPatient above — open record, no invariant beyond field types,
+-- bare IO, no Either.
+createHealthcareService :: ConnectionPool -> Text -> Duration -> IO HealthcareService
+createHealthcareService pool name duration = withResource pool $ \conn -> do
+  serviceId <- newHealthcareServiceId
+  let service = HealthcareService { id = serviceId, name, duration }
+  insertHealthcareService conn service
+  pure service
 
 -- Creates a new Submitted request. SubmittedIntakeRequest is an open
 -- record with no invariant beyond its field types (id-types-plain,
