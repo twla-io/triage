@@ -45,6 +45,7 @@ module Persistence
   , toDomainSlot
   , fromDomainSlot
   , fetchSlot
+  , fetchAvailableSlots
   , insertAvailableSlot
   , SlotOverlap (..)
   , ClaimOutcome (..)
@@ -63,6 +64,7 @@ module Persistence
   , fromDomainClosed
   , fetchIntakeRequest
   , fetchIntakeWaitlist
+  , fetchAppointedIntakeRequests
   , insertSubmittedIntakeRequest
   , persistTriagedIntakeRequest
   , persistRejectedIntakeRequest
@@ -361,6 +363,40 @@ fetchSlot conn (SlotId sid) = do
   pure $ case rows of
     []        -> Right Nothing
     (row : _) -> Just <$> toDomainSlot row
+
+-- The range is required, not Maybe, unlike fetchDoctors/fetchPatients/
+-- fetchHealthcareServices — slots grow unboundedly with scheduling
+-- activity (unlike doctors/patients/healthcare_services, which stay small
+-- at this project's scale), so an unranged fetch here would be a
+-- genuinely unbounded query, not just a larger version of the same one.
+-- doctor_id/healthcare_service_id are genuinely optional filters — both
+-- "anyone available" and "this specific doctor/service" are real use
+-- cases. ORDER BY start_time is deliberate, same reasoning as ORDER BY
+-- name elsewhere: ascending soonest-first is what a human booking against
+-- this list actually needs, not an incidental default. Returns Either,
+-- like fetchHealthcareServices/fetchSlot above and unlike
+-- fetchDoctors/fetchPatients — toDomainSlot can fail to decode
+-- duration_minutes (fail-loudly-on-decode), so a bad row must surface as
+-- a decode failure here too, not get silently dropped or coerced.
+fetchAvailableSlots
+  :: Connection
+  -> UTCTime                     -- range start (inclusive)
+  -> UTCTime                     -- range end (exclusive)
+  -> Maybe DoctorId
+  -> Maybe HealthcareServiceId
+  -> IO (Either DecodeError [AvailableSlot])
+fetchAvailableSlots conn rangeStart rangeEnd mDoctorId mServiceId = do
+  let mDoctorUuid  = (\(DoctorId d) -> d) <$> mDoctorId
+      mServiceUuid = (\(HealthcareServiceId s) -> s) <$> mServiceId
+  rows <- query conn
+    "SELECT id, doctor_id, healthcare_service_id, start_time, duration_minutes \
+    \FROM slots \
+    \WHERE start_time >= ? AND start_time < ? \
+    \  AND (? IS NULL OR doctor_id = ?) \
+    \  AND (? IS NULL OR healthcare_service_id = ?) \
+    \ORDER BY start_time"
+    (rangeStart, rangeEnd, mDoctorUuid, mDoctorUuid, mServiceUuid, mServiceUuid)
+  pure (traverse toDomainSlot rows)
 
 -- doctor_calendar's EXCLUDE constraint (migrations/0001_init.sql) has no
 -- affected-rows equivalent — there's no WHERE clause that expresses "does
@@ -676,6 +712,56 @@ fetchIntakeWaitlist conn = do
     \       close_reason, closed_by_party, cancelled_at, cancellation_note \
     \FROM intake_requests WHERE state = 'accepted'"
   pure $ traverse decodeTriaged rows
+
+-- Scoped to state = 'appointed' only, returning AppointedIntakeRequest
+-- specifically — deliberately not a general "fetch every intake request
+-- regardless of state" function. The six-way CHECK constraint
+-- (migrations/0001_init.sql) only guarantees appointed_doctor_id/
+-- start_time/duration_minutes are non-NULL when state = 'appointed'; for
+-- every other state those columns are NULL by construction, so
+-- decodeAppointed would fail on every non-appointed row if the WHERE
+-- clause were dropped — not because the data is corrupt, but because a
+-- submitted/rejected/accepted/withdrawn row was never appointed in the
+-- first place. Filtering to state = 'appointed' up front keeps
+-- InvalidAppointedRowShape meaning what fail-loudly-on-decode intends it
+-- to mean (a row that claims to be appointed but isn't shaped like one),
+-- not "any row that isn't appointed."
+--
+-- Exists to compose a doctor's (or the whole practice's) calendar view —
+-- available slots plus booked appointments — without reading
+-- doctor_calendar directly: that table exists purely to enforce the
+-- overlap invariant via its EXCLUDE constraint, and reading it for
+-- display would couple an enforcement mechanism to an unrelated concern.
+--
+-- Same shape as fetchAvailableSlots: range required (not Maybe; requests
+-- accumulate unboundedly, same reasoning as slots), doctor_id genuinely
+-- optional ("anyone's calendar" vs. "this doctor's calendar"), ORDER BY
+-- start_time for the same soonest-first reason, Maybe DoctorId unwrapped
+-- to Maybe UUID before querying (no ToField DoctorId instance, same
+-- convention fetchAvailableSlots already uses), and Either DecodeError
+-- (traverse decodeAppointed) since decodeAppointed can fail.
+fetchAppointedIntakeRequests
+  :: Connection
+  -> UTCTime                     -- range start (inclusive)
+  -> UTCTime                     -- range end (exclusive)
+  -> Maybe DoctorId
+  -> IO (Either DecodeError [AppointedIntakeRequest])
+fetchAppointedIntakeRequests conn rangeStart rangeEnd mDoctorId = do
+  let mDoctorUuid = (\(DoctorId d) -> d) <$> mDoctorId
+  rows <- query conn
+    "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
+    \       rejected_at, rejection_reason, \
+    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \       appointed_doctor_id, start_time, duration_minutes, \
+    \       withdrawn_at, withdrawal_note, \
+    \       close_reason, closed_by_party, cancelled_at, cancellation_note \
+    \FROM intake_requests \
+    \WHERE state = 'appointed' \
+    \  AND start_time >= ? AND start_time < ? \
+    \  AND (? IS NULL OR appointed_doctor_id = ?) \
+    \ORDER BY start_time"
+    (rangeStart, rangeEnd, mDoctorUuid, mDoctorUuid)
+  pure (traverse decodeAppointed rows)
 
 insertSubmittedIntakeRequest :: Connection -> SubmittedIntakeRequest -> IO ()
 insertSubmittedIntakeRequest conn s = do

@@ -77,6 +77,16 @@ module Service
   , fetchDoctors
   , fetchPatients
   , fetchHealthcareServices
+  , fetchAvailableSlots
+  , fetchAppointedIntakeRequests
+  , fetchIntakeRequest
+  , fetchIntakeWaitlist
+
+    -- ── Calendar (composes the two reads above into one time-ordered
+    --    view — see the CALENDAR section below) ─────────────────────────
+  , CalendarEntry (..)
+  , calendarEntryStart
+  , fetchCalendarView
 
     -- ── ID generation (moved from Persistence.hs — an orchestration
     --    decision, when a new ID is minted, not a fetch or a store) ───────
@@ -87,6 +97,7 @@ module Service
   , newSlotId
   ) where
 
+import Data.List                  (sortOn)
 import Data.Pool                  (withResource)
 import Data.Text                  (Text)
 import Data.Time                  (UTCTime)
@@ -115,22 +126,30 @@ import Domain
   , checkIntakeWaitlist
   , matchIntakeRequestToSlot
   )
--- Qualified alongside the unqualified import below because six of this
+-- Qualified alongside the unqualified import below because eleven of this
 -- module's own top-level names (fetchDoctor, fetchPatient,
 -- fetchHealthcareService, fetchDoctors, fetchPatients,
--- fetchHealthcareServices — see the READS section) are deliberately
--- identical to their Persistence.hs counterparts; an unqualified import of
--- those six would conflict with this module's own definitions of them.
--- Every other Persistence function keeps the existing unqualified import,
--- since none of the rest collide with a same-named Service.hs function.
+-- fetchHealthcareServices, fetchAvailableSlots,
+-- fetchAppointedIntakeRequests, fetchIntakeRequest, fetchIntakeWaitlist —
+-- see the READS section — plus fetchCalendarView's internal calls to the
+-- first two of those) are deliberately identical to their Persistence.hs
+-- counterparts; an unqualified import of those names would conflict with
+-- this module's own definitions of them. fetchIntakeRequest/
+-- fetchIntakeWaitlist moved out of the unqualified list below when their
+-- own Service.hs wrappers were added — every internal call site that used
+-- to reach them unqualified now goes through Persistence.fetchIntakeRequest/
+-- Persistence.fetchIntakeWaitlist instead (see acceptSubmittedIntakeRequest,
+-- rejectSubmittedIntakeRequest, matchWaitlistToSlot,
+-- matchAcceptedIntakeRequestToSlot, reclaimAppointedIntakeRequest,
+-- closeAppointedIntakeRequest below). Every other Persistence function
+-- keeps the existing unqualified import, since none of the rest collide
+-- with a same-named Service.hs function.
 import qualified Persistence
 import Persistence
   ( ClaimOutcome (..)
   , ConnectionPool
   , DecodeError
   , MatchPersistOutcome (..)
-  , fetchIntakeRequest
-  , fetchIntakeWaitlist
   , insertAvailableSlot
   , insertDoctor
   , insertHealthcareService
@@ -325,7 +344,7 @@ acceptSubmittedIntakeRequest
   -> IO (Either ServiceError TriagedIntakeRequest)
 acceptSubmittedIntakeRequest pool requestId healthcareServiceId priority triagedAt =
   withResource pool $ \conn -> do
-    reqResult <- fetchIntakeRequest conn requestId
+    reqResult <- Persistence.fetchIntakeRequest conn requestId
     case reqResult of
       Left err                           -> pure (Left (PersistenceDecodeError err))
       Right Nothing                      -> pure (Left (RequestNotFound requestId))
@@ -348,7 +367,7 @@ rejectSubmittedIntakeRequest
   -> IO (Either ServiceError IntakeRequest)
 rejectSubmittedIntakeRequest pool requestId rejectedAt reason =
   withResource pool $ \conn -> do
-    reqResult <- fetchIntakeRequest conn requestId
+    reqResult <- Persistence.fetchIntakeRequest conn requestId
     case reqResult of
       Left err                           -> pure (Left (PersistenceDecodeError err))
       Right Nothing                      -> pure (Left (RequestNotFound requestId))
@@ -366,7 +385,7 @@ rejectSubmittedIntakeRequest pool requestId rejectedAt reason =
 -- identity to produce.
 matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)
 matchWaitlistToSlot pool slot = withResource pool $ \conn -> do
-  waitlistResult <- fetchIntakeWaitlist conn
+  waitlistResult <- Persistence.fetchIntakeWaitlist conn
   case waitlistResult of
     Left err -> pure (Left (PersistenceDecodeError err))
     Right waitlist ->
@@ -422,7 +441,7 @@ matchAcceptedIntakeRequestToSlot
   -> AvailableSlot
   -> IO (Either ServiceError MatchOutcome)
 matchAcceptedIntakeRequestToSlot pool requestId slot = withResource pool $ \conn -> do
-  reqResult <- fetchIntakeRequest conn requestId
+  reqResult <- Persistence.fetchIntakeRequest conn requestId
   case reqResult of
     Left err                        -> pure (Left (PersistenceDecodeError err))
     Right Nothing                   -> pure (Left (RequestNotFound requestId))
@@ -473,7 +492,7 @@ reclaimAppointedIntakeRequest
   -> IntakeRequestId
   -> IO (Either ServiceError TriagedIntakeRequest)
 reclaimAppointedIntakeRequest pool requestId = withResource pool $ \conn -> do
-  reqResult <- fetchIntakeRequest conn requestId
+  reqResult <- Persistence.fetchIntakeRequest conn requestId
   case reqResult of
     Left err                           -> pure (Left (PersistenceDecodeError err))
     Right Nothing                      -> pure (Left (RequestNotFound requestId))
@@ -532,7 +551,7 @@ closeAppointedIntakeRequest
   -> CloseReason
   -> IO (Either ServiceError IntakeRequest)
 closeAppointedIntakeRequest pool requestId reason = withResource pool $ \conn -> do
-  reqResult <- fetchIntakeRequest conn requestId
+  reqResult <- Persistence.fetchIntakeRequest conn requestId
   case reqResult of
     Left err                          -> pure (Left (PersistenceDecodeError err))
     Right Nothing                     -> pure (Left (RequestNotFound requestId))
@@ -588,6 +607,91 @@ fetchPatients pool = withResource pool $ \conn -> Persistence.fetchPatients conn
 
 fetchHealthcareServices :: ConnectionPool -> IO (Either DecodeError [HealthcareService])
 fetchHealthcareServices pool = withResource pool $ \conn -> Persistence.fetchHealthcareServices conn
+
+fetchAvailableSlots
+  :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId
+  -> Maybe HealthcareServiceId -> IO (Either DecodeError [AvailableSlot])
+fetchAvailableSlots pool rangeStart rangeEnd mDoctorId mServiceId =
+  withResource pool $ \conn ->
+    Persistence.fetchAvailableSlots conn rangeStart rangeEnd mDoctorId mServiceId
+
+fetchAppointedIntakeRequests
+  :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId
+  -> IO (Either DecodeError [AppointedIntakeRequest])
+fetchAppointedIntakeRequests pool rangeStart rangeEnd mDoctorId =
+  withResource pool $ \conn ->
+    Persistence.fetchAppointedIntakeRequests conn rangeStart rangeEnd mDoctorId
+
+-- These two specifically were already in use internally — by
+-- acceptSubmittedIntakeRequest, rejectSubmittedIntakeRequest,
+-- matchAcceptedIntakeRequestToSlot, reclaimAppointedIntakeRequest, and
+-- closeAppointedIntakeRequest (fetchIntakeRequest), and by
+-- matchWaitlistToSlot (fetchIntakeWaitlist) — as an internal
+-- fetch-then-check step inside those mutation wrappers' own
+-- guard-every-fetch-then-write-gap logic, long before either was exposed
+-- as its own top-level read here. This closes the one gap flagged when
+-- triage-api-codegen's commands-vs-queries-naming was last updated: every
+-- Persistence.hs read now has a Service.hs wrapper, no exceptions
+-- remaining.
+fetchIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either DecodeError (Maybe IntakeRequest))
+fetchIntakeRequest pool requestId = withResource pool $ \conn ->
+  Persistence.fetchIntakeRequest conn requestId
+
+fetchIntakeWaitlist :: ConnectionPool -> IO (Either DecodeError [TriagedIntakeRequest])
+fetchIntakeWaitlist pool = withResource pool $ \conn ->
+  Persistence.fetchIntakeWaitlist conn
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- CALENDAR
+-- CalendarEntry is a Service.hs-level type, deliberately not added to
+-- Domain.hs — it's not a domain concept with a lifecycle or invariant to
+-- protect, it's a display-composition of two already-real things
+-- (AvailableSlot, AppointedIntakeRequest), same category as
+-- MatchOutcome/SlotCreationOutcome above.
+--
+-- "Appointment" as a constructor name deliberately reintroduces a word
+-- this redesign removed as a TYPE (the old Appointment/OpenAppointment/
+-- ClosedAppointment, folded into IntakeRequest — see docs/decisions.md).
+-- This is a deliberate, non-colliding reuse: Haskell's separate type/
+-- constructor namespaces make it safe (CalendarEntry's Appointment
+-- constructor and the long-gone Appointment type were never going to
+-- collide even when the type still existed), and it's the same precedent
+-- AppointmentParty survived that same redesign under — the activity/event
+-- "appointment" is still real vocabulary even though no entity type
+-- represents it anymore.
+-- ═══════════════════════════════════════════════════════════════════════
+
+data CalendarEntry
+  = Slot        AvailableSlot
+  | Appointment AppointedIntakeRequest
+  deriving (Show, Eq)
+
+calendarEntryStart :: CalendarEntry -> UTCTime
+calendarEntryStart (Slot s)        = s.start
+calendarEntryStart (Appointment a) = a.start
+
+-- Composes fetchAvailableSlots and fetchAppointedIntakeRequests rather
+-- than reading doctor_calendar directly — that table's schema is
+-- deliberately minimized for its one job (overlap enforcement via its
+-- EXCLUDE constraint) and was never meant to serve as a display/read
+-- model; reading it directly here would couple an enforcement mechanism
+-- to an unrelated display concern.
+--
+-- healthcare_service_id filtering is intentionally NOT exposed here —
+-- fetchAvailableSlots's own optional service filter is fixed to Nothing.
+-- A calendar view is scoped by time and doctor, not by service; a
+-- service-filtered variant is a new, separate parameter to add
+-- deliberately if ever needed, not assumed now.
+fetchCalendarView
+  :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId
+  -> IO (Either DecodeError [CalendarEntry])
+fetchCalendarView pool rangeStart rangeEnd mDoctorId = do
+  slotsResult     <- fetchAvailableSlots pool rangeStart rangeEnd mDoctorId Nothing
+  appointedResult <- fetchAppointedIntakeRequests pool rangeStart rangeEnd mDoctorId
+  pure $ do
+    slots     <- slotsResult
+    appointed <- appointedResult
+    pure . sortOn calendarEntryStart $ map Slot slots ++ map Appointment appointed
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- ID GENERATION
