@@ -68,6 +68,16 @@ module Service
   , reclaimAppointedIntakeRequest
   , closeAppointedIntakeRequest
 
+    -- ── Reads (thin pass-throughs — no precondition check, no
+    --    ServiceError/outcome translation; see the READS section below for
+    --    why these are a different kind of function from Operations) ──────
+  , fetchDoctor
+  , fetchPatient
+  , fetchHealthcareService
+  , fetchDoctors
+  , fetchPatients
+  , fetchHealthcareServices
+
     -- ── ID generation (moved from Persistence.hs — an orchestration
     --    decision, when a new ID is minted, not a fetch or a store) ───────
   , newDoctorId
@@ -105,6 +115,15 @@ import Domain
   , checkIntakeWaitlist
   , matchIntakeRequestToSlot
   )
+-- Qualified alongside the unqualified import below because six of this
+-- module's own top-level names (fetchDoctor, fetchPatient,
+-- fetchHealthcareService, fetchDoctors, fetchPatients,
+-- fetchHealthcareServices — see the READS section) are deliberately
+-- identical to their Persistence.hs counterparts; an unqualified import of
+-- those six would conflict with this module's own definitions of them.
+-- Every other Persistence function keeps the existing unqualified import,
+-- since none of the rest collide with a same-named Service.hs function.
+import qualified Persistence
 import Persistence
   ( ClaimOutcome (..)
   , ConnectionPool
@@ -528,6 +547,47 @@ closeAppointedIntakeRequest pool requestId reason = withResource pool $ \conn ->
       pure $ case claim of
         Claimed        -> Right closed
         AlreadyClaimed -> Left (RequestAlreadyClosed requestId)
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- READS
+-- Unlike every function in OPERATIONS above, these have no
+-- verifies-the-precondition naming question and no ServiceError/outcome
+-- translation to do. Operations are all "fetch a row, check something
+-- about its state, then write" — the check is what a shared name with a
+-- Domain.hs verb would be claiming, and a failed check is what
+-- ServiceError/an outcome constructor reports back. A read has neither:
+-- there's no Domain.hs verb to collide with (nothing here transforms a
+-- domain value), and no fetch-then-act gap for a concurrent write to fall
+-- into (guard-every-fetch-then-write-gap doesn't apply — there's no
+-- write). The read itself is the entire operation, so each wrapper's only
+-- job is pool-in-connection-scoped's Connection checkout; the return type
+-- is whatever Persistence.hs's own function already produces, passed
+-- through verbatim rather than reinterpreted.
+--
+-- Same name as their Persistence.hs counterparts on purpose (mirroring
+-- insertDoctor/insertPatient/insertHealthcareService's own naming, which
+-- face no such collision only because Service.hs doesn't also define its
+-- own insertDoctor) — see the qualified `Persistence` import above for
+-- why that's possible without a clash.
+-- ═══════════════════════════════════════════════════════════════════════
+
+fetchDoctor :: ConnectionPool -> DoctorId -> IO (Maybe Doctor)
+fetchDoctor pool doctorId = withResource pool $ \conn -> Persistence.fetchDoctor conn doctorId
+
+fetchPatient :: ConnectionPool -> PatientId -> IO (Maybe Patient)
+fetchPatient pool patientId = withResource pool $ \conn -> Persistence.fetchPatient conn patientId
+
+fetchHealthcareService :: ConnectionPool -> HealthcareServiceId -> IO (Either DecodeError (Maybe HealthcareService))
+fetchHealthcareService pool serviceId = withResource pool $ \conn -> Persistence.fetchHealthcareService conn serviceId
+
+fetchDoctors :: ConnectionPool -> IO [Doctor]
+fetchDoctors pool = withResource pool $ \conn -> Persistence.fetchDoctors conn
+
+fetchPatients :: ConnectionPool -> IO [Patient]
+fetchPatients pool = withResource pool $ \conn -> Persistence.fetchPatients conn
+
+fetchHealthcareServices :: ConnectionPool -> IO (Either DecodeError [HealthcareService])
+fetchHealthcareServices pool = withResource pool $ \conn -> Persistence.fetchHealthcareServices conn
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- ID GENERATION

@@ -21,11 +21,13 @@ module Persistence
   , toDomainDoctor
   , fromDomainDoctor
   , fetchDoctor
+  , fetchDoctors
   , insertDoctor
   , PatientRow (..)
   , toDomainPatient
   , fromDomainPatient
   , fetchPatient
+  , fetchPatients
   , insertPatient
 
     -- ── Healthcare Service ───────────────────────────────────────────────
@@ -35,6 +37,7 @@ module Persistence
   , toDomainHealthcareService
   , fromDomainHealthcareService
   , fetchHealthcareService
+  , fetchHealthcareServices
   , insertHealthcareService
 
     -- ── Slot ─────────────────────────────────────────────────────────────
@@ -181,6 +184,17 @@ insertDoctor conn d = do
   _ <- execute conn "INSERT INTO doctors (id, name) VALUES (?, ?)" (row.id, row.name)
   pure ()
 
+-- ORDER BY name is deliberate, not incidental — Postgres gives no ordering
+-- guarantee at all without an explicit ORDER BY, and this list backs a
+-- doctor picker where a human benefits from alphabetical order, unlike
+-- UUID or unspecified insertion order. Deliberately no LIMIT/OFFSET —
+-- unbounded is correct at this project's scale (2-3 doctors), not an
+-- oversight.
+fetchDoctors :: Connection -> IO [Doctor]
+fetchDoctors conn = do
+  rows <- query_ conn "SELECT id, name FROM doctors ORDER BY name"
+  pure (map toDomainDoctor rows)
+
 data PatientRow = PatientRow
   { id   :: UUID
   , name :: Text
@@ -212,6 +226,15 @@ insertPatient conn p = do
   let row = fromDomainPatient p
   _ <- execute conn "INSERT INTO patients (id, name) VALUES (?, ?)" (row.id, row.name)
   pure ()
+
+-- ORDER BY name is deliberate, not incidental — same reasoning as
+-- fetchDoctors above: no ordering guarantee without it, and this list
+-- backs a patient picker. Deliberately no LIMIT/OFFSET — unbounded is
+-- correct at this project's scale, not an oversight.
+fetchPatients :: Connection -> IO [Patient]
+fetchPatients conn = do
+  rows <- query_ conn "SELECT id, name FROM patients ORDER BY name"
+  pure (map toDomainPatient rows)
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- HEALTHCARE SERVICE
@@ -261,6 +284,19 @@ fetchHealthcareService conn (HealthcareServiceId hsid) = do
   pure $ case rows of
     []        -> Right Nothing
     (row : _) -> Just <$> toDomainHealthcareService row
+
+-- ORDER BY name is deliberate, not incidental — same reasoning as
+-- fetchDoctors/fetchPatients above: no ordering guarantee without it, and
+-- this list backs a service picker. Deliberately no LIMIT/OFFSET —
+-- unbounded is correct at this project's scale, not an oversight. Unlike
+-- fetchDoctors/fetchPatients, this returns Either: toDomainHealthcareService
+-- can fail to decode duration_minutes (fail-loudly-on-decode), so this
+-- mirrors fetchHealthcareService's own Either DecodeError shape rather
+-- than silently dropping or coercing a bad row.
+fetchHealthcareServices :: Connection -> IO (Either DecodeError [HealthcareService])
+fetchHealthcareServices conn = do
+  rows <- query_ conn "SELECT id, name, duration_minutes FROM healthcare_services ORDER BY name"
+  pure (traverse toDomainHealthcareService rows)
 
 insertHealthcareService :: Connection -> HealthcareService -> IO ()
 insertHealthcareService conn s = do
