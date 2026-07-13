@@ -775,7 +775,7 @@ claimAcceptedIntakeRequest conn (IntakeRequestId rid) appointed = do
 -- failure produces, so by the time the result reaches here there is no
 -- surviving information to build a distinct case from — doing so would
 -- require ClaimOutcome to grow a third constructor that every other
--- ClaimOutcome consumer (persistReassignedIntakeRequest,
+-- ClaimOutcome consumer (persistReclaimedIntakeRequest,
 -- persistClosedIntakeRequestIfAppointed) would then have to pattern-match
 -- on too, for a distinction none of them act on differently. The
 -- accepted tradeoff: RequestAlreadyMatched's caller-facing meaning

@@ -481,8 +481,7 @@ race via an affected-rows check on a conditional write, never a caught
 here: an `EXCLUDE` violation has no affected-rows equivalent, because there
 is no `WHERE` clause that expresses "does this range overlap any existing
 one" — that check only exists inside the index Postgres itself maintains.
-`insertAvailableSlot`, `claimAcceptedIntakeRequest`, and
-`persistReassignedIntakeRequest` each now catch `SqlError` and match on
+`insertAvailableSlot` and `claimAcceptedIntakeRequest` each now catch `SqlError` and match on
 `sqlState == "23P01"` (`exclusion_violation`) as the one narrow, contained
 exception to the rule, rethrowing anything else unchanged.
 

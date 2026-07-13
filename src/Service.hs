@@ -463,15 +463,15 @@ reclaimAppointedIntakeRequest pool requestId = withResource pool $ \conn -> do
 -- IntakeRequest's Closed constructor is open and there is deliberately no
 -- closeIntakeRequest function in Domain.hs (closing is direct
 -- construction, per decisions.md), so this name needs no receiver-noun
--- folding the way reassignAppointedIntakeRequestSlot/matchWaitlistToSlot
--- do. Note this used to construct a standalone ClosedAppointment; now it
+-- folding the way matchWaitlistToSlot does. Note this used to construct
+-- a standalone ClosedAppointment; now it
 -- constructs IntakeRequest's own Closed case directly and returns that —
 -- ClosedAppointment no longer exists as a type.
 --
 -- CloseReason is taken whole from the caller, not decomposed into separate
 -- parameters — same convention as AvailableSlot being threaded wholesale
--- into matchWaitlistToSlot/reassignAppointedIntakeRequestSlot rather than
--- picked apart into its own start/duration args. Cancelled's UTCTime is
+-- into matchWaitlistToSlot rather than picked apart into its own
+-- start/duration args. Cancelled's UTCTime is
 -- therefore already caller-supplied by construction, consistent with
 -- submitIntakeRequest/acceptSubmittedIntakeRequest never minting a UTCTime
 -- internally.
@@ -487,11 +487,12 @@ reclaimAppointedIntakeRequest pool requestId = withResource pool $ \conn -> do
 -- RequestAlreadyClosed, not a new outcome category — the caller doesn't
 -- need to distinguish "already closed when I checked" from "closed by
 -- someone else a moment later," both mean the same thing to them. The
--- same double-guard discipline now applies consistently to reassignment
--- too, per persistReassignedIntakeRequest's fix.
+-- same double-guard discipline applies to reclaimAppointedIntakeRequest
+-- too — persistReclaimedIntakeRequest guards on the identical
+-- state = 'appointed' condition.
 --
 -- All six IntakeRequest cases handled explicitly, no wildcard, same
--- reasoning as reassignAppointedIntakeRequestSlot above.
+-- reasoning as reclaimAppointedIntakeRequest above.
 closeAppointedIntakeRequest
   :: ConnectionPool
   -> IntakeRequestId
