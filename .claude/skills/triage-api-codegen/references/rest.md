@@ -1,6 +1,6 @@
 # API Strategy: REST
 
-`Service.hs`'s 11 mutating operations map almost directly into route design — every one of them mutates, so every one becomes a `POST` or `PATCH`. Its 11 read functions (see `commands-vs-queries-naming` in `SKILL.md`) map just as directly to `GET` routes, one per `fetch*` function.
+`Service.hs`'s 11 mutating operations map almost directly into route design — every one of them mutates, and per `verb-minimalism`/`action-endpoints-not-generic-patch` (`SKILL.md`) every one becomes an action-suffixed `POST`, never `PATCH`. Its 11 read functions (see `commands-vs-queries-naming` in `SKILL.md`) map just as directly to `GET` routes, one per `fetch*` function.
 
 ## Mapping
 
@@ -13,12 +13,14 @@
 | `createHealthcareService :: ConnectionPool -> Text -> Duration -> IO HealthcareService` | `POST` | `/healthcare-services` |
 | `createAvailableSlot :: ConnectionPool -> AvailableSlot -> IO SlotCreationOutcome` | `POST` | `/slots` |
 | `submitIntakeRequest :: ConnectionPool -> PatientId -> Text -> DoctorRequirement -> UTCTime -> IO SubmittedIntakeRequest` | `POST` | `/intake-requests` |
-| `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> UTCTime -> IO (Either ServiceError TriagedIntakeRequest)` | `POST`/`PATCH` | `/intake-requests/:id/accept` |
-| `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError IntakeRequest)` | `POST`/`PATCH` | `/intake-requests/:id/reject` |
+| `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> UTCTime -> IO (Either ServiceError TriagedIntakeRequest)` | `POST` | `/intake-requests/:id/accept` |
+| `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError IntakeRequest)` | `POST` | `/intake-requests/:id/reject` |
 | `matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)` | (internal — not its own route, see below) | — |
 | `matchAcceptedIntakeRequestToSlot :: ConnectionPool -> IntakeRequestId -> AvailableSlot -> IO (Either ServiceError MatchOutcome)` | `POST` | `/intake-requests/:id/match` |
-| `reclaimAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either ServiceError TriagedIntakeRequest)` | `POST`/`PATCH` | `/intake-requests/:id/reclaim` — **whether this is exposed directly at all is an open question**, see `SKILL.md` |
-| `closeAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either ServiceError IntakeRequest)` | `POST`/`PATCH` | `/intake-requests/:id/close` |
+| `reclaimAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either ServiceError TriagedIntakeRequest)` | `POST` | `/intake-requests/:id/reclaim` — a directly-callable endpoint, per `action-endpoints-not-generic-patch` (`SKILL.md`); not gated behind any higher-level action |
+| `closeAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either ServiceError IntakeRequest)` | `POST` | `/intake-requests/:id/close` |
+
+All action-suffixed, per `action-endpoints-not-generic-patch` (`SKILL.md`) — never `PATCH /intake-requests/:id` with a state field.
 
 Per `checkwaitlist-not-an-endpoint` (`SKILL.md`), `matchWaitlistToSlot` does **not** get its own route — it runs inside whatever handler creates a new slot:
 
@@ -55,10 +57,17 @@ Following `SKILL.md`'s rules:
 
 ## Error and outcome responses
 
-Per `error-vs-outcome-mapping` (`SKILL.md`), the two categories below must map to genuinely different response shapes — but **which** shapes (status codes, envelope format) is not decided here:
+Per `error-vs-outcome-mapping` (`SKILL.md`), the wire mapping is decided: four HTTP status codes, each answering a genuinely different question about *where* the request failed or succeeded, not a graded scale of "how wrong."
 
-- **`ServiceError`** (`PersistenceDecodeError`, `RequestNotFound`, `RequestNotSubmittedAnymore`, `RequestNotAccepted`, `RequestNotYetTriaged`, `RequestNotAppointed`, `RequestAlreadyClosed`) — a caller mistake, a stale precondition, or an infrastructure failure. These are the closest analog to a conventional REST error response, but exactly which HTTP status each constructor maps to (a `404`-shaped one for `RequestNotFound` vs. a `409`-shaped one for the state-mismatch constructors vs. a `5xx`-shaped one for `PersistenceDecodeError` are all plausible, none chosen) is an open question.
-- **Outcome types** (`MatchOutcome`'s `Matched`/`NoEligibleRequest`/`RequestIneligible`/`SlotAlreadyClaimed`/`RequestAlreadyClaimed`; `SlotCreationOutcome`'s `SlotCreated`/`SlotConflict`) — legitimate business/concurrency branches, not errors. `NoEligibleRequest` and `SlotConflict` in particular are completely normal outcomes of correct concurrent operation, not failures — whatever status/shape they get should read as "this succeeded, here's what happened," not as an error response. Exact shape not decided.
+- **`400`** — malformed before reaching `Service.hs` at all: bad JSON, a field with the wrong type, a missing required field, an ID that isn't even a valid UUID shape.
+- **`404`** — the route/path itself doesn't resolve to a known resource shape, decided by the router, before any `Service.hs` call.
+- **`200`** — `Service.hs` actually ran and answered. This covers **both** success **and** every `ServiceError`/outcome-type constructor — `PersistenceDecodeError` aside (see `500` below) — discriminated by a field in the response body, never by status code:
+  - `ServiceError`'s `RequestNotFound`, `RequestNotSubmittedAnymore`, `RequestNotAccepted`, `RequestNotYetTriaged`, `RequestNotAppointed`, `RequestAlreadyClosed`.
+  - `MatchOutcome`'s `Matched`, `NoEligibleRequest`, `RequestIneligible`, `SlotAlreadyClaimed`, `RequestAlreadyClaimed`.
+  - `SlotCreationOutcome`'s `SlotCreated`, `SlotConflict`.
+- **`500`** — outside the domain's vocabulary entirely: `PersistenceDecodeError`, a DB connection failure, anything genuinely unexpected.
+
+**Worked example — the case most likely to get "fixed" back to the wrong status by default:** `POST /intake-requests/11111111-.../accept` for a well-formed but nonexistent `IntakeRequestId` is a **`200`**, not a `404`. The path resolved fine (`/intake-requests/:id/accept` is a real route), the ID is syntactically valid, and `Service.acceptSubmittedIntakeRequest` genuinely ran `fetchIntakeRequest`, got `Right Nothing`, and returned `Left (RequestNotFound reqId)` — a real domain answer, discriminated in the response body (e.g. `{"outcome": "requestNotFound", "requestId": "..."}`), not signaled via status code. Reserve `404` for when the *route itself* doesn't exist, not for "the resource this well-formed request asked about turned out not to exist" — that distinction is deliberate, not an oversight, per `error-vs-outcome-mapping`.
 
 ## When to choose this
 
