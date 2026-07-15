@@ -29,6 +29,11 @@ module Transport
   , toDomainPatient
   , fromDomainPatient
 
+    -- ── Duration ─────────────────────────────────────────────────────────
+  , DurationDTO (..)
+  , toDomainDuration
+  , fromDomainDuration
+
     -- ── Healthcare Service ───────────────────────────────────────────────
   , HealthcareServiceDTO (..)
   , toDomainHealthcareService
@@ -133,32 +138,21 @@ import Service (CalendarEntry (..))
 -- Transport-local, not Persistence.DecodeError — Transport and Persistence
 -- are peer layers over Domain (see Domain.hs's Layering section), neither
 -- stacked on the other, so Transport does not depend on Persistence for
--- this. The one overlapping failure mode (an out-of-range duration in
--- minutes) is re-checked here against the same 15/30/60 restriction
--- Persistence.decodeDuration enforces, rather than imported from it.
+-- this.
 -- ═══════════════════════════════════════════════════════════════════════
 
 -- The shared decode-error type for the whole Transport module, not scoped
--- to Duration alone — expected to keep growing constructors as later
--- steps add IntakeRequestPriority/CloseReason/IntakeRequest parsing (e.g.
--- an unrecognized "type" discriminator string will need its own case).
+-- to any one type — down to a single constructor for now (Duration used
+-- to contribute InvalidDurationMinutes too, back when it wired as a raw
+-- durationMinutes :: Int; now that Duration is its own tagged DTO enum
+-- like every other closed Domain.hs sum type, an invalid tag fails to
+-- parse before any TransportError-producing function ever runs, so that
+-- case is gone).
 data TransportError
-  = InvalidDurationMinutes Int
-  | InvalidRoutineWithinRange UTCTime UTCTime
+  = InvalidRoutineWithinRange UTCTime UTCTime
     -- ^ a { "type": "routineWithin", "from": ..., "to": ... } DTO whose
     -- from/to fail mkRoutineWithin's from <= to invariant.
   deriving (Show, Eq)
-
-decodeDurationMinutes :: Int -> Either TransportError Duration
-decodeDurationMinutes 15 = Right QuarterOfAnHour
-decodeDurationMinutes 30 = Right HalfAnHour
-decodeDurationMinutes 60 = Right OneHour
-decodeDurationMinutes n  = Left (InvalidDurationMinutes n)
-
-encodeDurationMinutes :: Duration -> Int
-encodeDurationMinutes QuarterOfAnHour = 15
-encodeDurationMinutes HalfAnHour      = 30
-encodeDurationMinutes OneHour         = 60
 
 -- Shared by every DTO field below carrying an ID — opaque-uuid-ids: plain
 -- UUID strings on the wire, never a wrapped object.
@@ -220,17 +214,65 @@ fromDomainPatient p =
   in PatientDTO { id = pid, name = p.name }
 
 -- ═══════════════════════════════════════════════════════════════════════
+-- DURATION
+-- A closed 3-case enum, same nullary-sum-type treatment as
+-- AppointmentPartyDTO — a named "type" string on the wire, not a raw
+-- magic number a client has to separately know the meaning of. This
+-- replaces an earlier durationMinutes :: Int convention that was carried
+-- over from Persistence.hs's storage shape without re-examining whether
+-- it fit the wire format — it didn't: every other closed enum in this
+-- file (AppointmentParty, CloseReason, IntakeRequestPriority's tiers)
+-- already gets tagged-flat-serialization's proper treatment, and
+-- Duration is no different. No decode failure possible: an unrecognized
+-- "type" string fails to parse as a normal aeson parse error before
+-- toDomainDuration ever runs, so both directions here are total.
+-- ═══════════════════════════════════════════════════════════════════════
+
+data DurationDTO
+  = QuarterOfAnHourDTO
+  | HalfAnHourDTO
+  | OneHourDTO
+  deriving (Show, Eq)
+
+instance ToJSON DurationDTO where
+  toJSON QuarterOfAnHourDTO = object ["type" .= ("quarterOfAnHour" :: Text)]
+  toJSON HalfAnHourDTO      = object ["type" .= ("halfAnHour" :: Text)]
+  toJSON OneHourDTO         = object ["type" .= ("oneHour" :: Text)]
+
+instance FromJSON DurationDTO where
+  parseJSON = withObject "DurationDTO" $ \v -> do
+    tag <- v .: "type"
+    case (tag :: Text) of
+      "quarterOfAnHour" -> pure QuarterOfAnHourDTO
+      "halfAnHour"      -> pure HalfAnHourDTO
+      "oneHour"         -> pure OneHourDTO
+      other             -> fail ("unrecognized Duration type: " ++ show other)
+
+toDomainDuration :: DurationDTO -> Duration
+toDomainDuration QuarterOfAnHourDTO = QuarterOfAnHour
+toDomainDuration HalfAnHourDTO      = HalfAnHour
+toDomainDuration OneHourDTO         = OneHour
+
+fromDomainDuration :: Duration -> DurationDTO
+fromDomainDuration QuarterOfAnHour = QuarterOfAnHourDTO
+fromDomainDuration HalfAnHour      = HalfAnHourDTO
+fromDomainDuration OneHour         = OneHourDTO
+
+-- ═══════════════════════════════════════════════════════════════════════
 -- HEALTHCARE SERVICE
--- Duration on the wire as minutes (Int), matching how Persistence.hs
--- already encodes it, for consistency across layers. Unlike Doctor/
--- Patient above, decoding can fail (an out-of-range durationMinutes), so
--- toDomainHealthcareService returns Either TransportError.
+-- Duration nested as its own tagged DurationDTO object under the
+-- "duration" key (see DURATION above), not a flat durationMinutes
+-- number. Unlike the earlier Int-range-checked convention, DurationDTO
+-- has no decode failure of its own, so toDomainHealthcareService is now
+-- total, unlike Slot/Appointed Intake Request below whose Either comes
+-- from a different field entirely (Slot has none; Appointed Intake
+-- Request's comes from priority, not duration).
 -- ═══════════════════════════════════════════════════════════════════════
 
 data HealthcareServiceDTO = HealthcareServiceDTO
-  { id              :: UUID
-  , name            :: Text
-  , durationMinutes :: Int
+  { id       :: UUID
+  , name     :: Text
+  , duration :: DurationDTO
   }
   deriving (Show, Eq)
 
@@ -238,30 +280,32 @@ instance ToJSON HealthcareServiceDTO where
   toJSON dto = object
     [ "id" .= UUID.toText dto.id
     , "name" .= dto.name
-    , "durationMinutes" .= dto.durationMinutes
+    , "duration" .= dto.duration
     ]
 
 instance FromJSON HealthcareServiceDTO where
   parseJSON = withObject "HealthcareServiceDTO" $ \v -> do
     idText <- v .: "id"
     uid    <- parseUUIDField idText
-    HealthcareServiceDTO uid <$> v .: "name" <*> v .: "durationMinutes"
+    HealthcareServiceDTO uid <$> v .: "name" <*> v .: "duration"
 
-toDomainHealthcareService :: HealthcareServiceDTO -> Either TransportError HealthcareService
+toDomainHealthcareService :: HealthcareServiceDTO -> HealthcareService
 toDomainHealthcareService dto =
-  (\d -> HealthcareService { id = HealthcareServiceId dto.id, name = dto.name, duration = d })
-    <$> decodeDurationMinutes dto.durationMinutes
+  HealthcareService
+    { id = HealthcareServiceId dto.id, name = dto.name, duration = toDomainDuration dto.duration }
 
 fromDomainHealthcareService :: HealthcareService -> HealthcareServiceDTO
 fromDomainHealthcareService s =
   let HealthcareServiceId hsid = s.id
   in HealthcareServiceDTO
-       { id = hsid, name = s.name, durationMinutes = encodeDurationMinutes s.duration }
+       { id = hsid, name = s.name, duration = fromDomainDuration s.duration }
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- SLOT
--- Same duration-as-minutes shape and same decode-failure risk as
--- Healthcare Service above.
+-- Same duration-as-tagged-DurationDTO shape as Healthcare Service above,
+-- nested under "duration" rather than a flat durationMinutes number. No
+-- decode failure of its own (same reasoning as Healthcare Service), so
+-- toDomainAvailableSlot is total.
 -- ═══════════════════════════════════════════════════════════════════════
 
 data AvailableSlotDTO = AvailableSlotDTO
@@ -269,7 +313,7 @@ data AvailableSlotDTO = AvailableSlotDTO
   , doctorId            :: UUID
   , healthcareServiceId :: UUID
   , start               :: UTCTime
-  , durationMinutes     :: Int
+  , duration            :: DurationDTO
   }
   deriving (Show, Eq)
 
@@ -279,7 +323,7 @@ instance ToJSON AvailableSlotDTO where
     , "doctorId" .= UUID.toText dto.doctorId
     , "healthcareServiceId" .= UUID.toText dto.healthcareServiceId
     , "start" .= dto.start
-    , "durationMinutes" .= dto.durationMinutes
+    , "duration" .= dto.duration
     ]
 
 instance FromJSON AvailableSlotDTO where
@@ -290,18 +334,17 @@ instance FromJSON AvailableSlotDTO where
     uid                     <- parseUUIDField idText
     did                     <- parseUUIDField doctorIdText
     hsid                    <- parseUUIDField healthcareServiceIdText
-    AvailableSlotDTO uid did hsid <$> v .: "start" <*> v .: "durationMinutes"
+    AvailableSlotDTO uid did hsid <$> v .: "start" <*> v .: "duration"
 
-toDomainAvailableSlot :: AvailableSlotDTO -> Either TransportError AvailableSlot
+toDomainAvailableSlot :: AvailableSlotDTO -> AvailableSlot
 toDomainAvailableSlot dto =
-  (\d -> AvailableSlot
+  AvailableSlot
     { id                  = SlotId dto.id
     , doctorId            = DoctorId dto.doctorId
     , healthcareServiceId = HealthcareServiceId dto.healthcareServiceId
     , start               = dto.start
-    , duration            = d
-    })
-  <$> decodeDurationMinutes dto.durationMinutes
+    , duration            = toDomainDuration dto.duration
+    }
 
 fromDomainAvailableSlot :: AvailableSlot -> AvailableSlotDTO
 fromDomainAvailableSlot s =
@@ -310,7 +353,7 @@ fromDomainAvailableSlot s =
       HealthcareServiceId hsid = s.healthcareServiceId
   in AvailableSlotDTO
        { id = sid, doctorId = did, healthcareServiceId = hsid
-       , start = s.start, durationMinutes = encodeDurationMinutes s.duration
+       , start = s.start, duration = fromDomainDuration s.duration
        }
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -556,9 +599,9 @@ fromDomainDoctorRequirement (SpecificDoctor did) =
 -- CalendarEntryDTO. Flat record, the exact field set IntakeRequestDTO's
 -- "appointed" tag already flattens (id, patientId, narrative,
 -- doctorRequirement, createdAt, healthcareServiceId, priority,
--- triagedAt, doctorId, start, durationMinutes), but with NO
--- discriminator tag of its own at the top level — unlike IntakeRequest's
--- six/seven cases, there is only one shape here.
+-- triagedAt, doctorId, start, duration), but with NO discriminator tag
+-- of its own at the top level — unlike IntakeRequest's six/seven cases,
+-- there is only one shape here.
 --
 -- submittedFields/toDomainSubmitted and triagedFields/toDomainTriaged
 -- live here (rather than in the Intake Request section below) because
@@ -577,11 +620,11 @@ fromDomainDoctorRequirement (SpecificDoctor did) =
 -- incoming pattern match.
 --
 -- toDomainAppointedIntakeRequest returns Either TransportError,
--- propagating toDomainTriaged's priority failure and
--- decodeDurationMinutes's duration failure — same two failure modes
+-- propagating toDomainTriaged's priority failure — the one failure mode
 -- IntakeRequestDTO's own "appointed"/"closed" cases already propagate.
--- fromDomainAppointedIntakeRequest is total (same as everything else on
--- this side).
+-- (Duration no longer contributes a failure here — toDomainDuration is
+-- total, see DURATION above.) fromDomainAppointedIntakeRequest is total
+-- (same as everything else on this side).
 -- ═══════════════════════════════════════════════════════════════════════
 
 submittedFields :: SubmittedIntakeRequest -> (UUID, UUID, Text, DoctorRequirementDTO, UTCTime)
@@ -622,7 +665,7 @@ data AppointedIntakeRequestDTO = AppointedIntakeRequestDTO
   , triagedAt            :: UTCTime
   , doctorId            :: UUID
   , start               :: UTCTime
-  , durationMinutes     :: Int
+  , duration            :: DurationDTO
   }
   deriving (Show, Eq)
 
@@ -638,7 +681,7 @@ instance ToJSON AppointedIntakeRequestDTO where
     , "triagedAt" .= dto.triagedAt
     , "doctorId" .= UUID.toText dto.doctorId
     , "start" .= dto.start
-    , "durationMinutes" .= dto.durationMinutes
+    , "duration" .= dto.duration
     ]
 
 instance FromJSON AppointedIntakeRequestDTO where
@@ -653,23 +696,23 @@ instance FromJSON AppointedIntakeRequestDTO where
     triagedTime <- v .: "triagedAt"
     did         <- v .: "doctorId" >>= parseUUIDField
     start'      <- v .: "start"
-    durMin      <- v .: "durationMinutes"
-    pure (AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' durMin)
+    dur         <- v .: "duration"
+    pure (AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' dur)
 
 toDomainAppointedIntakeRequest :: AppointedIntakeRequestDTO -> Either TransportError AppointedIntakeRequest
-toDomainAppointedIntakeRequest dto = do
-  triagedReq <- toDomainTriaged
-    dto.id dto.patientId dto.narrative dto.doctorRequirement dto.createdAt
-    dto.healthcareServiceId dto.priority dto.triagedAt
-  dur <- decodeDurationMinutes dto.durationMinutes
-  Right (AppointedIntakeRequest triagedReq (DoctorId dto.doctorId) dto.start dur)
+toDomainAppointedIntakeRequest dto =
+  (\triagedReq -> AppointedIntakeRequest triagedReq (DoctorId dto.doctorId) dto.start
+    (toDomainDuration dto.duration))
+  <$> toDomainTriaged
+        dto.id dto.patientId dto.narrative dto.doctorRequirement dto.createdAt
+        dto.healthcareServiceId dto.priority dto.triagedAt
 
 fromDomainAppointedIntakeRequest :: AppointedIntakeRequest -> AppointedIntakeRequestDTO
 fromDomainAppointedIntakeRequest a =
   let (rid, pid, narr, req, created, svcId, prio, triagedTime) = triagedFields a.triaged
       DoctorId did = a.doctorId
   in AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did a.start
-       (encodeDurationMinutes a.duration)
+       (fromDomainDuration a.duration)
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INTAKE REQUEST
@@ -691,8 +734,8 @@ fromDomainAppointedIntakeRequest a =
 --   accepted:  submitted's fields + healthcareServiceId, priority,
 --              triagedAt
 --   appointed: accepted's fields + doctorId, start,
---              durationMinutes :: Int (matching every other DTO's
---              minutes convention) — same field set as
+--              duration :: DurationDTO (matching every other DTO's
+--              tagged-enum convention) — same field set as
 --              AppointedIntakeRequestDTO above, verbatim
 --   withdrawnFromSubmitted: submitted's fields + withdrawnAt,
 --              withdrawalNote :: Maybe Text
@@ -715,11 +758,10 @@ fromDomainAppointedIntakeRequest a =
 --
 -- toDomainIntakeRequest propagates every failure mode from the pieces it
 -- composes: toDomainIntakeRequestPriority's InvalidRoutineWithinRange
--- (every case carrying a priority) and decodeDurationMinutes's
--- InvalidDurationMinutes (Appointed/Closed, now via
--- toDomainAppointedIntakeRequest). DoctorRequirementDTO introduces no
--- failure of its own (verified above), so it contributes nothing to
--- propagate. No NEW TransportError constructor is needed for this
+-- (every case carrying a priority). DoctorRequirementDTO and
+-- DurationDTO both introduce no failure of their own (verified above in
+-- their own sections), so neither contributes anything to propagate. No
+-- NEW TransportError constructor is needed for this
 -- flattening/reassembly step itself — Domain.hs has no invariant
 -- spanning these embedded pieces beyond what Priority/Duration already
 -- enforce (SubmittedIntakeRequest/TriagedIntakeRequest/
@@ -731,7 +773,7 @@ fromDomainAppointedIntakeRequest a =
 -- fromDomainIntakeRequest is total: every piece it calls
 -- (fromDomainDoctorRequirement, fromDomainIntakeRequestPriority,
 -- fromDomainCloseReason, fromDomainAppointedIntakeRequest,
--- encodeDurationMinutes, UUID.toText) is total.
+-- fromDomainDuration, UUID.toText) is total.
 -- ═══════════════════════════════════════════════════════════════════════
 
 data IntakeRequestDTO
@@ -772,7 +814,7 @@ data IntakeRequestDTO
       , triagedAt           :: UTCTime
       , doctorId            :: UUID
       , start               :: UTCTime
-      , durationMinutes     :: Int
+      , duration            :: DurationDTO
       }
   | WithdrawnFromSubmittedDTO
       { id                :: UUID
@@ -806,7 +848,7 @@ data IntakeRequestDTO
       , triagedAt           :: UTCTime
       , doctorId            :: UUID
       , start               :: UTCTime
-      , durationMinutes     :: Int
+      , duration            :: DurationDTO
       , closeReason         :: CloseReasonDTO
       }
   deriving (Show, Eq)
@@ -841,7 +883,7 @@ instance ToJSON IntakeRequestDTO where
     , "priority" .= prio
     , "triagedAt" .= triagedTime
     ]
-  toJSON (AppointedDTO rid pid narr req created svcId prio triagedTime did start' durMin) = object
+  toJSON (AppointedDTO rid pid narr req created svcId prio triagedTime did start' dur) = object
     [ "type" .= ("appointed" :: Text)
     , "id" .= UUID.toText rid
     , "patientId" .= UUID.toText pid
@@ -853,7 +895,7 @@ instance ToJSON IntakeRequestDTO where
     , "triagedAt" .= triagedTime
     , "doctorId" .= UUID.toText did
     , "start" .= start'
-    , "durationMinutes" .= durMin
+    , "duration" .= dur
     ]
   toJSON (WithdrawnFromSubmittedDTO rid pid narr req created withdrawnTime note) = object
     [ "type" .= ("withdrawnFromSubmitted" :: Text)
@@ -878,7 +920,7 @@ instance ToJSON IntakeRequestDTO where
     , "withdrawnAt" .= withdrawnTime
     , "withdrawalNote" .= note
     ]
-  toJSON (ClosedDTO rid pid narr req created svcId prio triagedTime did start' durMin reason) = object
+  toJSON (ClosedDTO rid pid narr req created svcId prio triagedTime did start' dur reason) = object
     [ "type" .= ("closed" :: Text)
     , "id" .= UUID.toText rid
     , "patientId" .= UUID.toText pid
@@ -890,7 +932,7 @@ instance ToJSON IntakeRequestDTO where
     , "triagedAt" .= triagedTime
     , "doctorId" .= UUID.toText did
     , "start" .= start'
-    , "durationMinutes" .= durMin
+    , "duration" .= dur
     , "closeReason" .= reason
     ]
 
@@ -935,8 +977,8 @@ instance FromJSON IntakeRequestDTO where
         triagedTime <- v .: "triagedAt"
         did         <- v .: "doctorId" >>= parseUUIDField
         start'      <- v .: "start"
-        durMin      <- v .: "durationMinutes"
-        pure (AppointedDTO rid pid narr req created svcId prio triagedTime did start' durMin)
+        dur         <- v .: "duration"
+        pure (AppointedDTO rid pid narr req created svcId prio triagedTime did start' dur)
       "withdrawnFromSubmitted" -> do
         rid           <- v .: "id" >>= parseUUIDField
         pid           <- v .: "patientId" >>= parseUUIDField
@@ -969,9 +1011,9 @@ instance FromJSON IntakeRequestDTO where
         triagedTime <- v .: "triagedAt"
         did         <- v .: "doctorId" >>= parseUUIDField
         start'      <- v .: "start"
-        durMin      <- v .: "durationMinutes"
+        dur         <- v .: "duration"
         reason      <- v .: "closeReason"
-        pure (ClosedDTO rid pid narr req created svcId prio triagedTime did start' durMin reason)
+        pure (ClosedDTO rid pid narr req created svcId prio triagedTime did start' dur reason)
       other -> fail ("unrecognized IntakeRequest type: " ++ show other)
 
 toDomainIntakeRequest :: IntakeRequestDTO -> Either TransportError IntakeRequest
@@ -981,9 +1023,9 @@ toDomainIntakeRequest (RejectedDTO rid pid narr req created rejectedTime reason)
   Right (Rejected (toDomainSubmitted rid pid narr req created) rejectedTime reason)
 toDomainIntakeRequest (AcceptedDTO rid pid narr req created svcId prio triagedTime) =
   Accepted <$> toDomainTriaged rid pid narr req created svcId prio triagedTime
-toDomainIntakeRequest (AppointedDTO rid pid narr req created svcId prio triagedTime did start' durMin) =
+toDomainIntakeRequest (AppointedDTO rid pid narr req created svcId prio triagedTime did start' dur) =
   Appointed <$> toDomainAppointedIntakeRequest
-    (AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' durMin)
+    (AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' dur)
 toDomainIntakeRequest (WithdrawnFromSubmittedDTO rid pid narr req created withdrawnTime note) =
   Right
     (Withdrawn
@@ -992,10 +1034,10 @@ toDomainIntakeRequest
   (WithdrawnFromAcceptedDTO rid pid narr req created svcId prio triagedTime withdrawnTime note) = do
   triagedReq <- toDomainTriaged rid pid narr req created svcId prio triagedTime
   Right (Withdrawn (WithdrawnFromAccepted triagedReq withdrawnTime note))
-toDomainIntakeRequest (ClosedDTO rid pid narr req created svcId prio triagedTime did start' durMin reason) =
+toDomainIntakeRequest (ClosedDTO rid pid narr req created svcId prio triagedTime did start' dur reason) =
   (\appointed -> Closed appointed (toDomainCloseReason reason))
   <$> toDomainAppointedIntakeRequest
-        (AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' durMin)
+        (AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' dur)
 
 fromDomainIntakeRequest :: IntakeRequest -> IntakeRequestDTO
 fromDomainIntakeRequest (Submitted s) =
@@ -1008,9 +1050,9 @@ fromDomainIntakeRequest (Accepted t) =
   let (rid, pid, narr, req, created, svcId, prio, triagedTime) = triagedFields t
   in AcceptedDTO rid pid narr req created svcId prio triagedTime
 fromDomainIntakeRequest (Appointed a) =
-  let AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' durMin =
+  let AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' dur =
         fromDomainAppointedIntakeRequest a
-  in AppointedDTO rid pid narr req created svcId prio triagedTime did start' durMin
+  in AppointedDTO rid pid narr req created svcId prio triagedTime did start' dur
 fromDomainIntakeRequest (Withdrawn (WithdrawnFromSubmitted s withdrawnTime note)) =
   let (rid, pid, narr, req, created) = submittedFields s
   in WithdrawnFromSubmittedDTO rid pid narr req created withdrawnTime note
@@ -1018,9 +1060,9 @@ fromDomainIntakeRequest (Withdrawn (WithdrawnFromAccepted t withdrawnTime note))
   let (rid, pid, narr, req, created, svcId, prio, triagedTime) = triagedFields t
   in WithdrawnFromAcceptedDTO rid pid narr req created svcId prio triagedTime withdrawnTime note
 fromDomainIntakeRequest (Closed a reason) =
-  let AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' durMin =
+  let AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' dur =
         fromDomainAppointedIntakeRequest a
-  in ClosedDTO rid pid narr req created svcId prio triagedTime did start' durMin
+  in ClosedDTO rid pid narr req created svcId prio triagedTime did start' dur
        (fromDomainCloseReason reason)
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -1031,8 +1073,8 @@ fromDomainIntakeRequest (Closed a reason) =
 -- than assumed.
 --
 -- AvailableSlotDTO's fields (id, doctorId, healthcareServiceId, start,
--- durationMinutes) are a strict subset of AppointedIntakeRequestDTO's
--- fields — neither carries its own discriminator today, and without one,
+-- duration) are a strict subset of AppointedIntakeRequestDTO's fields —
+-- neither carries its own discriminator today, and without one,
 -- a naive "try parsing as a slot, else an appointment" FromJSON would
 -- always successfully (mis)parse actual appointment JSON as a slot too,
 -- since every key a slot needs is also present on an appointment. This
@@ -1066,7 +1108,7 @@ instance ToJSON CalendarEntryDTO where
     , "doctorId" .= UUID.toText slot.doctorId
     , "healthcareServiceId" .= UUID.toText slot.healthcareServiceId
     , "start" .= slot.start
-    , "durationMinutes" .= slot.durationMinutes
+    , "duration" .= slot.duration
     ]
   toJSON (AppointmentEntryDTO appt) = object
     [ "type" .= ("appointment" :: Text)
@@ -1080,7 +1122,7 @@ instance ToJSON CalendarEntryDTO where
     , "triagedAt" .= appt.triagedAt
     , "doctorId" .= UUID.toText appt.doctorId
     , "start" .= appt.start
-    , "durationMinutes" .= appt.durationMinutes
+    , "duration" .= appt.duration
     ]
 
 instance FromJSON CalendarEntryDTO where
@@ -1092,7 +1134,7 @@ instance FromJSON CalendarEntryDTO where
       other         -> fail ("unrecognized CalendarEntry type: " ++ show other)
 
 toDomainCalendarEntry :: CalendarEntryDTO -> Either TransportError CalendarEntry
-toDomainCalendarEntry (SlotEntryDTO slot)        = Slot <$> toDomainAvailableSlot slot
+toDomainCalendarEntry (SlotEntryDTO slot)        = Right (Slot (toDomainAvailableSlot slot))
 toDomainCalendarEntry (AppointmentEntryDTO appt) = Appointment <$> toDomainAppointedIntakeRequest appt
 
 fromDomainCalendarEntry :: CalendarEntry -> CalendarEntryDTO
