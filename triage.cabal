@@ -17,19 +17,26 @@ extra-source-files:  README.md
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Domain
+  exposed-modules:     Api
+                      , Domain
                       , Persistence
                       , Service
                       , Transport
   build-depends:
       base               >=4.14 && <5
     , aeson
+    , bytestring
     , containers
     , postgresql-simple
     , resource-pool
+    , servant
+    , servant-server
     , text
     , time
+    , transformers
     , uuid
+    , wai
+    , warp
   default-language:    Haskell2010
   ghc-options:          -Wall
 

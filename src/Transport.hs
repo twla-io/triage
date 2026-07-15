@@ -29,6 +29,10 @@ module Transport
   , toDomainPatient
   , fromDomainPatient
 
+    -- ── Doctor / Patient Create Requests ─────────────────────────────────
+  , CreateDoctorRequest (..)
+  , CreatePatientRequest (..)
+
     -- ── Duration ─────────────────────────────────────────────────────────
   , DurationDTO (..)
   , toDomainDuration
@@ -212,6 +216,42 @@ fromDomainPatient :: Patient -> PatientDTO
 fromDomainPatient p =
   let PatientId pid = p.id
   in PatientDTO { id = pid, name = p.name }
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- DOCTOR / PATIENT CREATE REQUESTS
+-- Request-body DTOs, per servant-implementation.md section 5 — still
+-- wire-format DTOs, so they live here alongside every other DTO in this
+-- file, not in Api.hs. Same hand-written ToJSON/FromJSON convention as
+-- everywhere else (no Generic derivation). Both trivial, single-field,
+-- total both directions — and neither has a toDomain/fromDomain pair,
+-- unlike every DTO above: Service.createDoctor/createPatient each take a
+-- bare Text, not a Domain.hs type, so there is nothing on the Domain side
+-- for these two to convert to or from.
+-- ═══════════════════════════════════════════════════════════════════════
+
+data CreateDoctorRequest = CreateDoctorRequest
+  { name :: Text
+  }
+  deriving (Show, Eq)
+
+instance ToJSON CreateDoctorRequest where
+  toJSON dto = object ["name" .= dto.name]
+
+instance FromJSON CreateDoctorRequest where
+  parseJSON = withObject "CreateDoctorRequest" $ \v ->
+    CreateDoctorRequest <$> v .: "name"
+
+data CreatePatientRequest = CreatePatientRequest
+  { name :: Text
+  }
+  deriving (Show, Eq)
+
+instance ToJSON CreatePatientRequest where
+  toJSON dto = object ["name" .= dto.name]
+
+instance FromJSON CreatePatientRequest where
+  parseJSON = withObject "CreatePatientRequest" $ \v ->
+    CreatePatientRequest <$> v .: "name"
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- DURATION
