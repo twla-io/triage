@@ -51,6 +51,8 @@ An earlier version of this rule claimed the Command/Query split was mechanically
 
 `checkIntakeWaitlist :: AvailableSlot -> [TriagedIntakeRequest] -> Maybe AppointedIntakeRequest` belongs inside the handler for "a slot just became available" — never exposed as a public endpoint on its own. In the current codebase, its real caller is `Service.matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)`, which fetches the waitlist, runs `checkIntakeWaitlist`, and persists the result atomically. Whatever handler creates a new `AvailableSlot` (i.e. whatever calls `Service.createAvailableSlot`) is the natural place to also call `matchWaitlistToSlot` — expose the event ("a slot was created"), not the scan itself.
 
+**This is a statement about which handler is responsible for triggering the scan at all, not about response routing.** "The natural place to also *call* `matchWaitlistToSlot`" is a separate question from "whether to *combine* both calls' results into one HTTP response" — the latter was considered and rejected; see `references/servant-implementation.md`'s section 4 for the full reasoning (`POST /slots`'s response reflects only `createAvailableSlot`'s own `SlotCreationOutcome`, full stop).
+
 ## `opaque-uuid-ids` — IDs are opaque UUID strings on the wire
 
 Request and response bodies use plain UUID strings for `DoctorId`, `PatientId`, `HealthcareServiceId`, `IntakeRequestId`, `SlotId` — never a wrapped object, never the Haskell type name as a JSON key. Different ID types must stay distinguishable in the API's type system (e.g. branded types in TypeScript, distinct path parameter names) even though they share a wire format.
@@ -130,6 +132,10 @@ Previously framed as "pick one, or ask the user." Settled, for three independent
 - The audit-trail motivation that would normally argue for event sourcing — "why was this patient offered this slot" — is already addressed structurally, without an event log: `reclaimAppointedIntakeRequest` preserves `IntakeRequestId`/`triagedAt`/priority exactly across reassignment and displacement (see `docs/decisions.md`'s "Reassignment and displacement both compose from reclaimAppointedIntakeRequest" entry). `references/event-sourced.md`'s own "When to choose this" motivating case no longer applies to this domain.
 
 Use `references/rest.md`. `references/event-sourced.md` is retained as a documented, available option — not currently favored, not partially adopted — revisit only if scale assumptions genuinely change, per `docs/decisions.md`'s own closing note on that entry.
+
+**Framework and implementation specifics are settled too:** `references/servant-implementation.md` covers the concrete Servant implementation of the strategy `rest.md` describes — framework choice, `Api.hs` file organization, the `AppM` handler environment, the `runRead`/`runService` error-translation middleware, request-body DTO shapes, and `main`/wiring. Read `rest.md` first for *what* the routes and status codes are, then `servant-implementation.md` for *how* they're actually built in Haskell.
+
+**Worth being aware of, not silently normalized:** `servant-implementation.md` is currently the *only* implementation-level reference in this skill — `rest.md` and `event-sourced.md` both describe wire/routing *strategy* (what a route or event looks like), not framework-specific code patterns (what the Haskell that serves it looks like). There is no equivalent implementation-level document for the event-sourced strategy, because that strategy isn't the one in use — this asymmetry is a direct consequence of only one strategy having been carried to implementation, not an oversight to fix by writing a matching event-sourced implementation doc nobody needs yet.
 
 ## When unsure
 
