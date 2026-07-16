@@ -89,6 +89,11 @@ module Transport
   , toDomainIntakeRequest
   , fromDomainIntakeRequest
 
+    -- ── Intake Request Requests (Submit / Accept / Reject) ───────────────
+  , SubmitIntakeRequestRequest (..)
+  , AcceptIntakeRequestRequest (..)
+  , RejectIntakeRequestRequest (..)
+
     -- ── Calendar Entry ───────────────────────────────────────────────────
   , CalendarEntryDTO (..)
   , toDomainCalendarEntry
@@ -1170,6 +1175,84 @@ fromDomainIntakeRequest (Closed a reason) =
         fromDomainAppointedIntakeRequest a
   in ClosedDTO rid pid narr req created svcId prio triagedTime did start' dur
        (fromDomainCloseReason reason)
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- INTAKE REQUEST REQUESTS (SUBMIT / ACCEPT / REJECT)
+-- Request-body DTOs, per servant-implementation.md section 5 — every
+-- UTCTime a Service.hs mutation needs (submitIntakeRequest's createdAt,
+-- acceptSubmittedIntakeRequest's triagedAt, rejectSubmittedIntakeRequest's
+-- rejectedAt) is caller-supplied-facts-only excluded: the API layer's
+-- handler calls getCurrentTime itself, never accepts a client-supplied
+-- timestamp in any of these three bodies. Reuses DoctorRequirementDTO/
+-- IntakeRequestPriorityDTO directly rather than bespoke inline shapes,
+-- same reuse discipline as every other DTO composing an already-defined
+-- case. None of these three have a toDomain/fromDomain pair of their own
+-- — same reasoning as CreateDoctorRequest/CreatePatientRequest above:
+-- there is no single Domain type on the other side to convert to/from,
+-- since submitIntakeRequest/acceptSubmittedIntakeRequest/
+-- rejectSubmittedIntakeRequest each take several separate arguments, not
+-- one Domain value.
+-- ═══════════════════════════════════════════════════════════════════════
+
+data SubmitIntakeRequestRequest = SubmitIntakeRequestRequest
+  { patientId         :: UUID
+  , narrative         :: Text
+  , doctorRequirement :: DoctorRequirementDTO
+  }
+  deriving (Show, Eq)
+
+instance ToJSON SubmitIntakeRequestRequest where
+  toJSON dto = object
+    [ "patientId" .= UUID.toText dto.patientId
+    , "narrative" .= dto.narrative
+    , "doctorRequirement" .= dto.doctorRequirement
+    ]
+
+instance FromJSON SubmitIntakeRequestRequest where
+  parseJSON = withObject "SubmitIntakeRequestRequest" $ \v -> do
+    patientIdText <- v .: "patientId"
+    pid           <- parseUUIDField patientIdText
+    SubmitIntakeRequestRequest pid <$> v .: "narrative" <*> v .: "doctorRequirement"
+
+data AcceptIntakeRequestRequest = AcceptIntakeRequestRequest
+  { healthcareServiceId :: UUID
+  , priority            :: IntakeRequestPriorityDTO
+  }
+  deriving (Show, Eq)
+
+instance ToJSON AcceptIntakeRequestRequest where
+  toJSON dto = object
+    [ "healthcareServiceId" .= UUID.toText dto.healthcareServiceId
+    , "priority" .= dto.priority
+    ]
+
+instance FromJSON AcceptIntakeRequestRequest where
+  parseJSON = withObject "AcceptIntakeRequestRequest" $ \v -> do
+    svcIdText <- v .: "healthcareServiceId"
+    svcId     <- parseUUIDField svcIdText
+    AcceptIntakeRequestRequest svcId <$> v .: "priority"
+
+-- Field named rejectionReason, not the shorter reason -- matches
+-- IntakeRequestDTO's own RejectedDTO.rejectionReason for the identical
+-- fact (the request DTO's rejectionReason becomes, verbatim, the
+-- response DTO's rejectionReason once Service.hs runs), and avoids a
+-- genuine -Wname-shadowing collision a bare "reason" field would
+-- introduce: DuplicateRecordFields makes any field name a module-wide
+-- selector, and Transport.hs's own RejectedDTO/ClosedDTO (de)serializers
+-- already use "reason" as a local pattern-bound variable name in several
+-- places (not a field -- just a locally chosen name), which a new
+-- same-named top-level selector would then shadow.
+data RejectIntakeRequestRequest = RejectIntakeRequestRequest
+  { rejectionReason :: Text
+  }
+  deriving (Show, Eq)
+
+instance ToJSON RejectIntakeRequestRequest where
+  toJSON dto = object ["rejectionReason" .= dto.rejectionReason]
+
+instance FromJSON RejectIntakeRequestRequest where
+  parseJSON = withObject "RejectIntakeRequestRequest" $ \v ->
+    RejectIntakeRequestRequest <$> v .: "rejectionReason"
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- CALENDAR ENTRY

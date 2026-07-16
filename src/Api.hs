@@ -12,7 +12,9 @@
 -- convention as Persistence.hs/Service.hs, not a signatures-then-bodies
 -- split (servant-implementation.md section 2).
 --
--- DoctorAPI/PatientAPI/HealthcareServiceAPI/SlotAPI exist so far.
+-- DoctorAPI/PatientAPI/HealthcareServiceAPI/SlotAPI exist so far, plus a
+-- first slice of IntakeRequestAPI (submit/accept/reject only — match/
+-- reclaim/close and every read on this resource come in later passes).
 -- Doctor/Patient are both servant-implementation.md shape (a): bare IO all
 -- the way down (createDoctor/fetchDoctor/fetchDoctors and their Patient
 -- equivalents have no Either anywhere in Service.hs), so neither needs an
@@ -21,11 +23,13 @@
 -- the first section to actually need the runRead helper (see the
 -- MIDDLEWARE section below). SlotAPI's create is shape (c)'s
 -- SlotCreationOutcome relative (no ServiceError/Either at all — see
--- MIDDLEWARE's own runSlotCreation), its list is shape (b) again. Full
--- runService/runMatchOutcome (shape (c) proper, for mutations with a
--- ServiceError layer) aren't needed by anything built so far;
--- IntakeRequest/Calendar's own passes will add them alongside the
--- endpoints that actually require them.
+-- MIDDLEWARE's own runSlotCreation). IntakeRequestAPI's submit is shape
+-- (a) again (submitIntakeRequest is bare IO — verified, not assumed);
+-- accept/reject are shape (c) proper (IO (Either ServiceError a)) — the
+-- first section to need the runService/handleServiceError helpers (see
+-- MIDDLEWARE below). runMatchOutcome (MatchOutcome's own outcome-typed
+-- shape) still isn't needed by anything built so far; a later
+-- IntakeRequest pass will add it alongside match/reclaim/close.
 
 module Api
   ( -- ── Application monad ────────────────────────────────────────────────
@@ -55,6 +59,10 @@ module Api
   , SlotAPI
   , slotServer
 
+    -- ── Intake Request ───────────────────────────────────────────────────
+  , IntakeRequestAPI
+  , intakeRequestServer
+
     -- ── Top-level API ────────────────────────────────────────────────────
   , API
   , server
@@ -67,7 +75,7 @@ import Data.ByteString            (ByteString)
 import Data.Maybe                 (fromMaybe)
 import Data.Pool                  (defaultPoolConfig, newPool)
 import Data.Text                  (Text)
-import Data.Time                  (UTCTime)
+import Data.Time                  (UTCTime, getCurrentTime)
 import Data.UUID                  (UUID)
 import Network.Wai.Handler.Warp   (run)
 import Servant
@@ -78,26 +86,41 @@ import Text.Read                  (readMaybe)
 
 import qualified Data.ByteString.Char8      as BS8
 import qualified Data.ByteString.Lazy.Char8 as LBS8
+import qualified Data.UUID                  as UUID
 import qualified Database.PostgreSQL.Simple as PG
 import qualified Service
 
-import Domain      (AvailableSlot (..), DoctorId (..), HealthcareServiceId (..), PatientId (..))
+import Domain
+  ( AvailableSlot (..)
+  , DoctorId (..)
+  , HealthcareServiceId (..)
+  , IntakeRequest (Accepted, Submitted)
+  , IntakeRequestId (..)
+  , PatientId (..)
+  )
 import Persistence (ConnectionPool, DecodeError)
-import Service     (SlotCreationOutcome (..))
+import Service     (ServiceError (..), SlotCreationOutcome (..))
 import Transport
-  ( AvailableSlotDTO
+  ( AcceptIntakeRequestRequest (..)
+  , AvailableSlotDTO
   , CreateAvailableSlotRequest (..)
   , CreateDoctorRequest (..)
   , CreateHealthcareServiceRequest (..)
   , CreatePatientRequest (..)
   , DoctorDTO
   , HealthcareServiceDTO
+  , IntakeRequestDTO
   , PatientDTO
+  , RejectIntakeRequestRequest (..)
+  , SubmitIntakeRequestRequest (..)
   , fromDomainAvailableSlot
   , fromDomainDoctor
   , fromDomainHealthcareService
+  , fromDomainIntakeRequest
   , fromDomainPatient
+  , toDomainDoctorRequirement
   , toDomainDuration
+  , toDomainIntakeRequestPriority
   )
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -189,15 +212,17 @@ app pool = serve (Proxy @API) (hoistServer (Proxy @API) (runAppM pool) server)
 --
 -- runRead exists for shape (b) (IO (Either DecodeError a)) —
 -- HealthcareServiceAPI's list/get reads were the first section that
--- needed it. runSlotCreation/envelope/envelopeEmpty now also exist, for
--- SlotAPI's create (IO SlotCreationOutcome — no ServiceError/Either at
--- all, its own outcome-typed shape per servant-implementation.md section
--- 4's "runSlotCreation" worked example). Full runService/runMatchOutcome
--- (shape (c) proper, for mutations with a genuine ServiceError layer)
--- still don't exist — nothing built so far calls a Service.hs mutation
--- that returns Either ServiceError a, so there is nothing yet to move
--- here from an earlier resource section; IntakeRequest's own pass will
--- add them alongside the endpoints that actually require them.
+-- needed it. runSlotCreation/envelope/envelopeEmpty exist for SlotAPI's
+-- create (IO SlotCreationOutcome — no ServiceError/Either at all, its own
+-- outcome-typed shape). handleServiceError/runService now also exist, for
+-- shape (c) proper — mutations returning IO (Either ServiceError a) —
+-- implemented here for the first time, needed by
+-- acceptSubmittedIntakeRequestHandler/rejectSubmittedIntakeRequestHandler
+-- below. runMatchOutcome (MatchOutcome's own 5-constructor success side,
+-- which doesn't fit runService's uniform tag/toDetail shape) still
+-- doesn't exist — nothing built so far calls matchWaitlistToSlot/
+-- matchAcceptedIntakeRequestToSlot; a later IntakeRequest pass will add
+-- it alongside those endpoints.
 --
 -- DecodeError (Persistence.hs) derives only (Show, Eq) — no Generic, no
 -- hand-written ToJSON anywhere in this codebase (verified, not assumed).
@@ -239,6 +264,52 @@ runSlotCreation action = do
   pure $ case outcome of
     SlotCreated slot -> envelope "slotCreated" (fromDomainAvailableSlot slot)
     SlotConflict     -> envelopeEmpty "slotConflict"
+
+-- IntakeRequestId (Domain.hs) has no ToJSON instance of its own (Domain.hs
+-- has no serialization awareness of any kind — see its own Layering
+-- section) — every non-decode ServiceError constructor below carries a
+-- bare IntakeRequestId (verified against Service.hs directly: all six of
+-- RequestNotFound/RequestNotSubmittedAnymore/RequestNotAccepted/
+-- RequestNotYetTriaged/RequestNotAppointed/RequestAlreadyClosed), so
+-- handleServiceError can't pass one straight to envelope's generic dto
+-- parameter. Wrapped in a small anonymous object instead, same
+-- UUID.toText convention as every Transport.hs DTO field standing in for
+-- a bare id.
+requestIdDetail :: IntakeRequestId -> Value
+requestIdDetail (IntakeRequestId rid) = object ["requestId" .= UUID.toText rid]
+
+-- Exhaustive match, no wildcard — six non-decode ServiceError
+-- constructors, verified against Service.hs directly, all carrying a bare
+-- IntakeRequestId with identical rendering regardless of which mutation
+-- produced it (servant-implementation.md section 4's own reasoning for
+-- why this is a tag/toDetail-less exhaustive match, not per-call-site
+-- onError continuations). PersistenceDecodeError is the one constructor
+-- NOT rendered via envelope — a decode failure is outside the domain's
+-- error vocabulary (error-vs-outcome-mapping's own 500 case), same
+-- plain-text-`show` treatment as runRead's Left case above, since
+-- DecodeError has no ToJSON instance either.
+handleServiceError :: ServiceError -> AppM Value
+handleServiceError (PersistenceDecodeError e)       = throwError err500 { errBody = LBS8.pack (show e) }
+handleServiceError (RequestNotFound rid)            = pure (envelope "requestNotFound" (requestIdDetail rid))
+handleServiceError (RequestNotSubmittedAnymore rid) = pure (envelope "requestNotSubmittedAnymore" (requestIdDetail rid))
+handleServiceError (RequestNotAccepted rid)         = pure (envelope "requestNotAccepted" (requestIdDetail rid))
+handleServiceError (RequestNotYetTriaged rid)       = pure (envelope "requestNotYetTriaged" (requestIdDetail rid))
+handleServiceError (RequestNotAppointed rid)        = pure (envelope "requestNotAppointed" (requestIdDetail rid))
+handleServiceError (RequestAlreadyClosed rid)       = pure (envelope "requestAlreadyClosed" (requestIdDetail rid))
+
+-- For shape (c) proper: Service.hs mutations returning
+-- IO (Either ServiceError a). The success side genuinely varies per call
+-- site (the value's own DTO conversion, and the success outcome's tag
+-- name) while the error side never does — handleServiceError above
+-- already covers all six non-decode constructors identically — so this
+-- takes a success tag and a toDetail conversion, not onSuccess/onError
+-- continuations (servant-implementation.md section 4's own reasoning).
+runService :: ToJSON dto => Text -> IO (Either ServiceError a) -> (a -> dto) -> AppM Value
+runService successTag action toDetail = do
+  result <- liftIO action
+  case result of
+    Left se -> handleServiceError se
+    Right a -> pure (envelope successTag (toDetail a))
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- DOCTOR
@@ -439,9 +510,101 @@ slotServer :: ServerT SlotAPI AppM
 slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 
 -- ═══════════════════════════════════════════════════════════════════════
+-- INTAKE REQUEST
+-- First slice only: submit/accept/reject. match/reclaim/close and every
+-- read on this resource (fetchIntakeRequest, fetchIntakeWaitlist,
+-- fetchAppointedIntakeRequests) come in later passes.
+--
+-- submitIntakeRequestHandler is shape (a) — verified against Service.hs
+-- directly: submitIntakeRequest :: ConnectionPool -> PatientId -> Text ->
+-- DoctorRequirement -> UTCTime -> IO SubmittedIntakeRequest, bare IO, no
+-- Either (this prompt's own premise that it might be Either-wrapped
+-- doesn't hold). No standalone SubmittedIntakeRequestDTO exists in
+-- Transport.hs — SubmittedIntakeRequest is only ever one case
+-- ("submitted") of the seven-tag IntakeRequestDTO sum, reached by
+-- wrapping the Domain value in the IntakeRequest sum's own Submitted
+-- constructor and going through fromDomainIntakeRequest, the only
+-- exported conversion (the internal submittedFields/toDomainSubmitted
+-- helper pair Transport.hs uses for this isn't exported). Bare
+-- IntakeRequestDTO as the 200 body, no envelope — shape (a) has nothing
+-- to discriminate, same as every other create* handler with no Either.
+--
+-- acceptSubmittedIntakeRequestHandler/rejectSubmittedIntakeRequestHandler
+-- are shape (c) proper — verified against Service.hs directly:
+-- acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId ->
+-- HealthcareServiceId -> IntakeRequestPriority -> UTCTime -> IO (Either
+-- ServiceError TriagedIntakeRequest); rejectSubmittedIntakeRequest ::
+-- ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either
+-- ServiceError IntakeRequest) — note the two return different Domain
+-- types (TriagedIntakeRequest vs. the six/seven-case IntakeRequest), so
+-- their runService toDetail conversions differ: accept's success value
+-- is wrapped via the IntakeRequest sum's own Accepted constructor then
+-- fromDomainIntakeRequest (mirroring submit's own DTO-reachability path
+-- above, since TriagedIntakeRequest has no standalone DTO conversion
+-- either); reject's success value already IS an IntakeRequest, so
+-- fromDomainIntakeRequest applies directly. Both getCurrentTime for
+-- their own triagedAt/rejectedAt — never a client-supplied timestamp
+-- (servant-implementation.md section 5).
+--
+-- acceptSubmittedIntakeRequestHandler has one more decode step neither
+-- Doctor/Patient/HealthcareService/Slot needed: req.priority
+-- (IntakeRequestPriorityDTO) converts to Domain's IntakeRequestPriority
+-- via toDomainIntakeRequestPriority, which is Either TransportError, not
+-- total (RoutineWithin's from <= to invariant can fail). Per
+-- error-vs-outcome-mapping, this is a 400, not a 500 or a 200-with-
+-- envelope: the request never reached a state where Service.hs could
+-- evaluate it at all, rejected before any Service.hs function is called
+-- — so this is checked before ever touching the pool/Service.hs, same
+-- category as a malformed body, distinct from runRead/runService's own
+-- Left cases (which both represent Service.hs/Persistence.hs having
+-- already run).
+-- ═══════════════════════════════════════════════════════════════════════
+
+type IntakeRequestAPI =
+       ReqBody '[JSON] SubmitIntakeRequestRequest :> Post '[JSON] IntakeRequestDTO
+  :<|> Capture "id" UUID :> "accept" :> ReqBody '[JSON] AcceptIntakeRequestRequest :> Post '[JSON] Value
+  :<|> Capture "id" UUID :> "reject" :> ReqBody '[JSON] RejectIntakeRequestRequest :> Post '[JSON] Value
+
+submitIntakeRequestHandler :: SubmitIntakeRequestRequest -> AppM IntakeRequestDTO
+submitIntakeRequestHandler req = do
+  pool      <- ask
+  createdAt <- liftIO getCurrentTime
+  submitted <- liftIO
+    (Service.submitIntakeRequest pool (PatientId req.patientId) req.narrative
+      (toDomainDoctorRequirement req.doctorRequirement) createdAt)
+  pure (fromDomainIntakeRequest (Submitted submitted))
+
+acceptSubmittedIntakeRequestHandler :: UUID -> AcceptIntakeRequestRequest -> AppM Value
+acceptSubmittedIntakeRequestHandler uid req = do
+  domainPriority <- case toDomainIntakeRequestPriority req.priority of
+    Left err -> throwError err400 { errBody = LBS8.pack (show err) }
+    Right p  -> pure p
+  pool      <- ask
+  triagedAt <- liftIO getCurrentTime
+  runService "accepted"
+    (Service.acceptSubmittedIntakeRequest pool (IntakeRequestId uid)
+      (HealthcareServiceId req.healthcareServiceId) domainPriority triagedAt)
+    (fromDomainIntakeRequest . Accepted)
+
+rejectSubmittedIntakeRequestHandler :: UUID -> RejectIntakeRequestRequest -> AppM Value
+rejectSubmittedIntakeRequestHandler uid req = do
+  pool       <- ask
+  rejectedAt <- liftIO getCurrentTime
+  runService "rejected"
+    (Service.rejectSubmittedIntakeRequest pool (IntakeRequestId uid) rejectedAt req.rejectionReason)
+    fromDomainIntakeRequest
+
+intakeRequestServer :: ServerT IntakeRequestAPI AppM
+intakeRequestServer =
+  submitIntakeRequestHandler :<|> acceptSubmittedIntakeRequestHandler :<|> rejectSubmittedIntakeRequestHandler
+
+-- ═══════════════════════════════════════════════════════════════════════
 -- TOP-LEVEL API
--- IntakeRequestAPI/CalendarAPI are not stubbed here — they're added, each
--- with its own section above this one, when their own passes come.
+-- CalendarAPI is not stubbed here — it's added, with its own section
+-- above this one, when its own pass comes. IntakeRequestAPI above is
+-- only a partial slice so far (submit/accept/reject) — match/reclaim/
+-- close and its reads will extend the same section/route type in later
+-- passes, not a separate one.
 -- ═══════════════════════════════════════════════════════════════════════
 
 type API =
@@ -449,6 +612,12 @@ type API =
   :<|> "patients" :> PatientAPI
   :<|> "healthcare-services" :> HealthcareServiceAPI
   :<|> "slots" :> SlotAPI
+  :<|> "intake-requests" :> IntakeRequestAPI
 
 server :: ServerT API AppM
-server = doctorServer :<|> patientServer :<|> healthcareServiceServer :<|> slotServer
+server =
+       doctorServer
+  :<|> patientServer
+  :<|> healthcareServiceServer
+  :<|> slotServer
+  :<|> intakeRequestServer
