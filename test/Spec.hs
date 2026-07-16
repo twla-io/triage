@@ -69,9 +69,9 @@ genPriority = do
 
 genTriagedRequestFor :: HealthcareServiceId -> Gen TriagedIntakeRequest
 genTriagedRequestFor sid = do
-  submitted <- genSubmittedIntakeRequest
-  prio      <- genPriority
-  acceptIntakeRequest submitted sid prio <$> genMoment
+  baseRequest <- genSubmittedIntakeRequest
+  prio        <- genPriority
+  acceptIntakeRequest baseRequest sid prio <$> genMoment
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- TESTS
