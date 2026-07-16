@@ -43,10 +43,16 @@ module Transport
   , toDomainHealthcareService
   , fromDomainHealthcareService
 
+    -- ── Healthcare Service Create Request ────────────────────────────────
+  , CreateHealthcareServiceRequest (..)
+
     -- ── Slot ─────────────────────────────────────────────────────────────
   , AvailableSlotDTO (..)
   , toDomainAvailableSlot
   , fromDomainAvailableSlot
+
+    -- ── Slot Create Request ──────────────────────────────────────────────
+  , CreateAvailableSlotRequest (..)
 
     -- ── Appointment Party ────────────────────────────────────────────────
   , AppointmentPartyDTO (..)
@@ -341,6 +347,29 @@ fromDomainHealthcareService s =
        { id = hsid, name = s.name, duration = fromDomainDuration s.duration }
 
 -- ═══════════════════════════════════════════════════════════════════════
+-- HEALTHCARE SERVICE CREATE REQUEST
+-- Request-body DTO, per servant-implementation.md section 5 — same
+-- caller-supplied-facts-only convention as CreateDoctorRequest/
+-- CreatePatientRequest above, just two fields since
+-- Service.createHealthcareService takes both a name and a Duration.
+-- Reuses DurationDTO directly rather than a bespoke inline shape, same
+-- reuse discipline as HealthcareServiceDTO's own "duration" field above.
+-- ═══════════════════════════════════════════════════════════════════════
+
+data CreateHealthcareServiceRequest = CreateHealthcareServiceRequest
+  { name     :: Text
+  , duration :: DurationDTO
+  }
+  deriving (Show, Eq)
+
+instance ToJSON CreateHealthcareServiceRequest where
+  toJSON dto = object ["name" .= dto.name, "duration" .= dto.duration]
+
+instance FromJSON CreateHealthcareServiceRequest where
+  parseJSON = withObject "CreateHealthcareServiceRequest" $ \v ->
+    CreateHealthcareServiceRequest <$> v .: "name" <*> v .: "duration"
+
+-- ═══════════════════════════════════════════════════════════════════════
 -- SLOT
 -- Same duration-as-tagged-DurationDTO shape as Healthcare Service above,
 -- nested under "duration" rather than a flat durationMinutes number. No
@@ -395,6 +424,43 @@ fromDomainAvailableSlot s =
        { id = sid, doctorId = did, healthcareServiceId = hsid
        , start = s.start, duration = fromDomainDuration s.duration
        }
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- SLOT CREATE REQUEST
+-- Request-body DTO, per servant-implementation.md section 5 — but unlike
+-- every create* request above, this omits "id": Service.createAvailableSlot
+-- takes a fully-formed AvailableSlot with its own SlotId already set (no
+-- Service.hs function mints one internally, unlike Doctor/Patient/
+-- HealthcareService's create functions), so to keep this endpoint
+-- consistent with every other create* endpoint — server mints the ID,
+-- client never supplies it — the API layer mints the SlotId itself
+-- (Service.newSlotId) and this DTO simply has no id field to carry one
+-- prematurely. Otherwise identical field set to AvailableSlotDTO minus id.
+-- ═══════════════════════════════════════════════════════════════════════
+
+data CreateAvailableSlotRequest = CreateAvailableSlotRequest
+  { doctorId            :: UUID
+  , healthcareServiceId :: UUID
+  , start               :: UTCTime
+  , duration            :: DurationDTO
+  }
+  deriving (Show, Eq)
+
+instance ToJSON CreateAvailableSlotRequest where
+  toJSON dto = object
+    [ "doctorId" .= UUID.toText dto.doctorId
+    , "healthcareServiceId" .= UUID.toText dto.healthcareServiceId
+    , "start" .= dto.start
+    , "duration" .= dto.duration
+    ]
+
+instance FromJSON CreateAvailableSlotRequest where
+  parseJSON = withObject "CreateAvailableSlotRequest" $ \v -> do
+    doctorIdText            <- v .: "doctorId"
+    healthcareServiceIdText <- v .: "healthcareServiceId"
+    did                     <- parseUUIDField doctorIdText
+    hsid                    <- parseUUIDField healthcareServiceIdText
+    CreateAvailableSlotRequest did hsid <$> v .: "start" <*> v .: "duration"
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- APPOINTMENT PARTY
