@@ -12,9 +12,9 @@
 -- convention as Persistence.hs/Service.hs, not a signatures-then-bodies
 -- split (servant-implementation.md section 2).
 --
--- DoctorAPI/PatientAPI/HealthcareServiceAPI/SlotAPI exist so far, plus all
--- six IntakeRequestAPI mutations (submit/accept/reject/match/reclaim/
--- close) — only this resource's reads remain, for a later pass.
+-- DoctorAPI/PatientAPI/HealthcareServiceAPI/SlotAPI/IntakeRequestAPI exist
+-- so far — IntakeRequestAPI now complete (all six mutations plus all
+-- three reads). Only CalendarAPI remains, for a later pass.
 -- Doctor/Patient are both servant-implementation.md shape (a): bare IO all
 -- the way down (createDoctor/fetchDoctor/fetchDoctors and their Patient
 -- equivalents have no Either anywhere in Service.hs), so neither needs an
@@ -103,6 +103,7 @@ import Persistence (ConnectionPool, DecodeError)
 import Service     (MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..))
 import Transport
   ( AcceptIntakeRequestRequest (..)
+  , AppointedIntakeRequestDTO
   , AvailableSlotDTO
   , CloseReasonRequestDTO (..)
   , CreateAvailableSlotRequest (..)
@@ -539,11 +540,61 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INTAKE REQUEST
--- Second slice adds match/reclaim/close to the first slice's submit/
--- accept/reject, same section/route type extended across passes (per the
--- TOP-LEVEL API banner comment's own note below) rather than a new one.
--- Every read on this resource (fetchIntakeRequest, fetchIntakeWaitlist,
--- fetchAppointedIntakeRequests) still comes in a later pass.
+-- Third and final slice adds this resource's three reads
+-- (fetchIntakeRequest/fetchIntakeWaitlist/fetchAppointedIntakeRequests)
+-- to the six mutations built in the first two slices, same section/route
+-- type extended across passes rather than a new one. IntakeRequestAPI is
+-- now complete.
+--
+-- Routing ambiguity, resolved by ordering: "waitlist"/"appointed" are
+-- both exactly one path segment under /intake-requests, the same shape
+-- as the bare Capture "id" UUID :> Get route added below — a GET to
+-- /intake-requests/waitlist could otherwise be attempted against the
+-- capture branch first (parsing "waitlist" as a UUID and failing) instead
+-- of falling through to the literal branch. Fixed the standard way:
+-- IntakeRequestAPI's type lists both literal-segment GETs before the
+-- bare Capture-then-Get route, and intakeRequestServer's handler list is
+-- kept in that exact same order (positional correspondence with the type,
+-- per servant-implementation.md section 2's own reasoning for why this
+-- file groups per-resource in the first place). The other Capture-based
+-- routes (accept/reject/match/reclaim/close) don't share this ambiguity
+-- regardless of ordering — each has its own distinguishing trailing
+-- literal segment, so they're a different path *shape* than the bare
+-- single-capture GET.
+--
+-- fetchIntakeWaitlistHandler/fetchAppointedIntakeRequestsHandler/
+-- fetchIntakeRequestHandler are all shape (b) — runRead, plain DTO/list
+-- as the 200 body, no envelope (reads never get the outcome envelope,
+-- same as every other read in this file, even though IntakeRequestDTO is
+-- itself a tagged multi-case type — no different in principle from
+-- submitIntakeRequestHandler already returning a bare IntakeRequestDTO).
+--
+-- fetchIntakeRequestHandler mirrors getHealthcareServiceHandler's own
+-- nested-Either/Maybe pattern — verified against Service.hs directly:
+-- fetchIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either
+-- DecodeError (Maybe IntakeRequest)). runRead narrows away the outer
+-- DecodeError (500 on Left), leaving a plain Maybe IntakeRequest to
+-- pattern-match on — 404 on Nothing.
+--
+-- fetchIntakeWaitlistHandler — verified against Service.hs directly:
+-- fetchIntakeWaitlist :: ConnectionPool -> IO (Either DecodeError
+-- [TriagedIntakeRequest]), NOT the six-case IntakeRequest. No standalone
+-- TriagedIntakeRequest DTO/conversion exists in Transport.hs (same gap
+-- already worked around twice — acceptSubmittedIntakeRequestHandler/
+-- reclaimAppointedIntakeRequestHandler above), so each waitlist element
+-- is wrapped via the IntakeRequest sum's own Accepted constructor then
+-- fromDomainIntakeRequest, same DTO-reachability path, applied per-element
+-- via map instead of to a single value.
+--
+-- fetchAppointedIntakeRequestsHandler — verified against Service.hs
+-- directly: fetchAppointedIntakeRequests :: ConnectionPool -> UTCTime ->
+-- UTCTime -> Maybe DoctorId -> IO (Either DecodeError
+-- [AppointedIntakeRequest]) — a required date range plus ONE optional
+-- doctorId filter, unlike fetchAvailableSlots's two optional filters (no
+-- healthcareServiceId filter here). This one DOES have a standalone DTO
+-- (AppointedIntakeRequestDTO, built during the mutations slice for
+-- runMatchOutcome/reuse) — no wrapping workaround needed, used directly
+-- via fromDomainAppointedIntakeRequest.
 --
 -- submitIntakeRequestHandler is shape (a) — verified against Service.hs
 -- directly: submitIntakeRequest :: ConnectionPool -> PatientId -> Text ->
@@ -623,11 +674,18 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 
 type IntakeRequestAPI =
        ReqBody '[JSON] SubmitIntakeRequestRequest :> Post '[JSON] IntakeRequestDTO
+  :<|> "waitlist" :> Get '[JSON] [IntakeRequestDTO]
+  :<|> "appointed"
+       :> QueryParam' '[Required, Strict] "start" UTCTime
+       :> QueryParam' '[Required, Strict] "end" UTCTime
+       :> QueryParam "doctorId" UUID
+       :> Get '[JSON] [AppointedIntakeRequestDTO]
   :<|> Capture "id" UUID :> "accept" :> ReqBody '[JSON] AcceptIntakeRequestRequest :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "reject" :> ReqBody '[JSON] RejectIntakeRequestRequest :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "match" :> ReqBody '[JSON] AvailableSlotDTO :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "reclaim" :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "close" :> ReqBody '[JSON] CloseReasonRequestDTO :> Post '[JSON] Value
+  :<|> Capture "id" UUID :> Get '[JSON] IntakeRequestDTO
 
 submitIntakeRequestHandler :: SubmitIntakeRequestRequest -> AppM IntakeRequestDTO
 submitIntakeRequestHandler req = do
@@ -637,6 +695,19 @@ submitIntakeRequestHandler req = do
     (Service.submitIntakeRequest pool (PatientId req.patientId) req.narrative
       (toDomainDoctorRequirement req.doctorRequirement) createdAt)
   pure (fromDomainIntakeRequest (Submitted submitted))
+
+fetchIntakeWaitlistHandler :: AppM [IntakeRequestDTO]
+fetchIntakeWaitlistHandler = do
+  pool     <- ask
+  waitlist <- runRead (Service.fetchIntakeWaitlist pool)
+  pure (map (fromDomainIntakeRequest . Accepted) waitlist)
+
+fetchAppointedIntakeRequestsHandler :: UTCTime -> UTCTime -> Maybe UUID -> AppM [AppointedIntakeRequestDTO]
+fetchAppointedIntakeRequestsHandler rangeStart rangeEnd mDoctorUUID = do
+  pool      <- ask
+  appointed <- runRead
+    (Service.fetchAppointedIntakeRequests pool rangeStart rangeEnd (DoctorId <$> mDoctorUUID))
+  pure (map fromDomainAppointedIntakeRequest appointed)
 
 acceptSubmittedIntakeRequestHandler :: UUID -> AcceptIntakeRequestRequest -> AppM Value
 acceptSubmittedIntakeRequestHandler uid req = do
@@ -679,23 +750,31 @@ closeAppointedIntakeRequestHandler uid reasonDto = do
     (Service.closeAppointedIntakeRequest pool (IntakeRequestId uid) (closeReasonFromRequest reasonDto closedAt))
     fromDomainIntakeRequest
 
+fetchIntakeRequestHandler :: UUID -> AppM IntakeRequestDTO
+fetchIntakeRequestHandler uid = do
+  pool     <- ask
+  mRequest <- runRead (Service.fetchIntakeRequest pool (IntakeRequestId uid))
+  case mRequest of
+    Just request -> pure (fromDomainIntakeRequest request)
+    Nothing      -> throwError err404
+
 intakeRequestServer :: ServerT IntakeRequestAPI AppM
 intakeRequestServer =
        submitIntakeRequestHandler
+  :<|> fetchIntakeWaitlistHandler
+  :<|> fetchAppointedIntakeRequestsHandler
   :<|> acceptSubmittedIntakeRequestHandler
   :<|> rejectSubmittedIntakeRequestHandler
   :<|> matchAcceptedIntakeRequestToSlotHandler
   :<|> reclaimAppointedIntakeRequestHandler
   :<|> closeAppointedIntakeRequestHandler
+  :<|> fetchIntakeRequestHandler
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- TOP-LEVEL API
 -- CalendarAPI is not stubbed here — it's added, with its own section
--- above this one, when its own pass comes. IntakeRequestAPI above now
--- covers all six mutations (submit/accept/reject/match/reclaim/close) —
--- only its reads (fetchIntakeRequest, fetchIntakeWaitlist,
--- fetchAppointedIntakeRequests) remain, extending the same section/route
--- type in a later pass, not a separate one.
+-- above this one, when its own pass comes. IntakeRequestAPI above is now
+-- complete: all six mutations plus all three reads.
 -- ═══════════════════════════════════════════════════════════════════════
 
 type API =
