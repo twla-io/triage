@@ -12,9 +12,9 @@
 -- convention as Persistence.hs/Service.hs, not a signatures-then-bodies
 -- split (servant-implementation.md section 2).
 --
--- DoctorAPI/PatientAPI/HealthcareServiceAPI/SlotAPI/IntakeRequestAPI exist
--- so far — IntakeRequestAPI now complete (all six mutations plus all
--- three reads). Only CalendarAPI remains, for a later pass.
+-- All six resource sections now exist — Doctor/Patient/HealthcareService/
+-- Slot/IntakeRequest/Calendar — this file's build-out is complete,
+-- matching every route in rest.md's settled table.
 -- Doctor/Patient are both servant-implementation.md shape (a): bare IO all
 -- the way down (createDoctor/fetchDoctor/fetchDoctors and their Patient
 -- equivalents have no Either anywhere in Service.hs), so neither needs an
@@ -30,7 +30,8 @@
 -- MatchOutcome-shaped (IO (Either ServiceError MatchOutcome)), via the
 -- new runMatchOutcome (see MIDDLEWARE below) — MatchOutcome's own
 -- 5-constructor success side doesn't fit runService's uniform tag/
--- toDetail shape.
+-- toDetail shape. CalendarAPI's one route is shape (b) again, the
+-- simplest section in the file — no new middleware, no new request DTOs.
 
 module Api
   ( -- ── Application monad ────────────────────────────────────────────────
@@ -63,6 +64,10 @@ module Api
     -- ── Intake Request ───────────────────────────────────────────────────
   , IntakeRequestAPI
   , intakeRequestServer
+
+    -- ── Calendar ─────────────────────────────────────────────────────────
+  , CalendarAPI
+  , calendarServer
 
     -- ── Top-level API ────────────────────────────────────────────────────
   , API
@@ -105,6 +110,7 @@ import Transport
   ( AcceptIntakeRequestRequest (..)
   , AppointedIntakeRequestDTO
   , AvailableSlotDTO
+  , CalendarEntryDTO
   , CloseReasonRequestDTO (..)
   , CreateAvailableSlotRequest (..)
   , CreateDoctorRequest (..)
@@ -119,6 +125,7 @@ import Transport
   , closeReasonFromRequest
   , fromDomainAppointedIntakeRequest
   , fromDomainAvailableSlot
+  , fromDomainCalendarEntry
   , fromDomainDoctor
   , fromDomainHealthcareService
   , fromDomainIntakeRequest
@@ -771,10 +778,45 @@ intakeRequestServer =
   :<|> fetchIntakeRequestHandler
 
 -- ═══════════════════════════════════════════════════════════════════════
+-- CALENDAR
+-- The sixth and final resource section — simplest one in the file: one
+-- route, shape (b) (IO (Either DecodeError a)), same runRead pattern as
+-- every other read here. No new middleware, no new request DTOs.
+--
+-- fetchCalendarViewHandler — verified against Service.hs directly:
+-- fetchCalendarView :: ConnectionPool -> UTCTime -> UTCTime -> Maybe
+-- DoctorId -> IO (Either DecodeError [CalendarEntry]) — a required date
+-- range plus one optional doctorId filter, the same shape as
+-- fetchAppointedIntakeRequests (no healthcareServiceId filter here
+-- either — Service.hs's own comment notes this is deliberate: a calendar
+-- view is scoped by time and doctor, not by service). CalendarEntryDTO/
+-- toDomainCalendarEntry/fromDomainCalendarEntry already existed in
+-- Transport.hs from earlier design work (verified, not assumed) —
+-- fromDomainCalendarEntry is total, so this needs no decode-failure
+-- handling beyond runRead's own outer DecodeError layer.
+-- ═══════════════════════════════════════════════════════════════════════
+
+type CalendarAPI =
+       QueryParam' '[Required, Strict] "start" UTCTime
+  :> QueryParam' '[Required, Strict] "end" UTCTime
+  :> QueryParam "doctorId" UUID
+  :> Get '[JSON] [CalendarEntryDTO]
+
+fetchCalendarViewHandler :: UTCTime -> UTCTime -> Maybe UUID -> AppM [CalendarEntryDTO]
+fetchCalendarViewHandler rangeStart rangeEnd mDoctorUUID = do
+  pool    <- ask
+  entries <- runRead
+    (Service.fetchCalendarView pool rangeStart rangeEnd (DoctorId <$> mDoctorUUID))
+  pure (map fromDomainCalendarEntry entries)
+
+calendarServer :: ServerT CalendarAPI AppM
+calendarServer = fetchCalendarViewHandler
+
+-- ═══════════════════════════════════════════════════════════════════════
 -- TOP-LEVEL API
--- CalendarAPI is not stubbed here — it's added, with its own section
--- above this one, when its own pass comes. IntakeRequestAPI above is now
--- complete: all six mutations plus all three reads.
+-- All six resource sections now exist — Doctor/Patient/HealthcareService/
+-- Slot/IntakeRequest/Calendar — matching every route in rest.md's settled
+-- table. Api.hs's build-out is complete.
 -- ═══════════════════════════════════════════════════════════════════════
 
 type API =
@@ -783,6 +825,7 @@ type API =
   :<|> "healthcare-services" :> HealthcareServiceAPI
   :<|> "slots" :> SlotAPI
   :<|> "intake-requests" :> IntakeRequestAPI
+  :<|> "calendar" :> CalendarAPI
 
 server :: ServerT API AppM
 server =
@@ -791,3 +834,4 @@ server =
   :<|> healthcareServiceServer
   :<|> slotServer
   :<|> intakeRequestServer
+  :<|> calendarServer
