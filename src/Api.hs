@@ -12,9 +12,9 @@
 -- convention as Persistence.hs/Service.hs, not a signatures-then-bodies
 -- split (servant-implementation.md section 2).
 --
--- DoctorAPI/PatientAPI/HealthcareServiceAPI/SlotAPI exist so far, plus a
--- first slice of IntakeRequestAPI (submit/accept/reject only — match/
--- reclaim/close and every read on this resource come in later passes).
+-- DoctorAPI/PatientAPI/HealthcareServiceAPI/SlotAPI exist so far, plus all
+-- six IntakeRequestAPI mutations (submit/accept/reject/match/reclaim/
+-- close) — only this resource's reads remain, for a later pass.
 -- Doctor/Patient are both servant-implementation.md shape (a): bare IO all
 -- the way down (createDoctor/fetchDoctor/fetchDoctors and their Patient
 -- equivalents have no Either anywhere in Service.hs), so neither needs an
@@ -25,11 +25,12 @@
 -- SlotCreationOutcome relative (no ServiceError/Either at all — see
 -- MIDDLEWARE's own runSlotCreation). IntakeRequestAPI's submit is shape
 -- (a) again (submitIntakeRequest is bare IO — verified, not assumed);
--- accept/reject are shape (c) proper (IO (Either ServiceError a)) — the
--- first section to need the runService/handleServiceError helpers (see
--- MIDDLEWARE below). runMatchOutcome (MatchOutcome's own outcome-typed
--- shape) still isn't needed by anything built so far; a later
--- IntakeRequest pass will add it alongside match/reclaim/close.
+-- accept/reject/reclaim/close are shape (c) proper (IO (Either
+-- ServiceError a)), via runService/handleServiceError; match is
+-- MatchOutcome-shaped (IO (Either ServiceError MatchOutcome)), via the
+-- new runMatchOutcome (see MIDDLEWARE below) — MatchOutcome's own
+-- 5-constructor success side doesn't fit runService's uniform tag/
+-- toDetail shape.
 
 module Api
   ( -- ── Application monad ────────────────────────────────────────────────
@@ -99,10 +100,11 @@ import Domain
   , PatientId (..)
   )
 import Persistence (ConnectionPool, DecodeError)
-import Service     (ServiceError (..), SlotCreationOutcome (..))
+import Service     (MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..))
 import Transport
   ( AcceptIntakeRequestRequest (..)
   , AvailableSlotDTO
+  , CloseReasonRequestDTO (..)
   , CreateAvailableSlotRequest (..)
   , CreateDoctorRequest (..)
   , CreateHealthcareServiceRequest (..)
@@ -113,11 +115,14 @@ import Transport
   , PatientDTO
   , RejectIntakeRequestRequest (..)
   , SubmitIntakeRequestRequest (..)
+  , closeReasonFromRequest
+  , fromDomainAppointedIntakeRequest
   , fromDomainAvailableSlot
   , fromDomainDoctor
   , fromDomainHealthcareService
   , fromDomainIntakeRequest
   , fromDomainPatient
+  , toDomainAvailableSlot
   , toDomainDoctorRequirement
   , toDomainDuration
   , toDomainIntakeRequestPriority
@@ -214,15 +219,20 @@ app pool = serve (Proxy @API) (hoistServer (Proxy @API) (runAppM pool) server)
 -- HealthcareServiceAPI's list/get reads were the first section that
 -- needed it. runSlotCreation/envelope/envelopeEmpty exist for SlotAPI's
 -- create (IO SlotCreationOutcome — no ServiceError/Either at all, its own
--- outcome-typed shape). handleServiceError/runService now also exist, for
--- shape (c) proper — mutations returning IO (Either ServiceError a) —
--- implemented here for the first time, needed by
--- acceptSubmittedIntakeRequestHandler/rejectSubmittedIntakeRequestHandler
--- below. runMatchOutcome (MatchOutcome's own 5-constructor success side,
--- which doesn't fit runService's uniform tag/toDetail shape) still
--- doesn't exist — nothing built so far calls matchWaitlistToSlot/
--- matchAcceptedIntakeRequestToSlot; a later IntakeRequest pass will add
--- it alongside those endpoints.
+-- outcome-typed shape). handleServiceError/runService exist for shape (c)
+-- proper — mutations returning IO (Either ServiceError a) — needed by
+-- acceptSubmittedIntakeRequestHandler/rejectSubmittedIntakeRequestHandler/
+-- reclaimAppointedIntakeRequestHandler/closeAppointedIntakeRequestHandler.
+-- runMatchOutcome now also exists, implemented here for the first time,
+-- for matchAcceptedIntakeRequestToSlot's IO (Either ServiceError
+-- MatchOutcome) shape — MatchOutcome's own 5-constructor success side
+-- doesn't fit runService's uniform tag/toDetail shape (only one of its
+-- five carries a payload), so this is its own exhaustive match, sharing
+-- handleServiceError for the Left case exactly like runService does.
+-- matchWaitlistToSlot is the one other function with this same shape,
+-- per checkwaitlist-not-an-endpoint it never gets its own route, so
+-- runMatchOutcome's only caller so far is
+-- matchAcceptedIntakeRequestToSlotHandler.
 --
 -- DecodeError (Persistence.hs) derives only (Show, Eq) — no Generic, no
 -- hand-written ToJSON anywhere in this codebase (verified, not assumed).
@@ -310,6 +320,24 @@ runService successTag action toDetail = do
   case result of
     Left se -> handleServiceError se
     Right a -> pure (envelope successTag (toDetail a))
+
+-- For matchAcceptedIntakeRequestToSlot's IO (Either ServiceError
+-- MatchOutcome) shape — verified against Service.hs directly: MatchOutcome
+-- is Matched AppointedIntakeRequest | NoEligibleRequest | RequestIneligible
+-- | SlotAlreadyClaimed | RequestAlreadyClaimed. Exhaustive match, no
+-- wildcard, same discipline as handleServiceError above — only Matched
+-- carries a payload (via fromDomainAppointedIntakeRequest), the other four
+-- are envelopeEmpty.
+runMatchOutcome :: IO (Either ServiceError MatchOutcome) -> AppM Value
+runMatchOutcome action = do
+  result <- liftIO action
+  case result of
+    Left se                     -> handleServiceError se
+    Right (Matched appointed)   -> pure (envelope "matched" (fromDomainAppointedIntakeRequest appointed))
+    Right NoEligibleRequest     -> pure (envelopeEmpty "noEligibleRequest")
+    Right RequestIneligible     -> pure (envelopeEmpty "requestIneligible")
+    Right SlotAlreadyClaimed    -> pure (envelopeEmpty "slotAlreadyClaimed")
+    Right RequestAlreadyClaimed -> pure (envelopeEmpty "requestAlreadyClaimed")
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- DOCTOR
@@ -511,9 +539,11 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INTAKE REQUEST
--- First slice only: submit/accept/reject. match/reclaim/close and every
--- read on this resource (fetchIntakeRequest, fetchIntakeWaitlist,
--- fetchAppointedIntakeRequests) come in later passes.
+-- Second slice adds match/reclaim/close to the first slice's submit/
+-- accept/reject, same section/route type extended across passes (per the
+-- TOP-LEVEL API banner comment's own note below) rather than a new one.
+-- Every read on this resource (fetchIntakeRequest, fetchIntakeWaitlist,
+-- fetchAppointedIntakeRequests) still comes in a later pass.
 --
 -- submitIntakeRequestHandler is shape (a) — verified against Service.hs
 -- directly: submitIntakeRequest :: ConnectionPool -> PatientId -> Text ->
@@ -558,12 +588,46 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 -- category as a malformed body, distinct from runRead/runService's own
 -- Left cases (which both represent Service.hs/Persistence.hs having
 -- already run).
+--
+-- matchAcceptedIntakeRequestToSlotHandler is MatchOutcome-shaped —
+-- verified against Service.hs directly: matchAcceptedIntakeRequestToSlot
+-- :: ConnectionPool -> IntakeRequestId -> AvailableSlot -> IO (Either
+-- ServiceError MatchOutcome), wrapped via the new runMatchOutcome (see
+-- MIDDLEWARE above). Reuses AvailableSlotDTO as the request body directly
+-- (servant-implementation.md section 5's settled table), for a different
+-- reason than SlotAPI's own reuse of it as a response DTO: unlike
+-- createAvailableSlot (server mints a NEW slot's id), matching identifies
+-- an EXISTING slot the caller already knows the real id of, so accepting
+-- the id field here is correct, not a leftover assumption.
+--
+-- reclaimAppointedIntakeRequestHandler has no request body at all — per
+-- the settled design, reclaim needs nothing beyond the path id. Verified
+-- against Service.hs directly: reclaimAppointedIntakeRequest ::
+-- ConnectionPool -> IntakeRequestId -> IO (Either ServiceError
+-- TriagedIntakeRequest) — Either ServiceError, not MatchOutcome, so this
+-- is runService, not runMatchOutcome. Same DTO-reachability path as
+-- acceptSubmittedIntakeRequestHandler above: TriagedIntakeRequest has no
+-- standalone DTO conversion, so the success value is wrapped via the
+-- IntakeRequest sum's own Accepted constructor (reclaiming reverts an
+-- Appointed request back to Accepted) then fromDomainIntakeRequest.
+--
+-- closeAppointedIntakeRequestHandler is shape (c) proper too — verified
+-- against Service.hs directly: closeAppointedIntakeRequest ::
+-- ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either
+-- ServiceError IntakeRequest), success type already IS IntakeRequest, so
+-- fromDomainIntakeRequest applies directly, same as reject's own
+-- toDetail. getCurrentTime supplies Cancelled's embedded timestamp via
+-- closeReasonFromRequest (Transport.hs) — never accepted from the body,
+-- same convention as every other mutation's own timestamp.
 -- ═══════════════════════════════════════════════════════════════════════
 
 type IntakeRequestAPI =
        ReqBody '[JSON] SubmitIntakeRequestRequest :> Post '[JSON] IntakeRequestDTO
   :<|> Capture "id" UUID :> "accept" :> ReqBody '[JSON] AcceptIntakeRequestRequest :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "reject" :> ReqBody '[JSON] RejectIntakeRequestRequest :> Post '[JSON] Value
+  :<|> Capture "id" UUID :> "match" :> ReqBody '[JSON] AvailableSlotDTO :> Post '[JSON] Value
+  :<|> Capture "id" UUID :> "reclaim" :> Post '[JSON] Value
+  :<|> Capture "id" UUID :> "close" :> ReqBody '[JSON] CloseReasonRequestDTO :> Post '[JSON] Value
 
 submitIntakeRequestHandler :: SubmitIntakeRequestRequest -> AppM IntakeRequestDTO
 submitIntakeRequestHandler req = do
@@ -594,17 +658,44 @@ rejectSubmittedIntakeRequestHandler uid req = do
     (Service.rejectSubmittedIntakeRequest pool (IntakeRequestId uid) rejectedAt req.rejectionReason)
     fromDomainIntakeRequest
 
+matchAcceptedIntakeRequestToSlotHandler :: UUID -> AvailableSlotDTO -> AppM Value
+matchAcceptedIntakeRequestToSlotHandler uid slotDto = do
+  pool <- ask
+  runMatchOutcome
+    (Service.matchAcceptedIntakeRequestToSlot pool (IntakeRequestId uid) (toDomainAvailableSlot slotDto))
+
+reclaimAppointedIntakeRequestHandler :: UUID -> AppM Value
+reclaimAppointedIntakeRequestHandler uid = do
+  pool <- ask
+  runService "reclaimed"
+    (Service.reclaimAppointedIntakeRequest pool (IntakeRequestId uid))
+    (fromDomainIntakeRequest . Accepted)
+
+closeAppointedIntakeRequestHandler :: UUID -> CloseReasonRequestDTO -> AppM Value
+closeAppointedIntakeRequestHandler uid reasonDto = do
+  pool     <- ask
+  closedAt <- liftIO getCurrentTime
+  runService "closed"
+    (Service.closeAppointedIntakeRequest pool (IntakeRequestId uid) (closeReasonFromRequest reasonDto closedAt))
+    fromDomainIntakeRequest
+
 intakeRequestServer :: ServerT IntakeRequestAPI AppM
 intakeRequestServer =
-  submitIntakeRequestHandler :<|> acceptSubmittedIntakeRequestHandler :<|> rejectSubmittedIntakeRequestHandler
+       submitIntakeRequestHandler
+  :<|> acceptSubmittedIntakeRequestHandler
+  :<|> rejectSubmittedIntakeRequestHandler
+  :<|> matchAcceptedIntakeRequestToSlotHandler
+  :<|> reclaimAppointedIntakeRequestHandler
+  :<|> closeAppointedIntakeRequestHandler
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- TOP-LEVEL API
 -- CalendarAPI is not stubbed here — it's added, with its own section
--- above this one, when its own pass comes. IntakeRequestAPI above is
--- only a partial slice so far (submit/accept/reject) — match/reclaim/
--- close and its reads will extend the same section/route type in later
--- passes, not a separate one.
+-- above this one, when its own pass comes. IntakeRequestAPI above now
+-- covers all six mutations (submit/accept/reject/match/reclaim/close) —
+-- only its reads (fetchIntakeRequest, fetchIntakeWaitlist,
+-- fetchAppointedIntakeRequests) remain, extending the same section/route
+-- type in a later pass, not a separate one.
 -- ═══════════════════════════════════════════════════════════════════════
 
 type API =

@@ -69,6 +69,10 @@ module Transport
   , toDomainCloseReason
   , fromDomainCloseReason
 
+    -- ── Close Reason Request ─────────────────────────────────────────────
+  , CloseReasonRequestDTO (..)
+  , closeReasonFromRequest
+
     -- ── Intake Request Priority ──────────────────────────────────────────
   , IntakeRequestPriorityDTO (..)
   , toDomainIntakeRequestPriority
@@ -615,6 +619,55 @@ fromDomainCloseReason :: CloseReason -> CloseReasonDTO
 fromDomainCloseReason Completed                = CompletedDTO
 fromDomainCloseReason (Cancelled party at note) = CancelledDTO (fromDomainAppointmentParty party) at note
 fromDomainCloseReason (NoShow party)            = NoShowDTO (fromDomainAppointmentParty party)
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- CLOSE REASON REQUEST
+-- Request-body DTO, per servant-implementation.md section 5's already-
+-- settled design — mirrors CloseReasonDTO's three cases minus Cancelled's
+-- timestamp: the handler supplies it via getCurrentTime, never accepted
+-- from the body, same caller-supplied-facts-only convention as every
+-- other request DTO. A separate type from CloseReasonDTO, not
+-- CloseReasonDTO with cancelledAt loosened to optional — CloseReasonDTO's
+-- existing FromJSON correctly requires cancelledAt for a fully-formed
+-- response value, and since both directions would share one instance,
+-- loosening it for the request direction would weaken the response-
+-- parsing guarantee too. Reuses toDomainAppointmentParty rather than
+-- re-encoding AppointmentParty inline, same reuse discipline as
+-- CloseReasonDTO itself. closeReasonFromRequest (not toDomainCloseReason
+-- — deliberately a different name, since this one takes the caller-
+-- supplied UTCTime as a second argument rather than converting a
+-- self-contained DTO) is total: no invariant on any of these three cases
+-- to fail against, same as toDomainCloseReason's own totality.
+-- ═══════════════════════════════════════════════════════════════════════
+
+data CloseReasonRequestDTO
+  = CompletedRequestDTO
+  | CancelledRequestDTO AppointmentPartyDTO (Maybe Text)
+  | NoShowRequestDTO     AppointmentPartyDTO
+  deriving (Show, Eq)
+
+instance ToJSON CloseReasonRequestDTO where
+  toJSON CompletedRequestDTO = object ["type" .= ("completed" :: Text)]
+  toJSON (CancelledRequestDTO by note) = object
+    [ "type" .= ("cancelled" :: Text)
+    , "by" .= by
+    , "note" .= note
+    ]
+  toJSON (NoShowRequestDTO by) = object ["type" .= ("noShow" :: Text), "by" .= by]
+
+instance FromJSON CloseReasonRequestDTO where
+  parseJSON = withObject "CloseReasonRequestDTO" $ \v -> do
+    tag <- v .: "type"
+    case (tag :: Text) of
+      "completed" -> pure CompletedRequestDTO
+      "cancelled" -> CancelledRequestDTO <$> v .: "by" <*> v .: "note"
+      "noShow"    -> NoShowRequestDTO <$> v .: "by"
+      other       -> fail ("unrecognized CloseReasonRequest type: " ++ show other)
+
+closeReasonFromRequest :: CloseReasonRequestDTO -> UTCTime -> CloseReason
+closeReasonFromRequest CompletedRequestDTO          _  = Completed
+closeReasonFromRequest (CancelledRequestDTO p note) at = Cancelled (toDomainAppointmentParty p) at note
+closeReasonFromRequest (NoShowRequestDTO p)         _  = NoShow (toDomainAppointmentParty p)
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INTAKE REQUEST PRIORITY
