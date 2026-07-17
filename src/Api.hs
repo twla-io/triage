@@ -565,38 +565,37 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INTAKE REQUEST
--- Fourth slice adds fetchSubmittedIntakeRequests (GET
--- /intake-requests/submitted) alongside the three reads
--- (fetchIntakeRequest/fetchIntakeWaitlist/fetchAppointedIntakeRequests)
--- from the prior slice, same section/route type extended across passes
--- rather than a new one — mirrors fetchIntakeWaitlist exactly, one state
--- over (state = 'submitted' instead of 'accepted'): a specific,
--- purpose-named business list, not a generic state-filter parameter.
+-- Fifth slice: loosens fetchAppointedIntakeRequests's range to optional
+-- and adds fetchClosedIntakeRequests (GET /intake-requests/closed) with
+-- the deliberately opposite default, a REQUIRED range — see each
+-- handler's own comment below for why. Same section/route type extended
+-- across passes rather than a new one.
 --
 -- Routing ambiguity, resolved by ordering: "waitlist"/"submitted"/
--- "appointed" are all exactly one path segment under /intake-requests,
--- the same shape as the bare Capture "id" UUID :> Get route added below
--- — a GET to /intake-requests/waitlist (or /submitted) could otherwise
--- be attempted against the capture branch first (parsing the literal
--- segment as a UUID and failing) instead of falling through to the
--- literal branch. Fixed the standard way: IntakeRequestAPI's type lists
--- all three literal-segment GETs before the bare Capture-then-Get
--- route, and intakeRequestServer's handler list is kept in that exact
--- same order (positional correspondence with the type, per
+-- "appointed"/"closed" are all exactly one path segment under
+-- /intake-requests, the same shape as the bare Capture "id" UUID :> Get
+-- route added below — a GET to /intake-requests/waitlist (or /submitted,
+-- /closed) could otherwise be attempted against the capture branch first
+-- (parsing the literal segment as a UUID and failing) instead of falling
+-- through to the literal branch. Fixed the standard way: IntakeRequestAPI's
+-- type lists all four literal-segment GETs before the bare
+-- Capture-then-Get route, and intakeRequestServer's handler list is kept
+-- in that exact same order (positional correspondence with the type, per
 -- servant-implementation.md section 2's own reasoning for why this file
 -- groups per-resource in the first place). The other Capture-based
--- routes (accept/reject/match/reclaim/close) don't share this ambiguity
--- regardless of ordering — each has its own distinguishing trailing
--- literal segment, so they're a different path *shape* than the bare
--- single-capture GET.
+-- routes (accept/reject/match/reclaim/close as a mutation-suffix, not to
+-- be confused with this section's new "closed" read) don't share this
+-- ambiguity regardless of ordering — each has its own distinguishing
+-- trailing literal segment, so they're a different path *shape* than the
+-- bare single-capture GET.
 --
 -- fetchIntakeWaitlistHandler/fetchSubmittedIntakeRequestsHandler/
--- fetchAppointedIntakeRequestsHandler/fetchIntakeRequestHandler are all
--- shape (b) — runRead, plain DTO/list as the 200 body, no envelope
--- (reads never get the outcome envelope, same as every other read in
--- this file, even though IntakeRequestDTO is itself a tagged multi-case
--- type — no different in principle from submitIntakeRequestHandler
--- already returning a bare IntakeRequestDTO).
+-- fetchAppointedIntakeRequestsHandler/fetchClosedIntakeRequestsHandler/
+-- fetchIntakeRequestHandler are all shape (b) — runRead, plain DTO/list
+-- as the 200 body, no envelope (reads never get the outcome envelope,
+-- same as every other read in this file, even though IntakeRequestDTO is
+-- itself a tagged multi-case type — no different in principle from
+-- submitIntakeRequestHandler already returning a bare IntakeRequestDTO).
 --
 -- fetchIntakeRequestHandler mirrors getHealthcareServiceHandler's own
 -- nested-Either/Maybe pattern — verified against Service.hs directly:
@@ -626,14 +625,39 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 -- via map instead of to a single value.
 --
 -- fetchAppointedIntakeRequestsHandler — verified against Service.hs
--- directly: fetchAppointedIntakeRequests :: ConnectionPool -> UTCTime ->
--- UTCTime -> Maybe DoctorId -> IO (Either DecodeError
--- [AppointedIntakeRequest]) — a required date range plus ONE optional
--- doctorId filter, unlike fetchAvailableSlots's two optional filters (no
--- healthcareServiceId filter here). This one DOES have a standalone DTO
+-- directly: fetchAppointedIntakeRequests :: ConnectionPool -> Maybe
+-- UTCTime -> Maybe UTCTime -> Maybe DoctorId -> IO (Either DecodeError
+-- [AppointedIntakeRequest]) — range loosened to optional this pass (was
+-- required): unlike fetchAvailableSlots (required; slots accumulate
+-- unboundedly forever) or fetchClosedIntakeRequests below (required;
+-- closed requests are permanently terminal, so that set only grows),
+-- the live appointed set is naturally bounded — once a request closes,
+-- it leaves this set entirely, so "everyone currently appointed,
+-- unbounded" is a reasonable, non-explosive query. Both start/end are
+-- now plain QueryParam (optional), passed straight through as
+-- Maybe UTCTime — no more forced-required unwrapping. Doctor filter
+-- stays optional as before. This one DOES have a standalone DTO
 -- (AppointedIntakeRequestDTO, built during the mutations slice for
 -- runMatchOutcome/reuse) — no wrapping workaround needed, used directly
 -- via fromDomainAppointedIntakeRequest.
+--
+-- fetchClosedIntakeRequestsHandler — verified against Service.hs
+-- directly: fetchClosedIntakeRequests :: ConnectionPool -> UTCTime ->
+-- UTCTime -> Maybe DoctorId -> IO (Either DecodeError [IntakeRequest]) —
+-- REQUIRED range, the deliberately opposite default from
+-- fetchAppointedIntakeRequestsHandler's own loosening just above: closed
+-- requests are permanently terminal (docs/decisions.md's settled
+-- no-delete-on-consumption reasoning — nothing ever leaves this state),
+-- so this set only grows, forever, for the entire lifetime of the
+-- practice — the same unbounded-growth justification fetchAvailableSlots's
+-- required range already established, applying even more strongly here.
+-- Returns [IntakeRequest] (via Service.hs, ultimately
+-- Persistence.toDomainIntakeRequest), not a new speculative
+-- "ClosedIntakeRequest" Domain type — Closed is just one case of the
+-- six-case IntakeRequest, and IntakeRequestDTO/fromDomainIntakeRequest
+-- already exist as its full wire representation, so this reuses them
+-- directly with no wrapping workaround needed (same reason
+-- fetchAppointedIntakeRequestsHandler above needs none).
 --
 -- submitIntakeRequestHandler is shape (a) — verified against Service.hs
 -- directly: submitIntakeRequest :: ConnectionPool -> PatientId -> Text ->
@@ -716,10 +740,15 @@ type IntakeRequestAPI =
   :<|> "waitlist" :> Get '[JSON] [IntakeRequestDTO]
   :<|> "submitted" :> Get '[JSON] [IntakeRequestDTO]
   :<|> "appointed"
+       :> QueryParam "start" UTCTime
+       :> QueryParam "end" UTCTime
+       :> QueryParam "doctorId" UUID
+       :> Get '[JSON] [AppointedIntakeRequestDTO]
+  :<|> "closed"
        :> QueryParam' '[Required, Strict] "start" UTCTime
        :> QueryParam' '[Required, Strict] "end" UTCTime
        :> QueryParam "doctorId" UUID
-       :> Get '[JSON] [AppointedIntakeRequestDTO]
+       :> Get '[JSON] [IntakeRequestDTO]
   :<|> Capture "id" UUID :> "accept" :> ReqBody '[JSON] AcceptIntakeRequestRequest :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "reject" :> ReqBody '[JSON] RejectIntakeRequestRequest :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "match" :> ReqBody '[JSON] AvailableSlotDTO :> Post '[JSON] Value
@@ -748,12 +777,20 @@ fetchSubmittedIntakeRequestsHandler = do
   submitted <- runRead (Service.fetchSubmittedIntakeRequests pool)
   pure (map (fromDomainIntakeRequest . Submitted) submitted)
 
-fetchAppointedIntakeRequestsHandler :: UTCTime -> UTCTime -> Maybe UUID -> AppM [AppointedIntakeRequestDTO]
-fetchAppointedIntakeRequestsHandler rangeStart rangeEnd mDoctorUUID = do
+fetchAppointedIntakeRequestsHandler
+  :: Maybe UTCTime -> Maybe UTCTime -> Maybe UUID -> AppM [AppointedIntakeRequestDTO]
+fetchAppointedIntakeRequestsHandler mRangeStart mRangeEnd mDoctorUUID = do
   pool      <- ask
   appointed <- runRead
-    (Service.fetchAppointedIntakeRequests pool rangeStart rangeEnd (DoctorId <$> mDoctorUUID))
+    (Service.fetchAppointedIntakeRequests pool mRangeStart mRangeEnd (DoctorId <$> mDoctorUUID))
   pure (map fromDomainAppointedIntakeRequest appointed)
+
+fetchClosedIntakeRequestsHandler :: UTCTime -> UTCTime -> Maybe UUID -> AppM [IntakeRequestDTO]
+fetchClosedIntakeRequestsHandler rangeStart rangeEnd mDoctorUUID = do
+  pool   <- ask
+  closed <- runRead
+    (Service.fetchClosedIntakeRequests pool rangeStart rangeEnd (DoctorId <$> mDoctorUUID))
+  pure (map fromDomainIntakeRequest closed)
 
 acceptSubmittedIntakeRequestHandler :: UUID -> AcceptIntakeRequestRequest -> AppM Value
 acceptSubmittedIntakeRequestHandler uid req = do
@@ -810,6 +847,7 @@ intakeRequestServer =
   :<|> fetchIntakeWaitlistHandler
   :<|> fetchSubmittedIntakeRequestsHandler
   :<|> fetchAppointedIntakeRequestsHandler
+  :<|> fetchClosedIntakeRequestsHandler
   :<|> acceptSubmittedIntakeRequestHandler
   :<|> rejectSubmittedIntakeRequestHandler
   :<|> matchAcceptedIntakeRequestToSlotHandler

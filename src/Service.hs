@@ -79,6 +79,7 @@ module Service
   , fetchHealthcareServices
   , fetchAvailableSlots
   , fetchAppointedIntakeRequests
+  , fetchClosedIntakeRequests
   , fetchIntakeRequest
   , fetchIntakeWaitlist
   , fetchSubmittedIntakeRequests
@@ -127,13 +128,14 @@ import Domain
   , checkIntakeWaitlist
   , matchIntakeRequestToSlot
   )
--- Qualified alongside the unqualified import below because twelve of this
--- module's own top-level names (fetchDoctor, fetchPatient,
+-- Qualified alongside the unqualified import below because thirteen of
+-- this module's own top-level names (fetchDoctor, fetchPatient,
 -- fetchHealthcareService, fetchDoctors, fetchPatients,
 -- fetchHealthcareServices, fetchAvailableSlots,
--- fetchAppointedIntakeRequests, fetchIntakeRequest, fetchIntakeWaitlist,
--- fetchSubmittedIntakeRequests — see the READS section — plus
--- fetchCalendarView's internal calls to the first two of those) are
+-- fetchAppointedIntakeRequests, fetchClosedIntakeRequests,
+-- fetchIntakeRequest, fetchIntakeWaitlist, fetchSubmittedIntakeRequests —
+-- see the READS section — plus fetchCalendarView's internal calls to the
+-- first two of those) are
 -- deliberately identical to their Persistence.hs counterparts; an
 -- unqualified import of those names would conflict with this module's own
 -- definitions of them. fetchIntakeRequest/fetchIntakeWaitlist moved out of
@@ -143,12 +145,13 @@ import Domain
 -- Persistence.fetchIntakeWaitlist instead (see acceptSubmittedIntakeRequest,
 -- rejectSubmittedIntakeRequest, matchWaitlistToSlot,
 -- matchAcceptedIntakeRequestToSlot, reclaimAppointedIntakeRequest,
--- closeAppointedIntakeRequest below). fetchSubmittedIntakeRequests was
--- never in the unqualified list to begin with — its own Service.hs
--- wrapper was added at the same time as the Persistence.hs function
--- itself, so there was no prior unqualified call site to migrate off of.
--- Every other Persistence function keeps the existing unqualified import,
--- since none of the rest collide with a same-named Service.hs function.
+-- closeAppointedIntakeRequest below). fetchSubmittedIntakeRequests/
+-- fetchClosedIntakeRequests were never in the unqualified list to begin
+-- with — each one's own Service.hs wrapper was added at the same time as
+-- its Persistence.hs function itself, so there was no prior unqualified
+-- call site to migrate off of. Every other Persistence function keeps
+-- the existing unqualified import, since none of the rest collide with
+-- a same-named Service.hs function.
 import qualified Persistence
 import Persistence
   ( ClaimOutcome (..)
@@ -621,11 +624,23 @@ fetchAvailableSlots pool rangeStart rangeEnd mDoctorId mServiceId =
     Persistence.fetchAvailableSlots conn rangeStart rangeEnd mDoctorId mServiceId
 
 fetchAppointedIntakeRequests
-  :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId
+  :: ConnectionPool -> Maybe UTCTime -> Maybe UTCTime -> Maybe DoctorId
   -> IO (Either DecodeError [AppointedIntakeRequest])
-fetchAppointedIntakeRequests pool rangeStart rangeEnd mDoctorId =
+fetchAppointedIntakeRequests pool mRangeStart mRangeEnd mDoctorId =
   withResource pool $ \conn ->
-    Persistence.fetchAppointedIntakeRequests conn rangeStart rangeEnd mDoctorId
+    Persistence.fetchAppointedIntakeRequests conn mRangeStart mRangeEnd mDoctorId
+
+-- Mirrors fetchAppointedIntakeRequests's pre-loosening shape exactly —
+-- required range, optional doctorId — the deliberately opposite default:
+-- state = 'closed' requests only ever accumulate (docs/decisions.md's
+-- no-delete-on-consumption reasoning), so an unbounded query here really
+-- would grow without limit, unlike the live appointed set above.
+fetchClosedIntakeRequests
+  :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId
+  -> IO (Either DecodeError [IntakeRequest])
+fetchClosedIntakeRequests pool rangeStart rangeEnd mDoctorId =
+  withResource pool $ \conn ->
+    Persistence.fetchClosedIntakeRequests conn rangeStart rangeEnd mDoctorId
 
 -- These two specifically were already in use internally — by
 -- acceptSubmittedIntakeRequest, rejectSubmittedIntakeRequest,
@@ -695,12 +710,19 @@ calendarEntryStart (Appointment a) = a.start
 -- A calendar view is scoped by time and doctor, not by service; a
 -- service-filtered variant is a new, separate parameter to add
 -- deliberately if ever needed, not assumed now.
+--
+-- fetchAppointedIntakeRequests's own range is optional (see its own
+-- comment), but fetchCalendarView's own range stays required regardless
+-- — a calendar view scoped to "forever" is exactly the unbounded query
+-- fetchAppointedIntakeRequests's own looser default was never meant to
+-- invite — so this wraps rangeStart/rangeEnd in Just at the call site
+-- rather than loosening fetchCalendarView's own signature to match.
 fetchCalendarView
   :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId
   -> IO (Either DecodeError [CalendarEntry])
 fetchCalendarView pool rangeStart rangeEnd mDoctorId = do
   slotsResult     <- fetchAvailableSlots pool rangeStart rangeEnd mDoctorId Nothing
-  appointedResult <- fetchAppointedIntakeRequests pool rangeStart rangeEnd mDoctorId
+  appointedResult <- fetchAppointedIntakeRequests pool (Just rangeStart) (Just rangeEnd) mDoctorId
   pure $ do
     slots     <- slotsResult
     appointed <- appointedResult

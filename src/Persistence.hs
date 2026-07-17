@@ -66,6 +66,7 @@ module Persistence
   , fetchIntakeWaitlist
   , fetchSubmittedIntakeRequests
   , fetchAppointedIntakeRequests
+  , fetchClosedIntakeRequests
   , insertSubmittedIntakeRequest
   , persistTriagedIntakeRequest
   , persistRejectedIntakeRequest
@@ -757,20 +758,31 @@ fetchSubmittedIntakeRequests conn = do
 -- overlap invariant via its EXCLUDE constraint, and reading it for
 -- display would couple an enforcement mechanism to an unrelated concern.
 --
--- Same shape as fetchAvailableSlots: range required (not Maybe; requests
--- accumulate unboundedly, same reasoning as slots), doctor_id genuinely
--- optional ("anyone's calendar" vs. "this doctor's calendar"), ORDER BY
--- start_time for the same soonest-first reason, Maybe DoctorId unwrapped
--- to Maybe UUID before querying (no ToField DoctorId instance, same
--- convention fetchAvailableSlots already uses), and Either DecodeError
--- (traverse decodeAppointed) since decodeAppointed can fail.
+-- Range is optional here, unlike fetchAvailableSlots's required one —
+-- deliberately different defaults, for a real reason rather than
+-- inconsistency: slots (and closed requests, see fetchClosedIntakeRequests
+-- below) accumulate unboundedly forever, so a caller MUST bound that
+-- query. The live appointed set doesn't: once a request closes, it
+-- leaves state = 'appointed' entirely, so "everyone currently appointed"
+-- is naturally bounded by how much is actually scheduled right now, not
+-- by how long the practice has existed — a reasonable, non-explosive
+-- query even with no range at all. Uses the same
+-- "(? IS NULL OR start_time >= ?)" always-present-but-conditionally-inert
+-- pattern already established for the optional doctor_id/
+-- healthcare_service_id filters (fetchAvailableSlots above), applied to
+-- the range itself instead of just the extra filters. doctor_id stays
+-- genuinely optional ("anyone's calendar" vs. "this doctor's calendar"),
+-- ORDER BY start_time for the same soonest-first reason, Maybe DoctorId
+-- unwrapped to Maybe UUID before querying (no ToField DoctorId instance,
+-- same convention fetchAvailableSlots already uses), and Either
+-- DecodeError (traverse decodeAppointed) since decodeAppointed can fail.
 fetchAppointedIntakeRequests
   :: Connection
-  -> UTCTime                     -- range start (inclusive)
-  -> UTCTime                     -- range end (exclusive)
+  -> Maybe UTCTime                -- range start (inclusive), optional
+  -> Maybe UTCTime                -- range end (exclusive), optional
   -> Maybe DoctorId
   -> IO (Either DecodeError [AppointedIntakeRequest])
-fetchAppointedIntakeRequests conn rangeStart rangeEnd mDoctorId = do
+fetchAppointedIntakeRequests conn mRangeStart mRangeEnd mDoctorId = do
   let mDoctorUuid = (\(DoctorId d) -> d) <$> mDoctorId
   rows <- query conn
     "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
@@ -781,11 +793,63 @@ fetchAppointedIntakeRequests conn rangeStart rangeEnd mDoctorId = do
     \       close_reason, closed_by_party, cancelled_at, cancellation_note \
     \FROM intake_requests \
     \WHERE state = 'appointed' \
+    \  AND (? IS NULL OR start_time >= ?) \
+    \  AND (? IS NULL OR start_time < ?) \
+    \  AND (? IS NULL OR appointed_doctor_id = ?) \
+    \ORDER BY start_time"
+    (mRangeStart, mRangeStart, mRangeEnd, mRangeEnd, mDoctorUuid, mDoctorUuid)
+  pure (traverse decodeAppointed rows)
+
+-- Mirrors fetchAppointedIntakeRequests's PRE-loosening shape exactly —
+-- required range, optional doctor_id — for the deliberately opposite
+-- reason from the loosening just above: state = 'closed' requests are
+-- permanently terminal (docs/decisions.md's own settled
+-- no-delete-on-consumption reasoning — nothing ever leaves this state
+-- once reached), so this set only grows, forever, for the entire
+-- lifetime of the practice. The same unbounded-growth justification
+-- fetchAvailableSlots's required range already established applies here
+-- even more strongly than it does there: a mature practice accumulates
+-- closed requests far more steadily than open slots ever pile up. A
+-- required range and an optional one are both correct defaults in this
+-- file — they answer "does this set grow without bound over time" for
+-- each fetch individually, not a single rule applied uniformly.
+--
+-- Returns [IntakeRequest], not a new speculative "ClosedIntakeRequest"
+-- Domain-level pairing type: Closed is just one case of the six-case
+-- IntakeRequest (AppointedIntakeRequest + CloseReason), and no standalone
+-- type exists anywhere in this codebase for it the way
+-- TriagedIntakeRequest/AppointedIntakeRequest exist for their own states.
+-- Decoded via the existing toDomainIntakeRequest — the same full decoder
+-- fetchIntakeRequest's single-item version already uses — filtered to
+-- state = 'closed' at the SQL level. Per the CHECK constraint
+-- (migrations/0001_init.sql), every 'closed' row is guaranteed
+-- appointed_doctor_id/start_time/duration_minutes/close_reason non-NULL
+-- (the same guarantee 'appointed' rows carry, plus close_reason), so
+-- toDomainIntakeRequest's "closed" branch is exercised safely here on
+-- every genuine row — never falling into InvalidAppointedRowShape/
+-- InvalidState, the same way decodeAppointed never does above.
+fetchClosedIntakeRequests
+  :: Connection
+  -> UTCTime                     -- range start (inclusive)
+  -> UTCTime                     -- range end (exclusive)
+  -> Maybe DoctorId
+  -> IO (Either DecodeError [IntakeRequest])
+fetchClosedIntakeRequests conn rangeStart rangeEnd mDoctorId = do
+  let mDoctorUuid = (\(DoctorId d) -> d) <$> mDoctorId
+  rows <- query conn
+    "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
+    \       rejected_at, rejection_reason, \
+    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \       appointed_doctor_id, start_time, duration_minutes, \
+    \       withdrawn_at, withdrawal_note, \
+    \       close_reason, closed_by_party, cancelled_at, cancellation_note \
+    \FROM intake_requests \
+    \WHERE state = 'closed' \
     \  AND start_time >= ? AND start_time < ? \
     \  AND (? IS NULL OR appointed_doctor_id = ?) \
     \ORDER BY start_time"
     (rangeStart, rangeEnd, mDoctorUuid, mDoctorUuid)
-  pure (traverse decodeAppointed rows)
+  pure (traverse toDomainIntakeRequest rows)
 
 insertSubmittedIntakeRequest :: Connection -> SubmittedIntakeRequest -> IO ()
 insertSubmittedIntakeRequest conn s = do
