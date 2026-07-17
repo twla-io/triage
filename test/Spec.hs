@@ -218,6 +218,9 @@ instance Arbitrary IntakeRequestDTO where
     , WithdrawnFromAcceptedDTO
         <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
         <*> genUUID <*> arbitrary <*> genMoment <*> genMoment <*> genMaybeText
+    , StaleDTO
+        <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
+        <*> genUUID <*> arbitrary <*> genMoment <*> genMoment
     , ClosedDTO
         <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
         <*> genUUID <*> arbitrary <*> genMoment <*> genUUID <*> genMoment <*> arbitrary

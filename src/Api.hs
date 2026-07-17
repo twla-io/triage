@@ -25,7 +25,7 @@
 -- SlotCreationOutcome relative (no ServiceError/Either at all — see
 -- MIDDLEWARE's own runSlotCreation). IntakeRequestAPI's submit is shape
 -- (a) again (submitIntakeRequest is bare IO — verified, not assumed);
--- accept/reject/reclaim/close are shape (c) proper (IO (Either
+-- accept/reject/reclaim/mark-stale/close are shape (c) proper (IO (Either
 -- ServiceError a)), via runService/handleServiceError; match is
 -- MatchOutcome-shaped (IO (Either ServiceError MatchOutcome)), via the
 -- new runMatchOutcome (see MIDDLEWARE below) — MatchOutcome's own
@@ -114,7 +114,7 @@ import Domain
   ( AvailableSlot (..)
   , DoctorId (..)
   , HealthcareServiceId (..)
-  , IntakeRequest (Accepted, Submitted)
+  , IntakeRequest (Accepted, Stale, Submitted)
   , IntakeRequestId (..)
   , PatientId (..)
   )
@@ -583,11 +583,11 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 -- in that exact same order (positional correspondence with the type, per
 -- servant-implementation.md section 2's own reasoning for why this file
 -- groups per-resource in the first place). The other Capture-based
--- routes (accept/reject/match/reclaim/close as a mutation-suffix, not to
--- be confused with this section's new "closed" read) don't share this
--- ambiguity regardless of ordering — each has its own distinguishing
--- trailing literal segment, so they're a different path *shape* than the
--- bare single-capture GET.
+-- routes (accept/reject/match/reclaim/mark-stale/close as a
+-- mutation-suffix, not to be confused with this section's new "closed"
+-- read) don't share this ambiguity regardless of ordering — each has its
+-- own distinguishing trailing literal segment, so they're a different
+-- path *shape* than the bare single-capture GET.
 --
 -- fetchIntakeWaitlistHandler/fetchSubmittedIntakeRequestsHandler/
 -- fetchAppointedIntakeRequestsHandler/fetchClosedIntakeRequestsHandler/
@@ -725,6 +725,29 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 -- IntakeRequest sum's own Accepted constructor (reclaiming reverts an
 -- Appointed request back to Accepted) then fromDomainIntakeRequest.
 --
+-- markIntakeRequestStaleHandler also has no request body — same shape as
+-- reclaim, needing nothing beyond the path id. Verified against
+-- Service.hs directly: markIntakeRequestStale :: ConnectionPool ->
+-- IntakeRequestId -> UTCTime -> IO (Either ServiceError
+-- TriagedIntakeRequest) — same success TYPE as reclaim's, but the
+-- DTO-reachability workaround does NOT copy reclaim's wrap-via-Accepted
+-- pattern, deliberately: reclaim's TriagedIntakeRequest really IS the
+-- request's new persisted state (an Appointed request reverted back to
+-- Accepted — "type": "accepted" is honest because that's what the row
+-- now actually is). Here, the row's persisted state after
+-- Service.markIntakeRequestStale is 'stale', not 'accepted' —
+-- TriagedIntakeRequest is its return type only because that's the data
+-- left unchanged by the transition (Stale embeds a full
+-- TriagedIntakeRequest, same as Accepted does), not a claim that the row
+-- is still Accepted. Wrapping via Accepted here would render "type":
+-- "accepted" for a row that is actually now stale, which would be a
+-- dishonest response. So this wraps via the IntakeRequest sum's own
+-- Stale constructor instead — Stale triaged staleAt, reusing the same
+-- staleAt this handler already generated via getCurrentTime and passed
+-- to Service.markIntakeRequestStale — then fromDomainIntakeRequest: same
+-- DTO-reachability mechanism as reclaim/accept, different target
+-- constructor, chosen because the underlying domain fact differs.
+--
 -- closeAppointedIntakeRequestHandler is shape (c) proper too — verified
 -- against Service.hs directly: closeAppointedIntakeRequest ::
 -- ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either
@@ -753,6 +776,7 @@ type IntakeRequestAPI =
   :<|> Capture "id" UUID :> "reject" :> ReqBody '[JSON] RejectIntakeRequestRequest :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "match" :> ReqBody '[JSON] AvailableSlotDTO :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "reclaim" :> Post '[JSON] Value
+  :<|> Capture "id" UUID :> "mark-stale" :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "close" :> ReqBody '[JSON] CloseReasonRequestDTO :> Post '[JSON] Value
   :<|> Capture "id" UUID :> Get '[JSON] IntakeRequestDTO
 
@@ -825,6 +849,14 @@ reclaimAppointedIntakeRequestHandler uid = do
     (Service.reclaimAppointedIntakeRequest pool (IntakeRequestId uid))
     (fromDomainIntakeRequest . Accepted)
 
+markIntakeRequestStaleHandler :: UUID -> AppM Value
+markIntakeRequestStaleHandler uid = do
+  pool    <- ask
+  staleAt <- liftIO getCurrentTime
+  runService "stale"
+    (Service.markIntakeRequestStale pool (IntakeRequestId uid) staleAt)
+    (\triaged -> fromDomainIntakeRequest (Stale triaged staleAt))
+
 closeAppointedIntakeRequestHandler :: UUID -> CloseReasonRequestDTO -> AppM Value
 closeAppointedIntakeRequestHandler uid reasonDto = do
   pool     <- ask
@@ -852,6 +884,7 @@ intakeRequestServer =
   :<|> rejectSubmittedIntakeRequestHandler
   :<|> matchAcceptedIntakeRequestToSlotHandler
   :<|> reclaimAppointedIntakeRequestHandler
+  :<|> markIntakeRequestStaleHandler
   :<|> closeAppointedIntakeRequestHandler
   :<|> fetchIntakeRequestHandler
 

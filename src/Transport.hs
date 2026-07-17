@@ -1123,12 +1123,12 @@ fromDomainAppointedIntakeRequest a =
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INTAKE REQUEST
--- Seven tags, not six: WithdrawnIntakeRequest's two sub-cases
+-- Eight tags, not seven: WithdrawnIntakeRequest's two sub-cases
 -- (WithdrawnFromSubmitted/WithdrawnFromAccepted) get their own top-level
 -- "type" tags rather than a shared "withdrawn" tag plus a
 -- nullable/conditional field distinguishing them — the same
 -- no-field-stands-in-for-which-case principle tagged-flat-serialization
--- already applies to IntakeRequest's own six states applies one level
+-- already applies to IntakeRequest's own seven states applies one level
 -- deeper here too.
 --
 -- Every field list below verified against Domain.hs's actual embedding
@@ -1148,15 +1148,18 @@ fromDomainAppointedIntakeRequest a =
 --              withdrawalNote :: Maybe Text
 --   withdrawnFromAccepted:  accepted's fields + withdrawnAt,
 --              withdrawalNote :: Maybe Text
+--   stale:     accepted's fields + staleAt :: UTCTime — Stale embeds a
+--              full TriagedIntakeRequest, same as Accepted, so its DTO
+--              fields are accepted's exactly, plus the one new timestamp.
 --   closed:    appointed's fields + closeReason
 --
 -- toDomainIntakeRequest/fromDomainIntakeRequest's Appointed/Closed cases
 -- build on top of toDomainAppointedIntakeRequest/
 -- fromDomainAppointedIntakeRequest above rather than repeating the
 -- triaged+duration flattening inline a second time — this is the same
--- flattening logic, reused, not duplicated. The other five cases
+-- flattening logic, reused, not duplicated. The other six cases
 -- (Submitted/Rejected/Accepted/WithdrawnFromSubmitted/
--- WithdrawnFromAccepted) still use submittedFields/triagedFields/
+-- WithdrawnFromAccepted/Stale) still use submittedFields/triagedFields/
 -- toDomainSubmitted/toDomainTriaged directly, since they don't go
 -- through AppointedIntakeRequest at all. The wire shape for "appointed"/
 -- "closed" is unchanged by this — only the Haskell-side composition
@@ -1244,6 +1247,17 @@ data IntakeRequestDTO
       , withdrawnAt         :: UTCTime
       , withdrawalNote      :: Maybe Text
       }
+  | StaleDTO
+      { id                  :: UUID
+      , patientId           :: UUID
+      , narrative           :: Text
+      , doctorRequirement   :: DoctorRequirementDTO
+      , createdAt           :: UTCTime
+      , healthcareServiceId :: UUID
+      , priority            :: IntakeRequestPriorityDTO
+      , triagedAt           :: UTCTime
+      , staleAt             :: UTCTime
+      }
   | ClosedDTO
       { id                  :: UUID
       , patientId           :: UUID
@@ -1327,6 +1341,18 @@ instance ToJSON IntakeRequestDTO where
     , "withdrawnAt" .= withdrawnTime
     , "withdrawalNote" .= note
     ]
+  toJSON (StaleDTO rid pid narr req created svcId prio triagedTime staleTime) = object
+    [ "type" .= ("stale" :: Text)
+    , "id" .= UUID.toText rid
+    , "patientId" .= UUID.toText pid
+    , "narrative" .= narr
+    , "doctorRequirement" .= req
+    , "createdAt" .= created
+    , "healthcareServiceId" .= UUID.toText svcId
+    , "priority" .= prio
+    , "triagedAt" .= triagedTime
+    , "staleAt" .= staleTime
+    ]
   toJSON (ClosedDTO rid pid narr req created svcId prio triagedTime did start' dur reason) = object
     [ "type" .= ("closed" :: Text)
     , "id" .= UUID.toText rid
@@ -1407,6 +1433,17 @@ instance FromJSON IntakeRequestDTO where
         withdrawnTime <- v .: "withdrawnAt"
         note          <- v .: "withdrawalNote"
         pure (WithdrawnFromAcceptedDTO rid pid narr req created svcId prio triagedTime withdrawnTime note)
+      "stale" -> do
+        rid         <- v .: "id" >>= parseUUIDField
+        pid         <- v .: "patientId" >>= parseUUIDField
+        narr        <- v .: "narrative"
+        req         <- v .: "doctorRequirement"
+        created     <- v .: "createdAt"
+        svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
+        prio        <- v .: "priority"
+        triagedTime <- v .: "triagedAt"
+        staleTime   <- v .: "staleAt"
+        pure (StaleDTO rid pid narr req created svcId prio triagedTime staleTime)
       "closed" -> do
         rid         <- v .: "id" >>= parseUUIDField
         pid         <- v .: "patientId" >>= parseUUIDField
@@ -1423,7 +1460,7 @@ instance FromJSON IntakeRequestDTO where
         pure (ClosedDTO rid pid narr req created svcId prio triagedTime did start' dur reason)
       other -> fail ("unrecognized IntakeRequest type: " ++ show other)
 
--- Union of all seven cases' fields — required is the intersection
+-- Union of all eight cases' fields — required is the intersection
 -- present in literally every case (id/patientId/narrative/
 -- doctorRequirement/createdAt, verified against the field-list comment
 -- at the top of this section), everything else is case-specific and
@@ -1441,7 +1478,7 @@ instance ToSchema IntakeRequestDTO where
     closeReasonRef <- declareSchemaRef (Proxy :: Proxy CloseReasonDTO)
     pure $ taggedSchema "IntakeRequestDTO"
       [ "submitted", "rejected", "accepted", "appointed"
-      , "withdrawnFromSubmitted", "withdrawnFromAccepted", "closed"
+      , "withdrawnFromSubmitted", "withdrawnFromAccepted", "stale", "closed"
       ]
       [ ("id", uuidRef), ("patientId", uuidRef), ("narrative", textRef)
       , ("doctorRequirement", reqRef), ("createdAt", utcRef)
@@ -1450,6 +1487,7 @@ instance ToSchema IntakeRequestDTO where
       , ("triagedAt", utcRef)
       , ("doctorId", uuidRef), ("start", utcRef), ("duration", durationRef)
       , ("withdrawnAt", utcRef), ("withdrawalNote", textRef)
+      , ("staleAt", utcRef)
       , ("closeReason", closeReasonRef)
       ]
       ["id", "patientId", "narrative", "doctorRequirement", "createdAt"]
@@ -1472,6 +1510,8 @@ toDomainIntakeRequest
   (WithdrawnFromAcceptedDTO rid pid narr req created svcId prio triagedTime withdrawnTime note) = do
   triagedReq <- toDomainTriaged rid pid narr req created svcId prio triagedTime
   Right (Withdrawn (WithdrawnFromAccepted triagedReq withdrawnTime note))
+toDomainIntakeRequest (StaleDTO rid pid narr req created svcId prio triagedTime staleTime) =
+  (`Stale` staleTime) <$> toDomainTriaged rid pid narr req created svcId prio triagedTime
 toDomainIntakeRequest (ClosedDTO rid pid narr req created svcId prio triagedTime did start' dur reason) =
   (\appointed -> Closed appointed (toDomainCloseReason reason))
   <$> toDomainAppointedIntakeRequest
@@ -1497,6 +1537,9 @@ fromDomainIntakeRequest (Withdrawn (WithdrawnFromSubmitted s withdrawnTime note)
 fromDomainIntakeRequest (Withdrawn (WithdrawnFromAccepted t withdrawnTime note)) =
   let (rid, pid, narr, req, created, svcId, prio, triagedTime) = triagedFields t
   in WithdrawnFromAcceptedDTO rid pid narr req created svcId prio triagedTime withdrawnTime note
+fromDomainIntakeRequest (Stale t staleTime) =
+  let (rid, pid, narr, req, created, svcId, prio, triagedTime) = triagedFields t
+  in StaleDTO rid pid narr req created svcId prio triagedTime staleTime
 fromDomainIntakeRequest (Closed a reason) =
   let AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' dur =
         fromDomainAppointedIntakeRequest a
