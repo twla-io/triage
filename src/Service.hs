@@ -66,6 +66,7 @@ module Service
   , matchWaitlistToSlot
   , matchAcceptedIntakeRequestToSlot
   , reclaimAppointedIntakeRequest
+  , markIntakeRequestStale
   , closeAppointedIntakeRequest
 
     -- ── Reads (thin pass-throughs — no precondition check, no
@@ -167,6 +168,7 @@ import Persistence
   , persistMatchedIntakeRequest
   , persistReclaimedIntakeRequest
   , persistRejectedIntakeRequest
+  , persistStaleIntakeRequest
   , persistTriagedIntakeRequest
   )
 
@@ -418,13 +420,13 @@ matchWaitlistToSlot pool slot = withResource pool $ \conn -> do
 -- never overridable, even by a manager, so a name suggesting force would
 -- overclaim what this bypasses (the scan, not the rules).
 --
--- All six IntakeRequest cases handled explicitly, no wildcard — so GHC's
+-- All seven IntakeRequest cases handled explicitly, no wildcard — so GHC's
 -- exhaustiveness check keeps this honest if a future case is ever added.
 -- Appointed collapses to RequestAlreadyClaimed (already matched, whether
 -- before this call or a moment after its own fetch — see the OUTCOMES
--- comment above); Rejected/Withdrawn/Closed all collapse to the single
--- RequestNotAccepted ServiceError, a deliberate simplification (the caller
--- can re-fetch if it needs to know which).
+-- comment above); Rejected/Withdrawn/Stale/Closed all collapse to the
+-- single RequestNotAccepted ServiceError, a deliberate simplification (the
+-- caller can re-fetch if it needs to know which).
 --
 -- RequestIneligible (matchIntakeRequestToSlot returns Nothing) is a
 -- distinct MatchOutcome constructor from NoEligibleRequest: there was no
@@ -461,6 +463,7 @@ matchAcceptedIntakeRequestToSlot pool requestId slot = withResource pool $ \conn
     Right (Just (Appointed _))      -> pure (Right RequestAlreadyClaimed)
     Right (Just (Rejected {}))      -> pure (Left (RequestNotAccepted requestId))
     Right (Just (Withdrawn _))      -> pure (Left (RequestNotAccepted requestId))
+    Right (Just (Stale {}))         -> pure (Left (RequestNotAccepted requestId))
     Right (Just (Closed {}))        -> pure (Left (RequestNotAccepted requestId))
 
 -- Shared tail of matchWaitlistToSlot/matchAcceptedIntakeRequestToSlot:
@@ -491,10 +494,10 @@ persistMatch conn slot appointed = do
 -- bookable again is the caller's separate, explicit createAvailableSlot
 -- call, not automatic here.
 --
--- All six IntakeRequest cases handled explicitly, no wildcard, same
+-- All seven IntakeRequest cases handled explicitly, no wildcard, same
 -- collapsing as closeAppointedIntakeRequest: Submitted/Rejected/
--- Accepted/Withdrawn all collapse to RequestNotAppointed; Closed gets
--- its own RequestAlreadyClosed.
+-- Accepted/Withdrawn/Stale all collapse to RequestNotAppointed; Closed
+-- gets its own RequestAlreadyClosed.
 reclaimAppointedIntakeRequest
   :: ConnectionPool
   -> IntakeRequestId
@@ -508,6 +511,7 @@ reclaimAppointedIntakeRequest pool requestId = withResource pool $ \conn -> do
     Right (Just (Rejected {}))         -> pure (Left (RequestNotAppointed requestId))
     Right (Just (Accepted _))          -> pure (Left (RequestNotAppointed requestId))
     Right (Just (Withdrawn _))         -> pure (Left (RequestNotAppointed requestId))
+    Right (Just (Stale {}))            -> pure (Left (RequestNotAppointed requestId))
     Right (Just (Closed {}))           -> pure (Left (RequestAlreadyClosed requestId))
     Right (Just (Appointed appointed)) -> do
       claim <- persistReclaimedIntakeRequest conn requestId
@@ -518,6 +522,54 @@ reclaimAppointedIntakeRequest pool requestId = withResource pool $ \conn -> do
         -- this function's own fetch and its write (e.g. concurrently
         -- closed) — same "caller doesn't need to distinguish when"
         -- reasoning as every other double-guarded write in this module.
+
+-- Closes out an Accepted request that never got matched to a slot or
+-- withdrawn — staff-initiated only (see Domain.hs's own comment on
+-- Stale). Mirrors reclaimAppointedIntakeRequest's shape exactly, one
+-- precondition swapped: requires Accepted instead of Appointed. No
+-- Domain-level "mark stale" function to wrap — Stale is direct
+-- construction in Domain.hs (Stale triaged staleAt), same as
+-- Rejected/Withdrawn/Closed's own direct-construction cases — so this
+-- wrapper's whole job is the precondition check: fetch by
+-- IntakeRequestId, confirm Right (Just (Accepted triaged)), reject
+-- otherwise.
+--
+-- staleAt is caller-supplied, not generated internally via
+-- getCurrentTime — same convention as every other Service.hs mutation's
+-- timestamp parameter (createdAt/triagedAt/rejectedAt/etc.); Api.hs's
+-- handler owns calling getCurrentTime and passing the result in.
+--
+-- All six non-Accepted IntakeRequest cases handled explicitly, no
+-- wildcard, same exhaustiveness discipline as every other mutation
+-- wrapper in this module — so a future eighth IntakeRequest case would
+-- surface as a compile warning here too, not get silently swallowed.
+-- RequestNotAccepted is reused for every one of them, including the
+-- AlreadyClaimed race outcome below — the caller doesn't need to
+-- distinguish "wasn't Accepted when I looked" from "was Accepted but
+-- moved on before my write landed," both mean the same thing to them,
+-- same reasoning matchAcceptedIntakeRequestToSlot already established
+-- for this exact ServiceError.
+markIntakeRequestStale
+  :: ConnectionPool
+  -> IntakeRequestId
+  -> UTCTime             -- staleAt
+  -> IO (Either ServiceError TriagedIntakeRequest)
+markIntakeRequestStale pool requestId staleAt = withResource pool $ \conn -> do
+  reqResult <- Persistence.fetchIntakeRequest conn requestId
+  case reqResult of
+    Left err                        -> pure (Left (PersistenceDecodeError err))
+    Right Nothing                   -> pure (Left (RequestNotFound requestId))
+    Right (Just (Accepted triaged)) -> do
+      claim <- persistStaleIntakeRequest conn requestId staleAt
+      pure $ case claim of
+        Claimed        -> Right triaged
+        AlreadyClaimed -> Left (RequestNotAccepted requestId)
+    Right (Just (Submitted _)) -> pure (Left (RequestNotAccepted requestId))
+    Right (Just (Rejected {})) -> pure (Left (RequestNotAccepted requestId))
+    Right (Just (Appointed _)) -> pure (Left (RequestNotAccepted requestId))
+    Right (Just (Withdrawn _)) -> pure (Left (RequestNotAccepted requestId))
+    Right (Just (Stale {}))    -> pure (Left (RequestNotAccepted requestId))
+    Right (Just (Closed {}))   -> pure (Left (RequestNotAccepted requestId))
 
 -- Closes an appointed request. No Domain.hs verb to collide with here —
 -- IntakeRequest's Closed constructor is open and there is deliberately no
@@ -551,7 +603,7 @@ reclaimAppointedIntakeRequest pool requestId = withResource pool $ \conn -> do
 -- too — persistReclaimedIntakeRequest guards on the identical
 -- state = 'appointed' condition.
 --
--- All six IntakeRequest cases handled explicitly, no wildcard, same
+-- All seven IntakeRequest cases handled explicitly, no wildcard, same
 -- reasoning as reclaimAppointedIntakeRequest above.
 closeAppointedIntakeRequest
   :: ConnectionPool
@@ -567,6 +619,7 @@ closeAppointedIntakeRequest pool requestId reason = withResource pool $ \conn ->
     Right (Just (Rejected {}))        -> pure (Left (RequestNotAppointed requestId))
     Right (Just (Accepted _))         -> pure (Left (RequestNotAppointed requestId))
     Right (Just (Withdrawn _))        -> pure (Left (RequestNotAppointed requestId))
+    Right (Just (Stale {}))           -> pure (Left (RequestNotAppointed requestId))
     Right (Just (Closed {}))          -> pure (Left (RequestAlreadyClosed requestId))
     Right (Just (Appointed appointed)) -> do
       let closed = Closed appointed reason
