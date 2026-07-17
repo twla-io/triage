@@ -58,9 +58,9 @@ CREATE TABLE slots (
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INTAKE REQUESTS
--- discriminator-column-tables: one table, one state column, six values
--- (submitted/rejected/accepted/appointed/withdrawn/closed) — mirroring
--- Domain.hs's IntakeRequest sum type exactly, one identity
+-- discriminator-column-tables: one table, one state column, seven values
+-- (submitted/rejected/accepted/appointed/withdrawn/stale/closed) —
+-- mirroring Domain.hs's IntakeRequest sum type exactly, one identity
 -- (IntakeRequestId) throughout. IntakeRequest folds what would otherwise
 -- be a separate Appointment aggregate into itself, since the two are
 -- permanently 1:1.
@@ -78,6 +78,15 @@ CREATE TABLE slots (
 -- convention already used elsewhere in this schema (required_doctor_id,
 -- due_not_before/due_not_after).
 --
+-- state = 'stale' shares WithdrawnFromAccepted's structural precondition
+-- (reachable only from 'accepted' — a due date doesn't exist before
+-- triage) but is a distinct, staff-initiated terminal state, never an
+-- automatic/timer-driven transition — no trigger or scheduled job in this
+-- schema ever writes state = 'stale'. It reuses the same
+-- healthcare_service_id/tier/triaged_at columns 'accepted' already
+-- populates (Stale embeds a full TriagedIntakeRequest, same as
+-- 'accepted'), plus its own stale_at column.
+--
 -- cancellation_note (nullability-as-discriminator): populated only
 -- optionally alongside close_reason = 'cancelled', mirroring
 -- CloseReason's Cancelled AppointmentParty UTCTime (Maybe Text) — an
@@ -93,7 +102,7 @@ CREATE TABLE intake_requests (
   created_at             TIMESTAMPTZ NOT NULL,
 
   state                  TEXT NOT NULL CHECK (state IN
-    ('submitted', 'rejected', 'accepted', 'appointed', 'withdrawn', 'closed')),
+    ('submitted', 'rejected', 'accepted', 'appointed', 'withdrawn', 'stale', 'closed')),
 
   rejected_at            TIMESTAMPTZ NULL,
   rejection_reason       TEXT NULL,
@@ -111,6 +120,8 @@ CREATE TABLE intake_requests (
   withdrawn_at           TIMESTAMPTZ NULL,
   withdrawal_note        TEXT NULL,
 
+  stale_at               TIMESTAMPTZ NULL,
+
   close_reason           TEXT NULL CHECK (close_reason IN ('completed', 'cancelled', 'no_show')),
   closed_by_party        TEXT NULL CHECK (closed_by_party IN ('doctor', 'patient')),
   cancelled_at           TIMESTAMPTZ NULL,
@@ -119,32 +130,39 @@ CREATE TABLE intake_requests (
   CHECK (
     (state = 'submitted' AND
        rejected_at IS NULL AND healthcare_service_id IS NULL AND
-       appointed_doctor_id IS NULL AND withdrawn_at IS NULL AND close_reason IS NULL)
+       appointed_doctor_id IS NULL AND withdrawn_at IS NULL AND stale_at IS NULL AND
+       close_reason IS NULL)
     OR
     (state = 'rejected' AND
        rejected_at IS NOT NULL AND rejection_reason IS NOT NULL AND
        healthcare_service_id IS NULL AND appointed_doctor_id IS NULL AND
-       withdrawn_at IS NULL AND close_reason IS NULL)
+       withdrawn_at IS NULL AND stale_at IS NULL AND close_reason IS NULL)
     OR
     (state = 'accepted' AND
        healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
        rejected_at IS NULL AND appointed_doctor_id IS NULL AND
-       withdrawn_at IS NULL AND close_reason IS NULL)
+       withdrawn_at IS NULL AND stale_at IS NULL AND close_reason IS NULL)
     OR
     (state = 'appointed' AND
        healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
        appointed_doctor_id IS NOT NULL AND start_time IS NOT NULL AND duration_minutes IS NOT NULL AND
-       rejected_at IS NULL AND withdrawn_at IS NULL AND close_reason IS NULL)
+       rejected_at IS NULL AND withdrawn_at IS NULL AND stale_at IS NULL AND close_reason IS NULL)
     OR
     (state = 'withdrawn' AND
        withdrawn_at IS NOT NULL AND
-       rejected_at IS NULL AND appointed_doctor_id IS NULL AND close_reason IS NULL)
+       rejected_at IS NULL AND appointed_doctor_id IS NULL AND stale_at IS NULL AND close_reason IS NULL)
+    OR
+    (state = 'stale' AND
+       healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
+       stale_at IS NOT NULL AND
+       rejected_at IS NULL AND appointed_doctor_id IS NULL AND withdrawn_at IS NULL AND
+       close_reason IS NULL)
     OR
     (state = 'closed' AND
        healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
        appointed_doctor_id IS NOT NULL AND start_time IS NOT NULL AND duration_minutes IS NOT NULL AND
        close_reason IS NOT NULL AND
-       rejected_at IS NULL AND withdrawn_at IS NULL)
+       rejected_at IS NULL AND withdrawn_at IS NULL AND stale_at IS NULL)
   ),
 
   -- Emergency/Urgent: exactly one deadline (due_not_after), never a window.

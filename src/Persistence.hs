@@ -61,6 +61,7 @@ module Persistence
   , fromDomainTriaged
   , fromDomainAppointed
   , fromDomainWithdrawn
+  , fromDomainStale
   , fromDomainClosed
   , fetchIntakeRequest
   , fetchIntakeWaitlist
@@ -71,6 +72,7 @@ module Persistence
   , persistTriagedIntakeRequest
   , persistRejectedIntakeRequest
   , persistReclaimedIntakeRequest
+  , persistStaleIntakeRequest
   , persistClosedIntakeRequestIfAppointed
   , MatchPersistOutcome (..)
   , claimAcceptedIntakeRequest
@@ -447,8 +449,8 @@ deleteSlot conn (SlotId sid) = do
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INTAKE REQUEST
--- discriminator-column-tables, extended to six states (submitted/
--- rejected/accepted/appointed/withdrawn/closed), one table, one identity
+-- discriminator-column-tables, extended to seven states (submitted/
+-- rejected/accepted/appointed/withdrawn/stale/closed), one table, one identity
 -- (IntakeRequestId) — mirrors Domain.hs's IntakeRequest sum type exactly,
 -- now that Appointment no longer exists as a separate aggregate.
 --
@@ -482,6 +484,7 @@ data IntakeRequestRow = IntakeRequestRow
   , durationMinutes     :: Maybe Int
   , withdrawnAt         :: Maybe UTCTime
   , withdrawalNote      :: Maybe Text
+  , staleAt             :: Maybe UTCTime
   , closeReason         :: Maybe Text
   , closedByParty       :: Maybe Text
   , cancelledAt         :: Maybe UTCTime
@@ -505,6 +508,8 @@ instance FromRow IntakeRequestRow where
       -- appointed_doctor_id, start_time, duration_minutes
       <*> field <*> field
       -- withdrawn_at, withdrawal_note
+      <*> field
+      -- stale_at
       <*> field <*> field <*> field <*> field
       -- close_reason, closed_by_party, cancelled_at, cancellation_note
 
@@ -624,6 +629,9 @@ toDomainIntakeRequest row = case row.state of
     Just at -> case row.healthcareServiceId of
       Nothing -> Right (Withdrawn (WithdrawnFromSubmitted (decodeSubmitted row) at row.withdrawalNote))
       Just _  -> (\t -> Withdrawn (WithdrawnFromAccepted t at row.withdrawalNote)) <$> decodeTriaged row
+  "stale" -> case row.staleAt of
+    Nothing -> Left (InvalidState "stale row missing stale_at")
+    Just at -> (`Stale` at) <$> decodeTriaged row
   "closed" -> do
     appointed <- decodeAppointed row
     mReason   <- decodeCloseReason row.closeReason row.closedByParty row.cancelledAt row.cancellationNote
@@ -646,6 +654,7 @@ fromDomainSubmitted s =
        , healthcareServiceId = Nothing, tier = Nothing, dueNotBefore = Nothing, dueNotAfter = Nothing, triagedAt = Nothing
        , appointedDoctorId = Nothing, startTime = Nothing, durationMinutes = Nothing
        , withdrawnAt = Nothing, withdrawalNote = Nothing
+       , staleAt = Nothing
        , closeReason = Nothing, closedByParty = Nothing, cancelledAt = Nothing, cancellationNote = Nothing
        }
 
@@ -676,6 +685,14 @@ fromDomainWithdrawn (WithdrawnFromSubmitted s at note) =
 fromDomainWithdrawn (WithdrawnFromAccepted t at note) =
   (fromDomainTriaged t)   { state = "withdrawn", withdrawnAt = Just at, withdrawalNote = note }
 
+-- Stale is direct construction in Domain.hs (Stale triaged staleAt), not a
+-- nested sum type like WithdrawnIntakeRequest — so this takes the
+-- TriagedIntakeRequest and UTCTime directly, same shape as
+-- fromDomainRejected takes SubmittedIntakeRequest/UTCTime/Text directly.
+fromDomainStale :: TriagedIntakeRequest -> UTCTime -> IntakeRequestRow
+fromDomainStale t at =
+  (fromDomainTriaged t) { state = "stale", staleAt = Just at }
+
 fromDomainClosed :: AppointedIntakeRequest -> CloseReason -> IntakeRequestRow
 fromDomainClosed appointed reason =
   let (reasonText, party, cAt, note) = encodeCloseReason reason
@@ -692,6 +709,7 @@ fetchIntakeRequest conn (IntakeRequestId rid) = do
     \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
+    \       stale_at, \
     \       close_reason, closed_by_party, cancelled_at, cancellation_note \
     \FROM intake_requests WHERE id = ?"
     (Only rid)
@@ -711,6 +729,7 @@ fetchIntakeWaitlist conn = do
     \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
+    \       stale_at, \
     \       close_reason, closed_by_party, cancelled_at, cancellation_note \
     \FROM intake_requests WHERE state = 'accepted'"
   pure $ traverse decodeTriaged rows
@@ -734,13 +753,14 @@ fetchSubmittedIntakeRequests conn = do
     \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
+    \       stale_at, \
     \       close_reason, closed_by_party, cancelled_at, cancellation_note \
     \FROM intake_requests WHERE state = 'submitted'"
   pure $ Right (map decodeSubmitted rows)
 
 -- Scoped to state = 'appointed' only, returning AppointedIntakeRequest
 -- specifically — deliberately not a general "fetch every intake request
--- regardless of state" function. The six-way CHECK constraint
+-- regardless of state" function. The seven-way CHECK constraint
 -- (migrations/0001_init.sql) only guarantees appointed_doctor_id/
 -- start_time/duration_minutes are non-NULL when state = 'appointed'; for
 -- every other state those columns are NULL by construction, so
@@ -790,6 +810,7 @@ fetchAppointedIntakeRequests conn mRangeStart mRangeEnd mDoctorId = do
     \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
+    \       stale_at, \
     \       close_reason, closed_by_party, cancelled_at, cancellation_note \
     \FROM intake_requests \
     \WHERE state = 'appointed' \
@@ -815,7 +836,7 @@ fetchAppointedIntakeRequests conn mRangeStart mRangeEnd mDoctorId = do
 -- each fetch individually, not a single rule applied uniformly.
 --
 -- Returns [IntakeRequest], not a new speculative "ClosedIntakeRequest"
--- Domain-level pairing type: Closed is just one case of the six-case
+-- Domain-level pairing type: Closed is just one case of the seven-case
 -- IntakeRequest (AppointedIntakeRequest + CloseReason), and no standalone
 -- type exists anywhere in this codebase for it the way
 -- TriagedIntakeRequest/AppointedIntakeRequest exist for their own states.
@@ -842,6 +863,7 @@ fetchClosedIntakeRequests conn rangeStart rangeEnd mDoctorId = do
     \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
+    \       stale_at, \
     \       close_reason, closed_by_party, cancelled_at, cancellation_note \
     \FROM intake_requests \
     \WHERE state = 'closed' \
@@ -861,10 +883,11 @@ insertSubmittedIntakeRequest conn s = do
     \ healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
     \ appointed_doctor_id, start_time, duration_minutes, \
     \ withdrawn_at, withdrawal_note, \
+    \ stale_at, \
     \ close_reason, closed_by_party, cancelled_at, cancellation_note) \
     \VALUES (?, ?, ?, ?, ?, 'submitted', \
     \        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, \
-    \        NULL, NULL, NULL, NULL, NULL, NULL)"
+    \        NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
     (row.id, row.patientId, row.narrative, row.requiredDoctorId, row.createdAt)
   pure ()
 
@@ -896,7 +919,7 @@ persistRejectedIntakeRequest conn submitted rejectedAt reason = do
 -- affected-rows pattern as every other conditional write in this
 -- module. Nulls appointed_doctor_id/start_time/duration_minutes for row
 -- hygiene, not because the CHECK constraint demands it — the 'accepted'
--- branch of the six-way CHECK only requires appointed_doctor_id NULL, not
+-- branch of the seven-way CHECK only requires appointed_doctor_id NULL, not
 -- the other two. An 'accepted' row still shouldn't carry stale
 -- appointment-shaped data left over from before it was reclaimed, so all
 -- three are nulled anyway. doctor_calendar's own trigger already handles
@@ -910,6 +933,22 @@ persistReclaimedIntakeRequest conn (IntakeRequestId rid) = do
     \SET state = 'accepted', appointed_doctor_id = NULL, start_time = NULL, duration_minutes = NULL \
     \WHERE id = ? AND state = 'appointed'"
     (Only rid)
+  pure (if n > 0 then Claimed else AlreadyClaimed)
+
+-- Closes out an Accepted request that never got matched or withdrawn —
+-- staff-initiated only, mirroring persistReclaimedIntakeRequest's shape
+-- exactly: single-table UPDATE, guarded on state = 'accepted' (Stale is
+-- reachable only from Accepted — see Domain.hs), affected-rows check
+-- (uniqueness-races-are-outcomes) rather than a caught SqlError. No
+-- doctor_calendar interaction — an 'accepted' row was never in
+-- doctor_calendar (only 'appointed' rows and slots are), so no trigger
+-- changes needed for this either.
+persistStaleIntakeRequest :: Connection -> IntakeRequestId -> UTCTime -> IO ClaimOutcome
+persistStaleIntakeRequest conn (IntakeRequestId rid) staleAt = do
+  n <- execute conn
+    "UPDATE intake_requests SET state = 'stale', stale_at = ? \
+    \WHERE id = ? AND state = 'accepted'"
+    (staleAt, rid)
   pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- Conditioned on state = 'appointed': the initial fetch in Service.hs
