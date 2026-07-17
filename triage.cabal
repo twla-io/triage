@@ -27,10 +27,14 @@ library
     , aeson
     , bytestring
     , containers
+    , lens
     , postgresql-simple
     , resource-pool
     , servant
     , servant-server
+    , servant-swagger
+    , servant-swagger-ui
+    , swagger2
     , text
     , time
     , transformers
@@ -56,8 +60,13 @@ test-suite triage-test
   build-depends:
       base
     , triage
+    , aeson
     , hspec
     , QuickCheck
+    , servant
+    , servant-swagger
+    , swagger2
+    , text
     , time
     , uuid
   default-language:     Haskell2010

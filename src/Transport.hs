@@ -1,6 +1,12 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
+-- ToSchema Value below is a genuine orphan: Value is aeson's, ToSchema is
+-- swagger2's, neither defined here. Needed at the library level (not
+-- just in tests) because Api.hs's own toSwagger call walks every route
+-- in API, several of which respond with a bare Value (the
+-- {"outcome","detail"} envelope — see Api.hs's MIDDLEWARE section).
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 -- JSON wire-format boundary for the triage domain model, generated from
 -- src/Domain.hs per .claude/skills/triage-api-codegen/SKILL.md. DTOs are
@@ -16,6 +22,15 @@
 -- JSON string keys (opaque-uuid-ids, tagged-flat-serialization), never
 -- `deriving (Generic, ToJSON)` — a wire key must not silently drift if a
 -- Haskell field is renamed later.
+--
+-- ToSchema instances (swagger2) are hand-written for the identical
+-- reason and sit immediately below each DTO's ToJSON/FromJSON pair —
+-- never `genericDeclareNamedSchema`, which would describe aeson
+-- Generic's default nested {"tag","contents"} shape, not the flat,
+-- uniformly-"type"-tagged shape these ToJSON instances actually
+-- produce. See the SWAGGER SCHEMA HELPERS section below for the shared
+-- building blocks and the Swagger-2.0-has-no-oneOf reasoning that
+-- shapes every discriminated-union instance in this file.
 
 module Transport
   ( -- ── Decode errors ────────────────────────────────────────────────────
@@ -104,13 +119,30 @@ module Transport
   , fromDomainCalendarEntry
   ) where
 
-import Data.Aeson       (FromJSON (..), ToJSON (..), object, withObject, (.:), (.=))
+import Control.Lens     ((&), (.~), (?~))
+import Data.Aeson       (FromJSON (..), ToJSON (..), Value (String), object, withObject, (.:), (.=))
 import Data.Aeson.Types (Parser)
+import Data.Proxy       (Proxy (..))
+import Data.Swagger
+  ( AdditionalProperties (AdditionalPropertiesAllowed)
+  , NamedSchema (NamedSchema)
+  , Referenced (Inline)
+  , Schema
+  , SwaggerType (SwaggerObject, SwaggerString)
+  , ToSchema (..)
+  , additionalProperties
+  , declareSchemaRef
+  , enum_
+  , properties
+  , required
+  , type_
+  )
 import Data.Text        (Text)
 import Data.Time        (UTCTime)
 import Data.UUID        (UUID)
 
-import qualified Data.UUID as UUID
+import qualified Data.HashMap.Strict.InsOrd.Compat as InsOrdHashMap
+import qualified Data.UUID                         as UUID
 
 import Domain
   ( AppointedIntakeRequest (..)
@@ -179,6 +211,86 @@ parseUUIDField :: Text -> Parser UUID
 parseUUIDField t = maybe (fail ("invalid UUID: " ++ show t)) pure (UUID.fromText t)
 
 -- ═══════════════════════════════════════════════════════════════════════
+-- SWAGGER SCHEMA HELPERS
+-- Shared building blocks for every hand-written ToSchema instance below.
+-- swagger2's own declareSchemaRef reuses its already-correct base
+-- instances for UUID/Text/UTCTime (formats, "uuid"/date-time hints, ...)
+-- — reused here rather than hand-rolled, same reuse discipline as every
+-- DTO's own toJSON reusing UUID.toText rather than reimplementing UUID
+-- formatting.
+--
+-- objectSchema is for DTOs with no discriminator at all (DoctorDTO,
+-- AppointedIntakeRequestDTO, ...): a flat object, every listed field in
+-- "properties", the given subset "required".
+--
+-- taggedSchema is for every discriminated-union DTO (DurationDTO,
+-- AppointmentPartyDTO, RoutineDueDTO, CloseReasonDTO,
+-- CloseReasonRequestDTO, IntakeRequestPriorityDTO, DoctorRequirementDTO,
+-- IntakeRequestDTO, CalendarEntryDTO). Swagger 2.0 has no oneOf — that is
+-- an OpenAPI 3.x-only feature, absent from swagger2's own Schema type
+-- entirely (checked directly against Data.Swagger.Internal, not
+-- assumed). Swagger 2.0's Schema does carry a "discriminator" field, but
+-- swagger2's own validator (Data.Swagger.Internal.Schema.Validation's
+-- validateObject) interprets it as OpenAPI's allOf/subtype-schema
+-- polymorphism — it expects the discriminator property's VALUE to
+-- itself parse as a Referenced Schema (a registered subtype's schema
+-- name), which is the wrong mechanism entirely for a flat semantic tag
+-- like "type": "submitted". So taggedSchema does NOT set discriminator;
+-- instead it describes one flattened object schema whose properties are
+-- the UNION of every case's fields, gated by a required, enum-
+-- constrained "type" string property. This is also what validates
+-- correctly under swagger2's own validateProps: every key genuinely
+-- present in a specific case's JSON must appear in the declared
+-- properties (checked against the union, so it always does), while
+-- properties absent from that case are fine as long as they're not
+-- listed as required.
+-- ═══════════════════════════════════════════════════════════════════════
+
+objectSchema :: Text -> [(Text, Referenced Schema)] -> [Text] -> NamedSchema
+objectSchema dtoName fields reqs = NamedSchema (Just dtoName) $ mempty
+  & type_ ?~ SwaggerObject
+  & properties .~ InsOrdHashMap.fromList fields
+  & required .~ reqs
+
+-- The "type" discriminator's own schema, shared by every tagged case —
+-- a plain string constrained to the case's exact set of tag values.
+tagSchema :: [Text] -> Schema
+tagSchema tags = mempty
+  & type_ ?~ SwaggerString
+  & enum_ ?~ map String tags
+
+taggedSchema :: Text -> [Text] -> [(Text, Referenced Schema)] -> [Text] -> NamedSchema
+taggedSchema dtoName tags fields reqs =
+  objectSchema dtoName (("type", Inline (tagSchema tags)) : fields) ("type" : reqs)
+
+-- IntakeRequestPriorityDTO's own "due" field is the one place in this
+-- file where a single field name genuinely carries two incompatible
+-- wire shapes depending on the sibling "type" tag: a bare UTCTime string
+-- for emergency/urgent, a nested tagged RoutineDueDTO object for
+-- routine. Swagger 2.0 has no union-of-types support to express this
+-- precisely (SwaggerType is a single value, not a list, and there is no
+-- oneOf/anyOf — see taggedSchema's own comment above) — anySchema
+-- leaves the type unconstrained and additionalProperties permissive,
+-- the most honest description swagger2 can produce for this one field,
+-- rather than picking one of the two real shapes and silently
+-- mis-describing the other.
+anySchema :: Schema
+anySchema = mempty & additionalProperties ?~ AdditionalPropertiesAllowed True
+
+-- Every mutation Api.hs wraps in the {"outcome","detail"} envelope
+-- (runService/runMatchOutcome/runSlotCreation) has a Servant route type
+-- ending in bare Value, not a DTO — there's no single static Haskell
+-- type for "any outcome tag plus its detail payload". Value has no
+-- ToSchema instance anywhere upstream (verified against swagger2
+-- directly: it defines ToSchema for Data.Aeson.Object, not the full
+-- Value sum), so this reuses anySchema above rather than inventing a
+-- separate one — same "no static structure to describe" reasoning,
+-- applied to Value itself instead of just IntakeRequestPriorityDTO's
+-- "due" field.
+instance ToSchema Value where
+  declareNamedSchema _ = pure (NamedSchema (Just "Value") anySchema)
+
+-- ═══════════════════════════════════════════════════════════════════════
 -- DOCTOR / PATIENT
 -- No invariant beyond field types already enforced (same as Domain.hs's
 -- own reasoning for exporting these constructors openly) — no decode
@@ -200,6 +312,12 @@ instance FromJSON DoctorDTO where
     idText <- v .: "id"
     uid    <- parseUUIDField idText
     DoctorDTO uid <$> v .: "name"
+
+instance ToSchema DoctorDTO where
+  declareNamedSchema _ = do
+    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
+    nameRef <- declareSchemaRef (Proxy :: Proxy Text)
+    pure $ objectSchema "DoctorDTO" [("id", uuidRef), ("name", nameRef)] ["id", "name"]
 
 toDomainDoctor :: DoctorDTO -> Doctor
 toDomainDoctor dto = Doctor { id = DoctorId dto.id, name = dto.name }
@@ -224,6 +342,12 @@ instance FromJSON PatientDTO where
     uid    <- parseUUIDField idText
     PatientDTO uid <$> v .: "name"
 
+instance ToSchema PatientDTO where
+  declareNamedSchema _ = do
+    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
+    nameRef <- declareSchemaRef (Proxy :: Proxy Text)
+    pure $ objectSchema "PatientDTO" [("id", uuidRef), ("name", nameRef)] ["id", "name"]
+
 toDomainPatient :: PatientDTO -> Patient
 toDomainPatient dto = Patient { id = PatientId dto.id, name = dto.name }
 
@@ -244,7 +368,7 @@ fromDomainPatient p =
 -- for these two to convert to or from.
 -- ═══════════════════════════════════════════════════════════════════════
 
-data CreateDoctorRequest = CreateDoctorRequest
+newtype CreateDoctorRequest = CreateDoctorRequest
   { name :: Text
   }
   deriving (Show, Eq)
@@ -256,7 +380,12 @@ instance FromJSON CreateDoctorRequest where
   parseJSON = withObject "CreateDoctorRequest" $ \v ->
     CreateDoctorRequest <$> v .: "name"
 
-data CreatePatientRequest = CreatePatientRequest
+instance ToSchema CreateDoctorRequest where
+  declareNamedSchema _ = do
+    nameRef <- declareSchemaRef (Proxy :: Proxy Text)
+    pure $ objectSchema "CreateDoctorRequest" [("name", nameRef)] ["name"]
+
+newtype CreatePatientRequest = CreatePatientRequest
   { name :: Text
   }
   deriving (Show, Eq)
@@ -267,6 +396,11 @@ instance ToJSON CreatePatientRequest where
 instance FromJSON CreatePatientRequest where
   parseJSON = withObject "CreatePatientRequest" $ \v ->
     CreatePatientRequest <$> v .: "name"
+
+instance ToSchema CreatePatientRequest where
+  declareNamedSchema _ = do
+    nameRef <- declareSchemaRef (Proxy :: Proxy Text)
+    pure $ objectSchema "CreatePatientRequest" [("name", nameRef)] ["name"]
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- DURATION
@@ -302,6 +436,10 @@ instance FromJSON DurationDTO where
       "halfAnHour"      -> pure HalfAnHourDTO
       "oneHour"         -> pure OneHourDTO
       other             -> fail ("unrecognized Duration type: " ++ show other)
+
+instance ToSchema DurationDTO where
+  declareNamedSchema _ = pure $
+    taggedSchema "DurationDTO" ["quarterOfAnHour", "halfAnHour", "oneHour"] [] []
 
 toDomainDuration :: DurationDTO -> Duration
 toDomainDuration QuarterOfAnHourDTO = QuarterOfAnHour
@@ -344,6 +482,15 @@ instance FromJSON HealthcareServiceDTO where
     uid    <- parseUUIDField idText
     HealthcareServiceDTO uid <$> v .: "name" <*> v .: "duration"
 
+instance ToSchema HealthcareServiceDTO where
+  declareNamedSchema _ = do
+    uuidRef     <- declareSchemaRef (Proxy :: Proxy UUID)
+    nameRef     <- declareSchemaRef (Proxy :: Proxy Text)
+    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
+    pure $ objectSchema "HealthcareServiceDTO"
+      [("id", uuidRef), ("name", nameRef), ("duration", durationRef)]
+      ["id", "name", "duration"]
+
 toDomainHealthcareService :: HealthcareServiceDTO -> HealthcareService
 toDomainHealthcareService dto =
   HealthcareService
@@ -377,6 +524,14 @@ instance ToJSON CreateHealthcareServiceRequest where
 instance FromJSON CreateHealthcareServiceRequest where
   parseJSON = withObject "CreateHealthcareServiceRequest" $ \v ->
     CreateHealthcareServiceRequest <$> v .: "name" <*> v .: "duration"
+
+instance ToSchema CreateHealthcareServiceRequest where
+  declareNamedSchema _ = do
+    nameRef     <- declareSchemaRef (Proxy :: Proxy Text)
+    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
+    pure $ objectSchema "CreateHealthcareServiceRequest"
+      [("name", nameRef), ("duration", durationRef)]
+      ["name", "duration"]
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- SLOT
@@ -413,6 +568,17 @@ instance FromJSON AvailableSlotDTO where
     did                     <- parseUUIDField doctorIdText
     hsid                    <- parseUUIDField healthcareServiceIdText
     AvailableSlotDTO uid did hsid <$> v .: "start" <*> v .: "duration"
+
+instance ToSchema AvailableSlotDTO where
+  declareNamedSchema _ = do
+    uuidRef     <- declareSchemaRef (Proxy :: Proxy UUID)
+    utcRef      <- declareSchemaRef (Proxy :: Proxy UTCTime)
+    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
+    pure $ objectSchema "AvailableSlotDTO"
+      [ ("id", uuidRef), ("doctorId", uuidRef), ("healthcareServiceId", uuidRef)
+      , ("start", utcRef), ("duration", durationRef)
+      ]
+      ["id", "doctorId", "healthcareServiceId", "start", "duration"]
 
 toDomainAvailableSlot :: AvailableSlotDTO -> AvailableSlot
 toDomainAvailableSlot dto =
@@ -471,6 +637,17 @@ instance FromJSON CreateAvailableSlotRequest where
     hsid                    <- parseUUIDField healthcareServiceIdText
     CreateAvailableSlotRequest did hsid <$> v .: "start" <*> v .: "duration"
 
+instance ToSchema CreateAvailableSlotRequest where
+  declareNamedSchema _ = do
+    uuidRef     <- declareSchemaRef (Proxy :: Proxy UUID)
+    utcRef      <- declareSchemaRef (Proxy :: Proxy UTCTime)
+    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
+    pure $ objectSchema "CreateAvailableSlotRequest"
+      [ ("doctorId", uuidRef), ("healthcareServiceId", uuidRef)
+      , ("start", utcRef), ("duration", durationRef)
+      ]
+      ["doctorId", "healthcareServiceId", "start", "duration"]
+
 -- ═══════════════════════════════════════════════════════════════════════
 -- APPOINTMENT PARTY
 -- A flat two-case enum, no embedded data at all — mirrored here as a
@@ -498,6 +675,10 @@ instance FromJSON AppointmentPartyDTO where
       "byDoctor"  -> pure ByDoctorDTO
       "byPatient" -> pure ByPatientDTO
       other       -> fail ("unrecognized AppointmentParty type: " ++ show other)
+
+instance ToSchema AppointmentPartyDTO where
+  declareNamedSchema _ = pure $
+    taggedSchema "AppointmentPartyDTO" ["byDoctor", "byPatient"] [] []
 
 toDomainAppointmentParty :: AppointmentPartyDTO -> AppointmentParty
 toDomainAppointmentParty ByDoctorDTO  = ByDoctor
@@ -545,6 +726,14 @@ instance FromJSON RoutineDueDTO where
       "routineNotAfter"  -> RoutineNotAfterDTO  <$> v .: "to"
       "routineWithin"    -> RoutineWithinDTO    <$> v .: "from" <*> v .: "to"
       other              -> fail ("unrecognized RoutineDue type: " ++ show other)
+
+instance ToSchema RoutineDueDTO where
+  declareNamedSchema _ = do
+    utcRef <- declareSchemaRef (Proxy :: Proxy UTCTime)
+    pure $ taggedSchema "RoutineDueDTO"
+      ["routineAnytime", "routineNotBefore", "routineNotAfter", "routineWithin"]
+      [("from", utcRef), ("to", utcRef)]
+      []
 
 toDomainRoutineDue :: RoutineDueDTO -> Either TransportError RoutineDue
 toDomainRoutineDue RoutineAnytimeDTO        = Right RoutineAnytime
@@ -610,6 +799,16 @@ instance FromJSON CloseReasonDTO where
       "noShow"    -> NoShowDTO <$> v .: "by"
       other       -> fail ("unrecognized CloseReason type: " ++ show other)
 
+instance ToSchema CloseReasonDTO where
+  declareNamedSchema _ = do
+    partyRef <- declareSchemaRef (Proxy :: Proxy AppointmentPartyDTO)
+    utcRef   <- declareSchemaRef (Proxy :: Proxy UTCTime)
+    noteRef  <- declareSchemaRef (Proxy :: Proxy Text)
+    pure $ taggedSchema "CloseReasonDTO"
+      ["completed", "cancelled", "noShow"]
+      [("by", partyRef), ("cancelledAt", utcRef), ("note", noteRef)]
+      []
+
 toDomainCloseReason :: CloseReasonDTO -> CloseReason
 toDomainCloseReason CompletedDTO                = Completed
 toDomainCloseReason (CancelledDTO by at note)   = Cancelled (toDomainAppointmentParty by) at note
@@ -664,6 +863,15 @@ instance FromJSON CloseReasonRequestDTO where
       "noShow"    -> NoShowRequestDTO <$> v .: "by"
       other       -> fail ("unrecognized CloseReasonRequest type: " ++ show other)
 
+instance ToSchema CloseReasonRequestDTO where
+  declareNamedSchema _ = do
+    partyRef <- declareSchemaRef (Proxy :: Proxy AppointmentPartyDTO)
+    noteRef  <- declareSchemaRef (Proxy :: Proxy Text)
+    pure $ taggedSchema "CloseReasonRequestDTO"
+      ["completed", "cancelled", "noShow"]
+      [("by", partyRef), ("note", noteRef)]
+      []
+
 closeReasonFromRequest :: CloseReasonRequestDTO -> UTCTime -> CloseReason
 closeReasonFromRequest CompletedRequestDTO          _  = Completed
 closeReasonFromRequest (CancelledRequestDTO p note) at = Cancelled (toDomainAppointmentParty p) at note
@@ -705,6 +913,13 @@ instance FromJSON IntakeRequestPriorityDTO where
       "routine"   -> RoutineDTO   <$> v .: "due"
       other       -> fail ("unrecognized IntakeRequestPriority type: " ++ show other)
 
+instance ToSchema IntakeRequestPriorityDTO where
+  declareNamedSchema _ = pure $
+    taggedSchema "IntakeRequestPriorityDTO"
+      ["emergency", "urgent", "routine"]
+      [("due", Inline anySchema)]
+      ["due"]
+
 toDomainIntakeRequestPriority :: IntakeRequestPriorityDTO -> Either TransportError IntakeRequestPriority
 toDomainIntakeRequestPriority (EmergencyDTO due) = Right (Emergency (EmergencyDue due))
 toDomainIntakeRequestPriority (UrgentDTO due)    = Right (Urgent (UrgentDue due))
@@ -744,6 +959,14 @@ instance FromJSON DoctorRequirementDTO where
         didText <- v .: "doctorId"
         SpecificDoctorDTO <$> parseUUIDField didText
       other -> fail ("unrecognized DoctorRequirement type: " ++ show other)
+
+instance ToSchema DoctorRequirementDTO where
+  declareNamedSchema _ = do
+    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
+    pure $ taggedSchema "DoctorRequirementDTO"
+      ["anyDoctor", "specificDoctor"]
+      [("doctorId", uuidRef)]
+      []
 
 toDomainDoctorRequirement :: DoctorRequirementDTO -> DoctorRequirement
 toDomainDoctorRequirement AnyDoctorDTO          = AnyDoctor
@@ -862,6 +1085,26 @@ instance FromJSON AppointedIntakeRequestDTO where
     start'      <- v .: "start"
     dur         <- v .: "duration"
     pure (AppointedIntakeRequestDTO rid pid narr req created svcId prio triagedTime did start' dur)
+
+instance ToSchema AppointedIntakeRequestDTO where
+  declareNamedSchema _ = do
+    uuidRef     <- declareSchemaRef (Proxy :: Proxy UUID)
+    textRef     <- declareSchemaRef (Proxy :: Proxy Text)
+    utcRef      <- declareSchemaRef (Proxy :: Proxy UTCTime)
+    reqRef      <- declareSchemaRef (Proxy :: Proxy DoctorRequirementDTO)
+    prioRef     <- declareSchemaRef (Proxy :: Proxy IntakeRequestPriorityDTO)
+    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
+    pure $ objectSchema "AppointedIntakeRequestDTO"
+      [ ("id", uuidRef), ("patientId", uuidRef), ("narrative", textRef)
+      , ("doctorRequirement", reqRef), ("createdAt", utcRef)
+      , ("healthcareServiceId", uuidRef), ("priority", prioRef)
+      , ("triagedAt", utcRef), ("doctorId", uuidRef), ("start", utcRef)
+      , ("duration", durationRef)
+      ]
+      [ "id", "patientId", "narrative", "doctorRequirement", "createdAt"
+      , "healthcareServiceId", "priority", "triagedAt", "doctorId", "start"
+      , "duration"
+      ]
 
 toDomainAppointedIntakeRequest :: AppointedIntakeRequestDTO -> Either TransportError AppointedIntakeRequest
 toDomainAppointedIntakeRequest dto =
@@ -1180,6 +1423,37 @@ instance FromJSON IntakeRequestDTO where
         pure (ClosedDTO rid pid narr req created svcId prio triagedTime did start' dur reason)
       other -> fail ("unrecognized IntakeRequest type: " ++ show other)
 
+-- Union of all seven cases' fields — required is the intersection
+-- present in literally every case (id/patientId/narrative/
+-- doctorRequirement/createdAt, verified against the field-list comment
+-- at the top of this section), everything else is case-specific and
+-- left optional. See taggedSchema's own comment (SWAGGER SCHEMA
+-- HELPERS) for why this flattened-union shape, not oneOf, is the
+-- accurate Swagger 2.0 description of a tagged-flat-serialization sum.
+instance ToSchema IntakeRequestDTO where
+  declareNamedSchema _ = do
+    uuidRef        <- declareSchemaRef (Proxy :: Proxy UUID)
+    textRef        <- declareSchemaRef (Proxy :: Proxy Text)
+    utcRef         <- declareSchemaRef (Proxy :: Proxy UTCTime)
+    reqRef         <- declareSchemaRef (Proxy :: Proxy DoctorRequirementDTO)
+    prioRef        <- declareSchemaRef (Proxy :: Proxy IntakeRequestPriorityDTO)
+    durationRef    <- declareSchemaRef (Proxy :: Proxy DurationDTO)
+    closeReasonRef <- declareSchemaRef (Proxy :: Proxy CloseReasonDTO)
+    pure $ taggedSchema "IntakeRequestDTO"
+      [ "submitted", "rejected", "accepted", "appointed"
+      , "withdrawnFromSubmitted", "withdrawnFromAccepted", "closed"
+      ]
+      [ ("id", uuidRef), ("patientId", uuidRef), ("narrative", textRef)
+      , ("doctorRequirement", reqRef), ("createdAt", utcRef)
+      , ("rejectedAt", utcRef), ("rejectionReason", textRef)
+      , ("healthcareServiceId", uuidRef), ("priority", prioRef)
+      , ("triagedAt", utcRef)
+      , ("doctorId", uuidRef), ("start", utcRef), ("duration", durationRef)
+      , ("withdrawnAt", utcRef), ("withdrawalNote", textRef)
+      , ("closeReason", closeReasonRef)
+      ]
+      ["id", "patientId", "narrative", "doctorRequirement", "createdAt"]
+
 toDomainIntakeRequest :: IntakeRequestDTO -> Either TransportError IntakeRequest
 toDomainIntakeRequest (SubmittedDTO rid pid narr req created) =
   Right (Submitted (toDomainSubmitted rid pid narr req created))
@@ -1267,6 +1541,15 @@ instance FromJSON SubmitIntakeRequestRequest where
     pid           <- parseUUIDField patientIdText
     SubmitIntakeRequestRequest pid <$> v .: "narrative" <*> v .: "doctorRequirement"
 
+instance ToSchema SubmitIntakeRequestRequest where
+  declareNamedSchema _ = do
+    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
+    textRef <- declareSchemaRef (Proxy :: Proxy Text)
+    reqRef  <- declareSchemaRef (Proxy :: Proxy DoctorRequirementDTO)
+    pure $ objectSchema "SubmitIntakeRequestRequest"
+      [("patientId", uuidRef), ("narrative", textRef), ("doctorRequirement", reqRef)]
+      ["patientId", "narrative", "doctorRequirement"]
+
 data AcceptIntakeRequestRequest = AcceptIntakeRequestRequest
   { healthcareServiceId :: UUID
   , priority            :: IntakeRequestPriorityDTO
@@ -1285,6 +1568,14 @@ instance FromJSON AcceptIntakeRequestRequest where
     svcId     <- parseUUIDField svcIdText
     AcceptIntakeRequestRequest svcId <$> v .: "priority"
 
+instance ToSchema AcceptIntakeRequestRequest where
+  declareNamedSchema _ = do
+    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
+    prioRef <- declareSchemaRef (Proxy :: Proxy IntakeRequestPriorityDTO)
+    pure $ objectSchema "AcceptIntakeRequestRequest"
+      [("healthcareServiceId", uuidRef), ("priority", prioRef)]
+      ["healthcareServiceId", "priority"]
+
 -- Field named rejectionReason, not the shorter reason -- matches
 -- IntakeRequestDTO's own RejectedDTO.rejectionReason for the identical
 -- fact (the request DTO's rejectionReason becomes, verbatim, the
@@ -1295,7 +1586,7 @@ instance FromJSON AcceptIntakeRequestRequest where
 -- already use "reason" as a local pattern-bound variable name in several
 -- places (not a field -- just a locally chosen name), which a new
 -- same-named top-level selector would then shadow.
-data RejectIntakeRequestRequest = RejectIntakeRequestRequest
+newtype RejectIntakeRequestRequest = RejectIntakeRequestRequest
   { rejectionReason :: Text
   }
   deriving (Show, Eq)
@@ -1306,6 +1597,11 @@ instance ToJSON RejectIntakeRequestRequest where
 instance FromJSON RejectIntakeRequestRequest where
   parseJSON = withObject "RejectIntakeRequestRequest" $ \v ->
     RejectIntakeRequestRequest <$> v .: "rejectionReason"
+
+instance ToSchema RejectIntakeRequestRequest where
+  declareNamedSchema _ = do
+    textRef <- declareSchemaRef (Proxy :: Proxy Text)
+    pure $ objectSchema "RejectIntakeRequestRequest" [("rejectionReason", textRef)] ["rejectionReason"]
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- CALENDAR ENTRY
@@ -1374,6 +1670,31 @@ instance FromJSON CalendarEntryDTO where
       "slot"        -> SlotEntryDTO        <$> parseJSON v
       "appointment" -> AppointmentEntryDTO <$> parseJSON v
       other         -> fail ("unrecognized CalendarEntry type: " ++ show other)
+
+-- Union of both cases' fields — required is the intersection genuinely
+-- present in both (id/doctorId/healthcareServiceId/start/duration: every
+-- one of AvailableSlotDTO's five fields is also present on
+-- AppointedIntakeRequestDTO's eleven, verified against both DTOs'
+-- own field lists above), the remaining six appointment-only fields
+-- left optional. Same flattened-union reasoning as taggedSchema's own
+-- comment (SWAGGER SCHEMA HELPERS).
+instance ToSchema CalendarEntryDTO where
+  declareNamedSchema _ = do
+    uuidRef     <- declareSchemaRef (Proxy :: Proxy UUID)
+    textRef     <- declareSchemaRef (Proxy :: Proxy Text)
+    utcRef      <- declareSchemaRef (Proxy :: Proxy UTCTime)
+    reqRef      <- declareSchemaRef (Proxy :: Proxy DoctorRequirementDTO)
+    prioRef     <- declareSchemaRef (Proxy :: Proxy IntakeRequestPriorityDTO)
+    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
+    pure $ taggedSchema "CalendarEntryDTO"
+      ["slot", "appointment"]
+      [ ("id", uuidRef), ("doctorId", uuidRef), ("healthcareServiceId", uuidRef)
+      , ("start", utcRef), ("duration", durationRef)
+      , ("patientId", uuidRef), ("narrative", textRef)
+      , ("doctorRequirement", reqRef), ("createdAt", utcRef)
+      , ("priority", prioRef), ("triagedAt", utcRef)
+      ]
+      ["id", "doctorId", "healthcareServiceId", "start", "duration"]
 
 toDomainCalendarEntry :: CalendarEntryDTO -> Either TransportError CalendarEntry
 toDomainCalendarEntry (SlotEntryDTO slot)        = Right (Slot (toDomainAvailableSlot slot))

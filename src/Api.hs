@@ -32,6 +32,11 @@
 -- 5-constructor success side doesn't fit runService's uniform tag/
 -- toDetail shape. CalendarAPI's one route is shape (b) again, the
 -- simplest section in the file — no new middleware, no new request DTOs.
+--
+-- An OpenAPI/Swagger spec is generated from API (the business routes
+-- only, see the SWAGGER section near the bottom of this file) and served
+-- alongside them: once the server is running, browse it at
+-- http://localhost:8080/swagger-ui (raw spec at /swagger.json).
 
 module Api
   ( -- ── Application monad ────────────────────────────────────────────────
@@ -72,19 +77,28 @@ module Api
     -- ── Top-level API ────────────────────────────────────────────────────
   , API
   , server
+
+    -- ── Swagger ──────────────────────────────────────────────────────────
+  , APIWithSwagger
+  , swaggerSpec
+  , serverWithSwagger
   ) where
 
+import Control.Lens               ((&), (.~), (?~))
 import Control.Monad.IO.Class     (liftIO)
 import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
 import Data.Aeson                 (ToJSON, Value (Null), object, toJSON, (.=))
 import Data.ByteString            (ByteString)
 import Data.Maybe                 (fromMaybe)
 import Data.Pool                  (defaultPoolConfig, newPool)
+import Data.Swagger               (Swagger, description, info, title, version)
 import Data.Text                  (Text)
 import Data.Time                  (UTCTime, getCurrentTime)
 import Data.UUID                  (UUID)
 import Network.Wai.Handler.Warp   (run)
 import Servant
+import Servant.Swagger            (HasSwagger (toSwagger))
+import Servant.Swagger.UI         (SwaggerSchemaUI, swaggerSchemaUIServerT)
 import System.Environment         (lookupEnv)
 import System.Exit                (exitFailure)
 import System.IO                  (hPutStrLn, stderr)
@@ -215,8 +229,12 @@ main = do
 -- hoistServer supplies runAppM pool once, at server-construction time —
 -- not per-handler. Every handler below is written against AppM; this is
 -- the one call that threads the pool through all of them uniformly.
+-- Serves APIWithSwagger (business API + swagger.json + swagger-ui), not
+-- the bare business API — see the SWAGGER section below for why those
+-- are kept as separate names rather than folded into API/server
+-- themselves.
 app :: ConnectionPool -> Application
-app pool = serve (Proxy @API) (hoistServer (Proxy @API) (runAppM pool) server)
+app pool = serve (Proxy @APIWithSwagger) (hoistServer (Proxy @APIWithSwagger) (runAppM pool) serverWithSwagger)
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- MIDDLEWARE
@@ -835,3 +853,29 @@ server =
   :<|> slotServer
   :<|> intakeRequestServer
   :<|> calendarServer
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- SWAGGER
+-- API/server above stay the pure business API — swaggerSpec/
+-- APIWithSwagger/serverWithSwagger are a separate wrapping layer around
+-- them, not a change to what API itself means (test/Spec.hs's
+-- validateEveryToJSON is deliberately pointed at Proxy :: Proxy API, the
+-- 6-resource business API, not this wrapper — documenting "how to fetch
+-- the docs" inside the docs themselves is circular, and toSwagger has no
+-- reason to walk SwaggerSchemaUI's own Raw/HTML routes).
+--
+-- swaggerSchemaUIServerT (not swaggerSchemaUIServer) — generalized to any
+-- Monad, needed since this codebase's handlers run in AppM, not bare
+-- Servant Handler (see APPLICATION MONAD above).
+-- ═══════════════════════════════════════════════════════════════════════
+
+type APIWithSwagger = SwaggerSchemaUI "swagger-ui" "swagger.json" :<|> API
+
+swaggerSpec :: Swagger
+swaggerSpec = toSwagger (Proxy @API)
+  & info . title       .~ "triage API"
+  & info . version     .~ "0.1.0.0"
+  & info . description ?~ "Priority-based medical appointment scheduling API"
+
+serverWithSwagger :: ServerT APIWithSwagger AppM
+serverWithSwagger = swaggerSchemaUIServerT swaggerSpec :<|> server
