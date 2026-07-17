@@ -55,10 +55,14 @@ cancellation occurred, distinct from the request's own scheduled date, not
 validated against it structurally; the trailing `Maybe Text` is an optional
 administrative note. `IntakeRequest = Submitted SubmittedIntakeRequest |
 Rejected SubmittedIntakeRequest UTCTime Text | Accepted TriagedIntakeRequest
-| Appointed AppointedIntakeRequest | Withdrawn WithdrawnIntakeRequest |
-Closed AppointedIntakeRequest CloseReason` — one sum type, one identity
-(`IntakeRequestId`) throughout; `Rejected`/`Withdrawn`/`Closed` are all
-permanently terminal, no transitions back out of any of them.
+| Appointed AppointedIntakeRequest | Withdrawn WithdrawnIntakeRequest | Stale
+TriagedIntakeRequest UTCTime | Closed AppointedIntakeRequest CloseReason` —
+one sum type, one identity (`IntakeRequestId`) throughout;
+`Rejected`/`Withdrawn`/`Stale`/`Closed` are all permanently terminal, no
+transitions back out of any of them. `Stale` is reachable only from
+`Accepted` — staff manually closing out an accepted request that never got
+matched to a slot or withdrawn by the patient; always an explicit,
+staff-initiated action, never automatic or timer-driven.
 
 **Slot** — `AvailableSlot`: `id`, `doctorId`, `healthcareServiceId`, `start`,
 `duration`. A slot has no existence independent of matching — available

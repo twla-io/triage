@@ -283,16 +283,30 @@ data CloseReason
   | NoShow    AppointmentParty
   deriving (Show, Eq)
 
--- All of Rejected/Withdrawn/Closed are permanently terminal — no
+-- All of Rejected/Withdrawn/Stale/Closed are permanently terminal — no
 -- transitions out of any of them. A displaced or redisplaced patient always
 -- becomes a brand new IntakeRequest (new IntakeRequestId), never a
 -- transition back out of a terminal case. Do not add one.
+--
+-- Stale is reachable only from Accepted: staff manually recognizing that an
+-- accepted request never got matched to a slot and never got withdrawn, and
+-- closing it out. It is never an automatic, timer-driven transition — no
+-- code anywhere should trigger this on its own; it is always an explicit,
+-- staff-initiated action, same trust-in-human-judgment pattern as
+-- AppointmentParty's Cancelled-vs-NoShow distinction. Not reachable from
+-- Submitted — a due date doesn't exist before triage, so "stale" is
+-- structurally meaningless there. No dedicated markIntakeRequestStale
+-- function exists in this module — direct construction only
+-- (Stale triaged staleAt), same precedent as Rejected. Its only
+-- precondition is "this was Accepted", which belongs in Service.hs's
+-- fetch-then-check wrapper, not here.
 data IntakeRequest
   = Submitted SubmittedIntakeRequest
   | Rejected  SubmittedIntakeRequest UTCTime Text
   | Accepted  TriagedIntakeRequest
   | Appointed AppointedIntakeRequest
   | Withdrawn WithdrawnIntakeRequest
+  | Stale     TriagedIntakeRequest UTCTime
   | Closed    AppointedIntakeRequest CloseReason
   deriving (Show, Eq)
 
