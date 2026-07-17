@@ -81,6 +81,7 @@ module Service
   , fetchAppointedIntakeRequests
   , fetchIntakeRequest
   , fetchIntakeWaitlist
+  , fetchSubmittedIntakeRequests
 
     -- ── Calendar (composes the two reads above into one time-ordered
     --    view — see the CALENDAR section below) ─────────────────────────
@@ -126,24 +127,28 @@ import Domain
   , checkIntakeWaitlist
   , matchIntakeRequestToSlot
   )
--- Qualified alongside the unqualified import below because eleven of this
+-- Qualified alongside the unqualified import below because twelve of this
 -- module's own top-level names (fetchDoctor, fetchPatient,
 -- fetchHealthcareService, fetchDoctors, fetchPatients,
 -- fetchHealthcareServices, fetchAvailableSlots,
--- fetchAppointedIntakeRequests, fetchIntakeRequest, fetchIntakeWaitlist —
--- see the READS section — plus fetchCalendarView's internal calls to the
--- first two of those) are deliberately identical to their Persistence.hs
--- counterparts; an unqualified import of those names would conflict with
--- this module's own definitions of them. fetchIntakeRequest/
--- fetchIntakeWaitlist moved out of the unqualified list below when their
--- own Service.hs wrappers were added — every internal call site that used
--- to reach them unqualified now goes through Persistence.fetchIntakeRequest/
+-- fetchAppointedIntakeRequests, fetchIntakeRequest, fetchIntakeWaitlist,
+-- fetchSubmittedIntakeRequests — see the READS section — plus
+-- fetchCalendarView's internal calls to the first two of those) are
+-- deliberately identical to their Persistence.hs counterparts; an
+-- unqualified import of those names would conflict with this module's own
+-- definitions of them. fetchIntakeRequest/fetchIntakeWaitlist moved out of
+-- the unqualified list below when their own Service.hs wrappers were
+-- added — every internal call site that used to reach them unqualified
+-- now goes through Persistence.fetchIntakeRequest/
 -- Persistence.fetchIntakeWaitlist instead (see acceptSubmittedIntakeRequest,
 -- rejectSubmittedIntakeRequest, matchWaitlistToSlot,
 -- matchAcceptedIntakeRequestToSlot, reclaimAppointedIntakeRequest,
--- closeAppointedIntakeRequest below). Every other Persistence function
--- keeps the existing unqualified import, since none of the rest collide
--- with a same-named Service.hs function.
+-- closeAppointedIntakeRequest below). fetchSubmittedIntakeRequests was
+-- never in the unqualified list to begin with — its own Service.hs
+-- wrapper was added at the same time as the Persistence.hs function
+-- itself, so there was no prior unqualified call site to migrate off of.
+-- Every other Persistence function keeps the existing unqualified import,
+-- since none of the rest collide with a same-named Service.hs function.
 import qualified Persistence
 import Persistence
   ( ClaimOutcome (..)
@@ -640,6 +645,14 @@ fetchIntakeRequest pool requestId = withResource pool $ \conn ->
 fetchIntakeWaitlist :: ConnectionPool -> IO (Either DecodeError [TriagedIntakeRequest])
 fetchIntakeWaitlist pool = withResource pool $ \conn ->
   Persistence.fetchIntakeWaitlist conn
+
+-- Mirrors fetchIntakeWaitlist exactly, one state over — a specific,
+-- purpose-named business list (state = 'submitted'), not a generic
+-- state-filter parameter, same reasoning as fetchIntakeWaitlist's own
+-- naming.
+fetchSubmittedIntakeRequests :: ConnectionPool -> IO (Either DecodeError [SubmittedIntakeRequest])
+fetchSubmittedIntakeRequests pool = withResource pool $ \conn ->
+  Persistence.fetchSubmittedIntakeRequests conn
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- CALENDAR

@@ -565,34 +565,38 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INTAKE REQUEST
--- Third and final slice adds this resource's three reads
+-- Fourth slice adds fetchSubmittedIntakeRequests (GET
+-- /intake-requests/submitted) alongside the three reads
 -- (fetchIntakeRequest/fetchIntakeWaitlist/fetchAppointedIntakeRequests)
--- to the six mutations built in the first two slices, same section/route
--- type extended across passes rather than a new one. IntakeRequestAPI is
--- now complete.
+-- from the prior slice, same section/route type extended across passes
+-- rather than a new one — mirrors fetchIntakeWaitlist exactly, one state
+-- over (state = 'submitted' instead of 'accepted'): a specific,
+-- purpose-named business list, not a generic state-filter parameter.
 --
--- Routing ambiguity, resolved by ordering: "waitlist"/"appointed" are
--- both exactly one path segment under /intake-requests, the same shape
--- as the bare Capture "id" UUID :> Get route added below — a GET to
--- /intake-requests/waitlist could otherwise be attempted against the
--- capture branch first (parsing "waitlist" as a UUID and failing) instead
--- of falling through to the literal branch. Fixed the standard way:
--- IntakeRequestAPI's type lists both literal-segment GETs before the
--- bare Capture-then-Get route, and intakeRequestServer's handler list is
--- kept in that exact same order (positional correspondence with the type,
--- per servant-implementation.md section 2's own reasoning for why this
--- file groups per-resource in the first place). The other Capture-based
+-- Routing ambiguity, resolved by ordering: "waitlist"/"submitted"/
+-- "appointed" are all exactly one path segment under /intake-requests,
+-- the same shape as the bare Capture "id" UUID :> Get route added below
+-- — a GET to /intake-requests/waitlist (or /submitted) could otherwise
+-- be attempted against the capture branch first (parsing the literal
+-- segment as a UUID and failing) instead of falling through to the
+-- literal branch. Fixed the standard way: IntakeRequestAPI's type lists
+-- all three literal-segment GETs before the bare Capture-then-Get
+-- route, and intakeRequestServer's handler list is kept in that exact
+-- same order (positional correspondence with the type, per
+-- servant-implementation.md section 2's own reasoning for why this file
+-- groups per-resource in the first place). The other Capture-based
 -- routes (accept/reject/match/reclaim/close) don't share this ambiguity
 -- regardless of ordering — each has its own distinguishing trailing
 -- literal segment, so they're a different path *shape* than the bare
 -- single-capture GET.
 --
--- fetchIntakeWaitlistHandler/fetchAppointedIntakeRequestsHandler/
--- fetchIntakeRequestHandler are all shape (b) — runRead, plain DTO/list
--- as the 200 body, no envelope (reads never get the outcome envelope,
--- same as every other read in this file, even though IntakeRequestDTO is
--- itself a tagged multi-case type — no different in principle from
--- submitIntakeRequestHandler already returning a bare IntakeRequestDTO).
+-- fetchIntakeWaitlistHandler/fetchSubmittedIntakeRequestsHandler/
+-- fetchAppointedIntakeRequestsHandler/fetchIntakeRequestHandler are all
+-- shape (b) — runRead, plain DTO/list as the 200 body, no envelope
+-- (reads never get the outcome envelope, same as every other read in
+-- this file, even though IntakeRequestDTO is itself a tagged multi-case
+-- type — no different in principle from submitIntakeRequestHandler
+-- already returning a bare IntakeRequestDTO).
 --
 -- fetchIntakeRequestHandler mirrors getHealthcareServiceHandler's own
 -- nested-Either/Maybe pattern — verified against Service.hs directly:
@@ -600,6 +604,16 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 -- DecodeError (Maybe IntakeRequest)). runRead narrows away the outer
 -- DecodeError (500 on Left), leaving a plain Maybe IntakeRequest to
 -- pattern-match on — 404 on Nothing.
+--
+-- fetchSubmittedIntakeRequestsHandler — verified against Service.hs
+-- directly: fetchSubmittedIntakeRequests :: ConnectionPool -> IO (Either
+-- DecodeError [SubmittedIntakeRequest]). No standalone
+-- SubmittedIntakeRequestDTO/conversion exists in Transport.hs (same gap
+-- as submitIntakeRequestHandler's own return value above), so each
+-- element is wrapped via the IntakeRequest sum's own Submitted
+-- constructor then fromDomainIntakeRequest — identical DTO-reachability
+-- workaround to fetchIntakeWaitlistHandler's own Accepted-wrapping,
+-- applied to Submitted instead.
 --
 -- fetchIntakeWaitlistHandler — verified against Service.hs directly:
 -- fetchIntakeWaitlist :: ConnectionPool -> IO (Either DecodeError
@@ -700,6 +714,7 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 type IntakeRequestAPI =
        ReqBody '[JSON] SubmitIntakeRequestRequest :> Post '[JSON] IntakeRequestDTO
   :<|> "waitlist" :> Get '[JSON] [IntakeRequestDTO]
+  :<|> "submitted" :> Get '[JSON] [IntakeRequestDTO]
   :<|> "appointed"
        :> QueryParam' '[Required, Strict] "start" UTCTime
        :> QueryParam' '[Required, Strict] "end" UTCTime
@@ -726,6 +741,12 @@ fetchIntakeWaitlistHandler = do
   pool     <- ask
   waitlist <- runRead (Service.fetchIntakeWaitlist pool)
   pure (map (fromDomainIntakeRequest . Accepted) waitlist)
+
+fetchSubmittedIntakeRequestsHandler :: AppM [IntakeRequestDTO]
+fetchSubmittedIntakeRequestsHandler = do
+  pool      <- ask
+  submitted <- runRead (Service.fetchSubmittedIntakeRequests pool)
+  pure (map (fromDomainIntakeRequest . Submitted) submitted)
 
 fetchAppointedIntakeRequestsHandler :: UTCTime -> UTCTime -> Maybe UUID -> AppM [AppointedIntakeRequestDTO]
 fetchAppointedIntakeRequestsHandler rangeStart rangeEnd mDoctorUUID = do
@@ -787,6 +808,7 @@ intakeRequestServer :: ServerT IntakeRequestAPI AppM
 intakeRequestServer =
        submitIntakeRequestHandler
   :<|> fetchIntakeWaitlistHandler
+  :<|> fetchSubmittedIntakeRequestsHandler
   :<|> fetchAppointedIntakeRequestsHandler
   :<|> acceptSubmittedIntakeRequestHandler
   :<|> rejectSubmittedIntakeRequestHandler

@@ -64,6 +64,7 @@ module Persistence
   , fromDomainClosed
   , fetchIntakeRequest
   , fetchIntakeWaitlist
+  , fetchSubmittedIntakeRequests
   , fetchAppointedIntakeRequests
   , insertSubmittedIntakeRequest
   , persistTriagedIntakeRequest
@@ -712,6 +713,29 @@ fetchIntakeWaitlist conn = do
     \       close_reason, closed_by_party, cancelled_at, cancellation_note \
     \FROM intake_requests WHERE state = 'accepted'"
   pure $ traverse decodeTriaged rows
+
+-- Mirrors fetchIntakeWaitlist exactly, one state over: state = 'submitted'
+-- instead of 'accepted', same column list, same shape. decodeSubmitted is
+-- total (verified above — decodeDoctorRequirement, the only piece of a
+-- submitted row that could plausibly fail, has no failure mode either), so
+-- unlike fetchIntakeWaitlist's own traverse decodeTriaged (which really can
+-- produce a Left), the Left case here is unreachable today. Kept as
+-- Either DecodeError anyway, not narrowed to bare IO [SubmittedIntakeRequest]
+-- — this mirrors fetchIntakeWaitlist's interface shape exactly (the point of
+-- this function), and a decode-risk-free row shape today isn't a guarantee
+-- that stays true forever the way Doctor/Patient's genuine no-invariant
+-- openness is.
+fetchSubmittedIntakeRequests :: Connection -> IO (Either DecodeError [SubmittedIntakeRequest])
+fetchSubmittedIntakeRequests conn = do
+  rows <- query_ conn
+    "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
+    \       rejected_at, rejection_reason, \
+    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \       appointed_doctor_id, start_time, duration_minutes, \
+    \       withdrawn_at, withdrawal_note, \
+    \       close_reason, closed_by_party, cancelled_at, cancellation_note \
+    \FROM intake_requests WHERE state = 'submitted'"
+  pure $ Right (map decodeSubmitted rows)
 
 -- Scoped to state = 'appointed' only, returning AppointedIntakeRequest
 -- specifically — deliberately not a general "fetch every intake request
