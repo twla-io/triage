@@ -592,6 +592,13 @@ below.
   *bumped* as a compensating policy (e.g. moved up a tier, or given an
   earlier deadline, for having been displaced)? Not yet validated with
   the domain expert.
+- OPEN, NOT YET RESOLVED: whether Patient needs a `name` field at all,
+  vs. an opaque per-patient reference (e.g. phone number or an existing
+  informal chart number), vs. eventually referencing an external patient
+  registry that doesn't exist yet. Pending a conversation with the
+  domain expert about whether there's already a stable per-patient
+  identifier in informal use today. Domain.hs is unchanged for now — do
+  not modify it as part of this task.
 
 Do not resolve these speculatively in code. Validate with the domain expert
 first, per the workflow discipline in CLAUDE.md.

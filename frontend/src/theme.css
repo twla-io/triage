@@ -1,0 +1,41 @@
+/* Palette ported from the standalone HTML mockup, exposed under its
+   original variable names too (not just consumed into the Mantine theme in
+   theme.ts) so any one-off styling can reference them directly. */
+:root {
+  --surface-2: #ffffff;
+  --surface-1: #f5f4f0;
+  --surface-0: #ececea;
+  --text-primary: #1a1a18;
+  --text-secondary: #5f5e5a;
+  --text-muted: #888780;
+  --border: #d3d1c7;
+  --border-strong: #b4b2a9;
+  --bg-success: #eaf3de;
+  --text-success: #27500a;
+  --bg-accent: #e6f1fb;
+  --text-accent: #0c447c;
+  --bg-danger: #fcebeb;
+  --text-danger: #791f1f;
+  --border-danger: #f09595;
+  --bg-warning: #faeeda;
+  --text-warning: #633806;
+  --radius: 8px;
+}
+
+/* Outermost layer -- visible behind the app shell (overscroll bounce, any
+   letterboxing) at surface-0, the palette's darkest/outer-most neutral. */
+html,
+body {
+  background-color: var(--surface-0);
+}
+
+/* Paper (and everything built on it -- the "card" throughout this app)
+   defaults to --mantine-color-body, which theme.ts points at surface-1 so
+   AppShell's navbar/main read as the page wash. Cards need to sit one
+   level up from that, at surface-2, so they're called out here via
+   Mantine's documented static class hook rather than by touching
+   --mantine-color-body globally (that would flatten the app shell and its
+   cards to the same surface). */
+.mantine-Paper-root {
+  background-color: var(--surface-2);
+}

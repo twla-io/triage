@@ -95,7 +95,13 @@ import Data.Swagger               (Swagger, description, info, title, version)
 import Data.Text                  (Text)
 import Data.Time                  (UTCTime, getCurrentTime)
 import Data.UUID                  (UUID)
+import Network.Wai                (Request, requestHeaders)
 import Network.Wai.Handler.Warp   (run)
+import Network.Wai.Middleware.Cors
+  ( CorsResourcePolicy (..)
+  , cors
+  , simpleCorsResourcePolicy
+  )
 import Servant
 import Servant.Swagger            (HasSwagger (toSwagger))
 import Servant.Swagger.UI         (SwaggerSchemaUI, swaggerSchemaUIServerT)
@@ -234,7 +240,36 @@ main = do
 -- are kept as separate names rather than folded into API/server
 -- themselves.
 app :: ConnectionPool -> Application
-app pool = serve (Proxy @APIWithSwagger) (hoistServer (Proxy @APIWithSwagger) (runAppM pool) serverWithSwagger)
+app pool = cors corsPolicy $
+  serve (Proxy @APIWithSwagger) (hoistServer (Proxy @APIWithSwagger) (runAppM pool) serverWithSwagger)
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- CORS
+-- Local-dev-only, permissive: a browser-based frontend on a different
+-- port (Vite's dev server, localhost:5173) calling this API
+-- (localhost:8080) is silently blocked by the browser's same-origin
+-- policy without an explicit CORS response — this is not a production
+-- security decision, just what's needed for local dev to work at all.
+-- Origin is matched against localhost/127.0.0.1 on any port, rather than
+-- reflecting every origin unconditionally, since the ask was specifically
+-- "allow localhost origins", not "allow anything".
+-- ═══════════════════════════════════════════════════════════════════════
+
+isLocalDevOrigin :: ByteString -> Bool
+isLocalDevOrigin origin =
+  any (`BS8.isPrefixOf` origin) ["http://localhost:", "http://127.0.0.1:"]
+
+localDevCorsPolicy :: ByteString -> CorsResourcePolicy
+localDevCorsPolicy origin = simpleCorsResourcePolicy
+  { corsOrigins        = Just ([origin], False)
+  , corsMethods        = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+  , corsRequestHeaders = ["Content-Type", "Accept"]
+  }
+
+corsPolicy :: Request -> Maybe CorsResourcePolicy
+corsPolicy req = case lookup "Origin" (requestHeaders req) of
+  Just origin | isLocalDevOrigin origin -> Just (localDevCorsPolicy origin)
+  _                                     -> Nothing
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- MIDDLEWARE
