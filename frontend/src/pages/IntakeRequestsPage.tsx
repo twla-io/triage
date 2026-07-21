@@ -377,7 +377,7 @@ function SubmittedSection() {
 function MatchForm({ request }: { request: IntakeRequestDTO }) {
   const range = useMemo(() => {
     const start = dayjs()
-    return { start: start.toISOString(), end: start.add(30, 'day').toISOString() }
+    return { start: start.toISOString(), end: start.add(180, 'day').toISOString() }
   }, [])
   const { data: slots } = useAvailableSlots(range)
   const match = useMatchIntakeRequest()

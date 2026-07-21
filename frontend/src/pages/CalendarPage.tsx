@@ -1,4 +1,5 @@
-import { Alert, Badge, Button, Group, Loader, Modal, Paper, Select, Stack, Text, Title } from '@mantine/core'
+import { ActionIcon, Alert, Badge, Button, Group, Loader, Modal, Paper, Select, Stack, Text, Title } from '@mantine/core'
+import { IconChevronLeft, IconChevronRight } from '@tabler/icons-react'
 import { DateTimePicker } from '@mantine/dates'
 import { useDisclosure } from '@mantine/hooks'
 import dayjs from 'dayjs'
@@ -94,12 +95,13 @@ export function CalendarPage() {
   const [doctorId, setDoctorId] = useState<string | null>(null)
   const { data: doctors } = useDoctors()
   const [modalOpened, { open: openModal, close: closeModal }] = useDisclosure(false)
+  const [pageOffset, setPageOffset] = useState(0)
 
   const range = useMemo(() => {
-    const start = dayjs().startOf('day')
+    const start = dayjs().startOf('day').add(pageOffset * RANGE_DAYS, 'day')
     const end = start.add(RANGE_DAYS, 'day')
     return { start: start.toISOString(), end: end.toISOString(), doctorId: doctorId ?? undefined }
-  }, [doctorId])
+  }, [doctorId, pageOffset])
 
   const { data: entries, isLoading, error } = useCalendar(range)
 
@@ -131,9 +133,22 @@ export function CalendarPage() {
         </Group>
       </Group>
       <NewSlotModal opened={modalOpened} onClose={closeModal} />
-      <Text size="sm" c="dimmed">
-        {dayjs(range.start).format('MMM D')} – {dayjs(range.end).format('MMM D')}
-      </Text>
+      <Group gap="xs">
+        <ActionIcon
+          variant="default"
+          disabled={pageOffset === 0}
+          onClick={() => setPageOffset((offset) => Math.max(0, offset - 1))}
+          aria-label="Previous"
+        >
+          <IconChevronLeft size={16} />
+        </ActionIcon>
+        <Text size="sm" c="dimmed">
+          {dayjs(range.start).format('MMM D')} – {dayjs(range.end).format('MMM D')}
+        </Text>
+        <ActionIcon variant="default" onClick={() => setPageOffset((offset) => offset + 1)} aria-label="Next">
+          <IconChevronRight size={16} />
+        </ActionIcon>
+      </Group>
 
       {isLoading && <Loader size="sm" />}
       {error && <Alert color="red">{error instanceof ApiError ? error.message : String(error)}</Alert>}
