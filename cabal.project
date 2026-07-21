@@ -1,0 +1,9 @@
+packages: .
+
+-- Pins the toolchain version explicitly (previously unpinned — whatever
+-- GHC happened to be installed locally was in use). Targets GHC 9.10.3,
+-- matching Stackage LTS 24, the current curated snapshot for that GHC
+-- line. `with-compiler` is cabal's standard mechanism for this; it
+-- requires the named compiler to already be on PATH (e.g. via
+-- `ghcup install ghc 9.10.3`), it does not install it.
+with-compiler: ghc-9.10.3
