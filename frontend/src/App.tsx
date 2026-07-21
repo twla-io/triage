@@ -3,13 +3,11 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-
 
 import { DirectoryPage } from './pages/DirectoryPage'
 import { CalendarPage } from './pages/CalendarPage'
-import { SlotsPage } from './pages/SlotsPage'
 import { IntakeRequestsPage } from './pages/IntakeRequestsPage'
 
 const NAV_ITEMS = [
   { to: '/directory', label: 'Directory' },
   { to: '/calendar', label: 'Calendar' },
-  { to: '/slots', label: 'Slots' },
   { to: '/intake-requests', label: 'Intake Requests' },
 ]
 
@@ -37,7 +35,6 @@ export default function App() {
           <Route path="/" element={<Navigate to="/directory" replace />} />
           <Route path="/directory" element={<DirectoryPage />} />
           <Route path="/calendar" element={<CalendarPage />} />
-          <Route path="/slots" element={<SlotsPage />} />
           <Route path="/intake-requests" element={<IntakeRequestsPage />} />
         </Routes>
       </AppShell.Main>
