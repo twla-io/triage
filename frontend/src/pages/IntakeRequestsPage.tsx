@@ -16,6 +16,7 @@ import dayjs from 'dayjs'
 import { useMemo, useState } from 'react'
 
 import { ApiError } from '../api/client'
+import { formatDue, PriorityBadge } from '../components/PriorityBadge'
 import { usePatients } from '../api/queries/patients'
 import { useDoctors } from '../api/queries/doctors'
 import { useHealthcareServices } from '../api/queries/services'
@@ -36,27 +37,6 @@ import {
 
 function errorMessage(error: unknown): string {
   return error instanceof ApiError ? `${error.status}: ${error.message}` : String(error)
-}
-
-// Emergency = red, Urgent = amber, Routine = green -- the priority color
-// convention this project's presentation materials already use
-// (triage-ui-codegen skill).
-function priorityColor(priority: IntakeRequestDTO['priority']): string {
-  switch (priority?.type) {
-    case 'emergency':
-      return 'red'
-    case 'urgent':
-      return 'orange'
-    case 'routine':
-      return 'green'
-    default:
-      return 'gray'
-  }
-}
-
-function PriorityBadge({ priority }: { priority: IntakeRequestDTO['priority'] }) {
-  if (!priority) return null
-  return <Badge color={priorityColor(priority)}>{priority.type}</Badge>
 }
 
 // ── Submit form ──────────────────────────────────────────────────────────
@@ -432,6 +412,9 @@ function WaitlistSection() {
             <Group>
               <PriorityBadge priority={request.priority} />
               <Text fw={600}>{request.narrative}</Text>
+              <Text size="sm" c="dimmed">
+                {formatDue(request.priority)}
+              </Text>
             </Group>
             <Group>
               <Button size="xs" variant="light" onClick={() => setOpenMatchId(request.id)}>

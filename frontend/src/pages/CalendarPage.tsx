@@ -1,4 +1,19 @@
-import { ActionIcon, Alert, Badge, Button, Group, Loader, Modal, Paper, Select, Stack, Text, Title } from '@mantine/core'
+import {
+  ActionIcon,
+  Alert,
+  Anchor,
+  Badge,
+  Button,
+  Divider,
+  Group,
+  Loader,
+  Modal,
+  Paper,
+  Select,
+  Stack,
+  Text,
+  Title,
+} from '@mantine/core'
 import { IconChevronLeft, IconChevronRight } from '@tabler/icons-react'
 import { DateTimePicker } from '@mantine/dates'
 import { useDisclosure } from '@mantine/hooks'
@@ -7,9 +22,11 @@ import { useMemo, useState } from 'react'
 
 import { useCalendar, type CalendarEntryDTO } from '../api/queries/calendar'
 import { useDoctors } from '../api/queries/doctors'
+import { usePatients } from '../api/queries/patients'
 import { useHealthcareServices, DURATION_OPTIONS, type DurationType } from '../api/queries/services'
 import { useCreateSlot } from '../api/queries/slots'
 import { ApiError } from '../api/client'
+import { formatDue, PriorityBadge } from '../components/PriorityBadge'
 
 const RANGE_DAYS = 14
 
@@ -91,11 +108,64 @@ function entryColor(entry: CalendarEntryDTO): string {
   return entry.type === 'appointment' ? 'blue' : 'green'
 }
 
+function AppointmentDetailsModal({ entry, onClose }: { entry: CalendarEntryDTO | null; onClose: () => void }) {
+  const { data: doctors } = useDoctors()
+  const { data: services } = useHealthcareServices()
+  const { data: patients } = usePatients()
+
+  const doctorName = doctors?.find((d) => d.id === entry?.doctorId)?.name ?? entry?.doctorId
+  const serviceName = services?.find((s) => s.id === entry?.healthcareServiceId)?.name ?? entry?.healthcareServiceId
+  const patientName = patients?.find((p) => p.id === entry?.patientId)?.name ?? entry?.patientId
+
+  return (
+    <Modal opened={entry !== null} onClose={onClose} title="Appointment details">
+      {entry && (
+        <Stack gap="sm">
+          <Group>
+            <PriorityBadge priority={entry.priority} />
+            <Text fw={600}>{patientName}</Text>
+          </Group>
+          <Text size="sm" c="dimmed">
+            {formatDue(entry.priority)}
+          </Text>
+          <Text size="sm">{entry.narrative}</Text>
+          <Divider />
+          <Text size="sm">
+            <Text span fw={500}>
+              When:
+            </Text>{' '}
+            {dayjs(entry.start).format('MMM D, YYYY h:mm A')} ({entry.duration.type})
+          </Text>
+          <Text size="sm">
+            <Text span fw={500}>
+              Doctor:
+            </Text>{' '}
+            {doctorName}
+            {entry.doctorRequirement?.type === 'specificDoctor' ? ' (specifically requested)' : ' (any doctor requested)'}
+          </Text>
+          <Text size="sm">
+            <Text span fw={500}>
+              Service:
+            </Text>{' '}
+            {serviceName}
+          </Text>
+          <Divider />
+          <Text size="xs" c="dimmed">
+            Submitted {entry.createdAt ? dayjs(entry.createdAt).format('MMM D, YYYY') : '—'} · Triaged{' '}
+            {entry.triagedAt ? dayjs(entry.triagedAt).format('MMM D, YYYY') : '—'}
+          </Text>
+        </Stack>
+      )}
+    </Modal>
+  )
+}
+
 export function CalendarPage() {
   const [doctorId, setDoctorId] = useState<string | null>(null)
   const { data: doctors } = useDoctors()
   const [modalOpened, { open: openModal, close: closeModal }] = useDisclosure(false)
   const [pageOffset, setPageOffset] = useState(0)
+  const [detailsEntry, setDetailsEntry] = useState<CalendarEntryDTO | null>(null)
 
   const range = useMemo(() => {
     const start = dayjs().startOf('day').add(pageOffset * RANGE_DAYS, 'day')
@@ -133,6 +203,7 @@ export function CalendarPage() {
         </Group>
       </Group>
       <NewSlotModal opened={modalOpened} onClose={closeModal} />
+      <AppointmentDetailsModal entry={detailsEntry} onClose={() => setDetailsEntry(null)} />
       <Group gap="xs">
         <ActionIcon
           variant="default"
@@ -170,9 +241,14 @@ export function CalendarPage() {
                     </Text>
                   </Group>
                   {entry.type === 'appointment' && (
-                    <Text size="sm" c="dimmed">
-                      {entry.narrative}
-                    </Text>
+                    <Group gap="sm">
+                      <Text size="sm" c="dimmed">
+                        {entry.narrative}
+                      </Text>
+                      <Anchor size="sm" onClick={() => setDetailsEntry(entry)}>
+                        See more
+                      </Anchor>
+                    </Group>
                   )}
                 </Group>
               </Paper>
