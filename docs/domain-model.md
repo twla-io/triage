@@ -176,10 +176,13 @@ instance itself: any `Emergency` beats any non-`Emergency`, any `Urgent`
 beats any `Routine`. Within a tier, `compare` falls through to the deadline:
 `EmergencyDue`/`UrgentDue` derive `Ord` on their `UTCTime`; `RoutineDue` has
 its own instance ranking `RoutineWithin < RoutineNotAfter < RoutineNotBefore
-< RoutineAnytime`, tighter/earlier constraints first.
+< RoutineAnytime`, tighter/earlier constraints first. Two `RoutineWithin`
+windows compare by upper bound first; on equal upper bounds the narrower
+window (later lower bound) ranks first, so `compare` returns `EQ` only for
+equal windows.
 
 The only unresolved case is two requests with a genuinely identical priority
-value (same tier, same deadline) — `sortOn` is stable, so that's settled by
+value (same tier, same due value) — `sortOn` is stable, so that's settled by
 input-list order, not by a designed rule. Not currently a problem worth
 solving.
 

@@ -100,6 +100,34 @@ genPriority = do
     , Routine   RoutineAnytime
     ]
 
+-- Only for bounds already known to satisfy from <= to; goes through
+-- mkRoutineWithin since RoutineWithin's constructor isn't exported.
+validWithin :: UTCTime -> UTCTime -> RoutineDue
+validWithin from to = case mkRoutineWithin from to of
+  Just due -> due
+  Nothing  -> error "validWithin: from > to"
+
+-- Offsets by whole days, so ordered bounds are built rather than filtered
+-- for (a suchThat on genMoment's finite range can loop forever).
+laterThan, earlierThan, atOrEarlierThan :: UTCTime -> Gen UTCTime
+laterThan       t = (\d -> addUTCTime (fromIntegral (d :: Integer) * 86400) t)    <$> choose (1, 365)
+earlierThan     t = (\d -> addUTCTime (fromIntegral (d :: Integer) * (-86400)) t) <$> choose (1, 365)
+atOrEarlierThan t = (\d -> addUTCTime (fromIntegral (d :: Integer) * (-86400)) t) <$> choose (0, 365)
+
+-- Draws from a handful of moments so equal values actually come up.
+genRoutineDue :: Gen RoutineDue
+genRoutineDue = oneof
+  [ pure RoutineAnytime
+  , RoutineNotBefore <$> moment
+  , RoutineNotAfter  <$> moment
+  , do a <- moment
+       b <- moment
+       pure (validWithin (min a b) (max a b))
+  ]
+  where
+    moment = elements [addUTCTime (fromIntegral h * 3600) base | h <- [0 .. 3 :: Int]]
+    base   = UTCTime (fromGregorian 2026 1 1) 0
+
 genTriagedRequestFor :: HealthcareServiceId -> Gen TriagedIntakeRequest
 genTriagedRequestFor sid = do
   baseRequest <- genSubmittedIntakeRequest
@@ -266,6 +294,34 @@ main = hspec $ do
            then mkRoutineWithin a b === Nothing
            else mkRoutineWithin a b =/= Nothing
 
+  describe "RoutineDue ordering" $ do
+    prop "earlier upper bound takes precedence regardless of lower bounds" $ do
+      hi1 <- genMoment
+      hi2 <- laterThan hi1
+      lo1 <- atOrEarlierThan hi1
+      lo2 <- atOrEarlierThan hi2
+      pure $  compare (validWithin lo1 hi1) (validWithin lo2 hi2) === LT
+         .&&. compare (validWithin lo2 hi2) (validWithin lo1 hi1) === GT
+
+    prop "equal upper bounds put the later lower bound first" $ do
+      hi    <- genMoment
+      late  <- atOrEarlierThan hi
+      early <- earlierThan late
+      pure $  compare (validWithin late hi) (validWithin early hi) === LT
+         .&&. compare (validWithin early hi) (validWithin late hi) === GT
+
+    prop "identical windows compare as EQ" $ do
+      a <- genMoment
+      b <- genMoment
+      let lo = min a b
+          hi = max a b
+      pure $ compare (validWithin lo hi) (validWithin lo hi) === EQ
+
+    prop "compare is EQ exactly when values are equal" $ do
+      a <- genRoutineDue
+      b <- genRoutineDue
+      pure $ (compare a b == EQ) === (a == b)
+
   describe "matches" $ do
     prop "requires service to match" $ do
       sid1 <- arbitrary
@@ -369,7 +425,26 @@ main = hspec $ do
       req  <- genTriagedRequestFor sid2
       pure $ checkIntakeWaitlist slot [req] === Nothing
 
-  -- Route-level, not type-level, unlike the eight property tests above —
+    prop "on equal-deadline windows, chooses the narrower one even when listed second" $ do
+      sid         <- arbitrary
+      did         <- arbitrary
+      slot        <- genAvailableSlotFor sid did
+      now         <- genMoment
+      baseRequest <- genSubmittedIntakeRequest
+      let deadline   = addUTCTime 86400 slot.start
+          wideDue    = validWithin (addUTCTime (-172800) slot.start) deadline
+          narrowDue  = validWithin (addUTCTime (-3600)   slot.start) deadline
+          mkReq due  = acceptIntakeRequest baseRequest sid (Routine due) now
+          wide       = mkReq wideDue
+          narrow     = mkReq narrowDue
+      pure $ case checkIntakeWaitlist slot [wide, narrow] of
+        Just appointed ->
+              property (matches slot wide)
+          .&&. property (matches slot narrow)
+          .&&. appointed.triaged.priority === Routine narrowDue
+        Nothing -> property False
+
+  -- Route-level, not type-level, unlike the property tests above —
   -- validateEveryToJSON (servant-swagger) generates its own per-type
   -- Spec internally (one example per distinct JSON body type in
   -- Api.API), so it's spliced straight into this do-block via describe

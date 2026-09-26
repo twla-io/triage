@@ -173,8 +173,12 @@ routineWithinBounds _                       = Nothing
 
 -- Tighter/earlier constraints rank before looser ones.
 -- RoutineWithin < RoutineNotAfter < RoutineNotBefore < RoutineAnytime
+-- Between two RoutineWithin windows: earlier upper bound first; on equal
+-- upper bounds, the narrower window (later lower bound) first. Compares
+-- EQ exactly when the windows are equal, consistent with derived Eq.
 instance Ord RoutineDue where
-  compare (RoutineWithin _ lhi) (RoutineWithin _ rhi) = compare lhi rhi
+  compare (RoutineWithin llo lhi) (RoutineWithin rlo rhi) =
+    compare lhi rhi <> compare rlo llo
   compare (RoutineWithin _ _)   _                     = LT
   compare _                     (RoutineWithin _ _)   = GT
   compare (RoutineNotAfter l)   (RoutineNotAfter r)   = compare l r

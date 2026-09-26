@@ -265,6 +265,20 @@ already-valid value. See `sealed-value-decomposition` in
 replay-through-a-gate-function doesn't apply; a plain read-only accessor
 does.
 
+## RoutineWithin ordering: narrower window breaks upper-bound ties (2026-09-26)
+
+**Decided:** two `RoutineWithin` windows compare by upper bound (earlier
+first), then, on equal upper bounds, by lower bound descending (narrower
+window first). Previously windows sharing an upper bound compared `EQ`
+while derived `Eq` called them unequal — an `Ord`/`Eq` inconsistency
+noticed while preparing the MuniHac talk. Now `compare` is `EQ` exactly
+when the windows are equal.
+
+**Source:** chosen in that discussion (equal scheduling priority vs. equal
+values), not independently confirmed by the domain expert. Ordering between
+`RoutineDue` constructors and all other priority/matching rules are
+unchanged.
+
 ## Concurrent-match races: affected-rows checks, not caught exceptions; a compound race needs rollback, not just reporting (2026-07-11)
 
 **Decided:** any `Persistence.hs` write guarding a race that enforces a
