@@ -44,7 +44,13 @@ Inferred from configuration, not run:
 
 ## Modules and dependencies
 
-`Domain` ← `Persistence` ← `Service` ← `Transport` ← `Api` ← `app/Main.hs`
+Direct imports between internal modules (no cycles):
+- `Domain` — imports none of the others
+- `Persistence` → `Domain`
+- `Service` → `Domain`, `Persistence`
+- `Transport` → `Domain`, `Service` (for `CalendarEntry` only)
+- `Api` → `Domain`, `Persistence`, `Service`, `Transport`
+- `app/Main.hs` → `Api`
 
 - **`src/Domain.hs`** — pure types and functions; depends only on
   `base`/`text`/`time`/`uuid`. No IO, SQL, or JSON awareness.
@@ -112,11 +118,13 @@ protection. Currently the only sealed case: `RoutineDue`'s `RoutineWithin`
 `routineWithinBounds` exists so other layers can encode it without the
 constructor.
 
-Every other type is exported with `(..)` because its field types already
-enforce all it needs. Sealed vs. open *is* part of the spec: it tells the
-generating agent where downstream validation must exist. Don't seal a type
-"for consistency" without naming the invariant it protects, and never
-derive `FromJSON` generically on a sealed type.
+Other constructors remain open deliberately. Their field types enforce
+structural requirements, while matching eligibility is checked by domain
+functions. Constructing an `AppointedIntakeRequest` directly does not prove
+that matching checks were performed. Sealed vs. open *is* part of the
+spec: it tells the generating agent where downstream validation must
+exist. Don't seal a type "for consistency" without naming the invariant it
+protects, and never derive `FromJSON` generically on a sealed type.
 
 ## Codegen skills — read before changing downstream layers
 
