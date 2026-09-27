@@ -159,7 +159,8 @@ mechanism changed — from an `INSERT ... WHERE NOT EXISTS` guarding
 exists) to `claimAcceptedIntakeRequest`'s `UPDATE ... WHERE state =
 'accepted'`, guarding the discriminator column itself as the version check
 (no separate `row_version` column needed — nothing in this model changes
-state without it being a real transition worth naming). But if the slot
+state without it being a real transition worth naming). *[Superseded
+2026-09-27: a row version was added — see "Row version for freshness" below.]* But if the slot
 delete wins and the request-side UPDATE then loses its race, the slot delete
 must still be rolled back — the same phantom-slot-loss risk the original
 `atomic-multi-table-write` entry existed to prevent, unchanged by the merge.
@@ -686,6 +687,26 @@ hold for stored data.
 **Found:** a clean-room generation from `Domain.hs` and `triage-db-codegen` alone derived every lifecycle transition's source case from its input type — except reclaim, which existed only as field access (`Accepted appointed.triaged`) described in a comment. `Accepted`'s constructor takes `TriagedIntakeRequest`, Accepted's own payload, so the Appointed source was invisible in the types. The 2026-07-13 entry had called this the same precedent as `Rejected`/`Closed`, but those are constructors that take the source stage (`Rejected SubmittedIntakeRequest …`, `Closed AppointedIntakeRequest …`), so their source case is derivable; reclaim's wasn't.
 
 **Decided:** `reclaimIntakeRequest :: AppointedIntakeRequest -> TriagedIntakeRequest` in `Domain.hs`. It is still just the embedded value — no re-triage, same `IntakeRequestId`/priority/`triagedAt` — but now every transition is a function or constructor signature, so `updates-follow-domain-transitions` derives the whole transition set from types with no hand-kept row. `Service.reclaimAppointedIntakeRequest` calls it, pairing the way `acceptIntakeRequest`/`acceptSubmittedIntakeRequest` do. A property test checks that reclaiming undoes a match exactly.
+
+## Row version for freshness; state guard kept for legality (2026-09-27)
+
+**Found:** reclaim made Accepted ⇄ Appointed a cycle. Between a close or reclaim's fetch and its write, the request could be reclaimed and re-matched to a different slot; the row is back in `'appointed'`, `WHERE state = 'appointed'` passes, and the write acts on an appointment its caller never saw. The earlier assumption that "state itself is the version discriminator" no longer held.
+
+**Decided:** separate the two properties. *Legality* (A → B is allowed) comes from `Domain.hs` and stays enforced by the state guard (`updates-follow-domain-transitions`). *Freshness* (the row is the one the caller decided from) gets a row version: `intake_requests.version`, bumped by a `BEFORE UPDATE` trigger on every update; every read-decide-write checks `AND version = ?` (`row-version-for-freshness`). Persistence returns `Versioned a` from the fetches decisions are made from; every transition write takes the `RowVersion`. `Domain.hs` is unchanged.
+
+**Rejected:** guarding on the observed appointment fields (fixes only this case, not several A → B functions or A → A edits); locking with `SELECT … FOR UPDATE` (prevents rather than detects — a new convention, when the project already reports lost races as outcomes); `SERIALIZABLE` + retry (heavier than 2–3 doctors need). The state guard is kept alongside the version: the version catches concurrent writes, the state guard catches our own code attempting a transition `Domain.hs` doesn't allow.
+
+**Not decided:** carrying the version to clients so an action taken on a stale screen is caught. Out of scope for now. The version column went into `migrations/0001_init.sql` directly, not a new migration, since no database has had the schema applied beyond local development.
+
+## A lost version race is reported as "changed since read" — one outcome, no retry (2026-09-27)
+
+**Found:** with the row version in place, a zero-row write can no longer mean "wrong state" (Service confirmed the state at fetch time, and an unchanged version means an unchanged row) — it always means the request changed since it was read. But each operation still reported it with a guess at *how*: close and reclaim said `RequestAlreadyClosed`, mark-stale `RequestNotAccepted`, match `RequestAlreadyClaimed` ("already scheduled, drop it"). Each is wrong when the request was reclaimed and re-matched, or matched and reclaimed back to the waitlist.
+
+**Decided:** one uniform result. Operations without an outcome type of their own (accept, reject, reclaim, mark stale, close) return `Either ServiceError (Fresh a)`, `Fresh a = Applied a | ChangedSinceRead`; `MatchOutcome` gains `RequestChangedSinceRead`. On the wire both are `{"outcome": "requestChangedSinceRead"}`. It is an outcome, not a `ServiceError` — losing a race is never the caller's mistake (`error-vs-outcome-types`). Nothing retries: the caller decided from what it saw, and re-running (say) a close against a re-matched request would close an appointment it never looked at.
+
+**Rejected:** a `RequestChangedSinceRead` `ServiceError` (smaller, but breaks `error-vs-outcome-types`); automatic retry (acts on data the caller never saw).
+
+**Also:** the accept, reject and mark-stale forms ignored non-success outcomes entirely (only match showed them), so `requestNotSubmittedAnymore` was already invisible. They now show them, with readable text for `requestChangedSinceRead`.
 
 ---
 

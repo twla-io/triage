@@ -98,9 +98,10 @@ or protects against races. Enforcement is split:
   separate read, not held in a transaction with the write.
 - **Persistence writes:** every lifecycle transition (accept, reject,
   match, reclaim, mark-stale, close) uses an `UPDATE` conditioned on the
-  expected current state, with an affected-rows check (`ClaimOutcome`), so
-  a concurrent change surfaces as an error or outcome instead of being
-  overwritten. Matching (delete slot + update request) runs in one
+  expected current state (legality) and on the row version the caller read
+  (freshness, `intake_requests.version`, bumped by a trigger), with an
+  affected-rows check (`ClaimOutcome`), so a concurrent change surfaces as
+  an error or outcome instead of being overwritten. Matching (delete slot + update request) runs in one
   transaction with rollback (`persistMatchedIntakeRequest`).
 - **Database:** a `CHECK` on `intake_requests` enforces each state's column
   shape, plus the tier/deadline and close-reason shapes; durations limited

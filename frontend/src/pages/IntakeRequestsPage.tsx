@@ -39,6 +39,15 @@ function errorMessage(error: unknown): string {
   return error instanceof ApiError ? `${error.status}: ${error.message}` : String(error)
 }
 
+// A mutation's non-success outcome, as shown to the user. Outcomes without
+// a friendlier text are shown by their tag.
+function outcomeMessage(outcome: string): string {
+  if (outcome === 'requestChangedSinceRead') {
+    return 'This request changed since you loaded it. Reload and try again.'
+  }
+  return outcome
+}
+
 // ── Submit form ──────────────────────────────────────────────────────────
 
 function SubmitForm() {
@@ -273,6 +282,9 @@ function AcceptForm({ request }: { request: IntakeRequestDTO }) {
           </Button>
         </Group>
         {accept.error && <Alert color="red">{errorMessage(accept.error)}</Alert>}
+        {accept.data && accept.data.outcome !== 'accepted' && (
+          <Alert color="yellow">{outcomeMessage(accept.data.outcome)}</Alert>
+        )}
       </Stack>
     </Paper>
   )
@@ -302,6 +314,9 @@ function RejectForm({ request }: { request: IntakeRequestDTO }) {
         </Button>
       </Group>
       {reject.error && <Alert color="red">{errorMessage(reject.error)}</Alert>}
+      {reject.data && reject.data.outcome !== 'rejected' && (
+        <Alert color="yellow">{outcomeMessage(reject.data.outcome)}</Alert>
+      )}
     </Paper>
   )
 }
@@ -388,7 +403,9 @@ function MatchForm({ request }: { request: IntakeRequestDTO }) {
         </Button>
       </Group>
       {match.error && <Alert color="red">{errorMessage(match.error)}</Alert>}
-      {match.data && match.data.outcome !== 'matched' && <Alert color="yellow">{match.data.outcome}</Alert>}
+      {match.data && match.data.outcome !== 'matched' && (
+        <Alert color="yellow">{outcomeMessage(match.data.outcome)}</Alert>
+      )}
     </Paper>
   )
 }
@@ -433,6 +450,9 @@ function WaitlistSection() {
         </Paper>
       ))}
       {markStale.error && <Alert color="red">{errorMessage(markStale.error)}</Alert>}
+      {markStale.data && markStale.data.outcome !== 'stale' && (
+        <Alert color="yellow">{outcomeMessage(markStale.data.outcome)}</Alert>
+      )}
     </Stack>
   )
 }

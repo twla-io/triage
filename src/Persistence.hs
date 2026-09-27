@@ -50,6 +50,10 @@ module Persistence
   , SlotOverlap (..)
   , ClaimOutcome (..)
 
+    -- ── Row version ──────────────────────────────────────────────────────
+  , RowVersion (..)
+  , Versioned (..)
+
     -- ── Intake Request ───────────────────────────────────────────────────
   , IntakeRequestRow (..)
   , toDomainIntakeRequest
@@ -83,12 +87,13 @@ module Persistence
   ) where
 
 import Control.Exception                  (Exception, handle, throwIO, try)
+import Data.Int                           (Int16)
 import Data.Pool                          (Pool)
 import Data.Text                          (Text)
 import Data.Time                          (UTCTime)
 import Data.UUID                          (UUID)
 import Database.PostgreSQL.Simple         (Connection, Only (..), SqlError (..), execute, query,
-                                            query_, withTransaction)
+                                            query_, withTransaction, (:.) (..))
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 
 import Domain
@@ -445,6 +450,26 @@ insertAvailableSlot conn slot = do
 data ClaimOutcome = Claimed | AlreadyClaimed
   deriving (Show, Eq)
 
+-- ═══════════════════════════════════════════════════════════════════════
+-- ROW VERSION (row-version-for-freshness)
+-- intake_requests.version, bumped by a trigger on every UPDATE
+-- (migrations/0001_init.sql). A state guard proves the transition is
+-- legal (updates-follow-domain-transitions); the version proves the row
+-- hasn't changed since the read the caller decided from — including
+-- changes that return it to the same state (reclaim, then re-match).
+-- Storage metadata, not a domain fact, so it wraps Domain values rather
+-- than living in them.
+-- ═══════════════════════════════════════════════════════════════════════
+
+newtype RowVersion = RowVersion Int16
+  deriving (Show, Eq)
+
+data Versioned a = Versioned
+  { version :: RowVersion
+  , value   :: a
+  }
+  deriving (Show, Eq)
+
 -- Not paired with an insert — this row simply stops existing once matched.
 -- Called only from inside the atomic-multi-table-write transactional
 -- functions below, never on its own; a standalone deleteSlot with no
@@ -711,10 +736,13 @@ fromDomainClosed appointed reason =
        , cancelledAt = cAt, cancellationNote = note
        }
 
-fetchIntakeRequest :: Connection -> IntakeRequestId -> IO (Either DecodeError (Maybe IntakeRequest))
+-- Versioned (row-version-for-freshness): this is the read a
+-- read-decide-write operation decides from, so it carries the version its
+-- write must check.
+fetchIntakeRequest :: Connection -> IntakeRequestId -> IO (Either DecodeError (Maybe (Versioned IntakeRequest)))
 fetchIntakeRequest conn (IntakeRequestId rid) = do
   rows <- query conn
-    "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
+    "SELECT version, id, patient_id, narrative, required_doctor_id, created_at, state, \
     \       rejected_at, rejection_reason, \
     \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
     \       appointed_doctor_id, start_time, duration_minutes, \
@@ -724,17 +752,20 @@ fetchIntakeRequest conn (IntakeRequestId rid) = do
     \FROM intake_requests WHERE id = ?"
     (Only rid)
   pure $ case rows of
-    []        -> Right Nothing
-    (row : _) -> Just <$> toDomainIntakeRequest row
+    []                  -> Right Nothing
+    ((Only v :. row) : _) -> Just . Versioned (RowVersion v) <$> toDomainIntakeRequest row
 
 -- no-delete-on-consumption's state filter: with Appointment folded into
 -- IntakeRequest, "the waitlist" is just state = 'accepted' — no join
 -- against a separate appointments table needed anymore (the old
 -- fetchWaitlist's LEFT JOIN anti-join no longer applies).
-fetchIntakeWaitlist :: Connection -> IO (Either DecodeError [TriagedIntakeRequest])
+--
+-- Versioned for the same reason as fetchIntakeRequest: matchWaitlistToSlot
+-- decides from this read and writes the chosen request.
+fetchIntakeWaitlist :: Connection -> IO (Either DecodeError [Versioned TriagedIntakeRequest])
 fetchIntakeWaitlist conn = do
   rows <- query_ conn
-    "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
+    "SELECT version, id, patient_id, narrative, required_doctor_id, created_at, state, \
     \       rejected_at, rejection_reason, \
     \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
     \       appointed_doctor_id, start_time, duration_minutes, \
@@ -742,7 +773,7 @@ fetchIntakeWaitlist conn = do
     \       stale_at, \
     \       close_reason, closed_by_party, cancelled_at, cancellation_note \
     \FROM intake_requests WHERE state = 'accepted'"
-  pure $ traverse decodeTriaged rows
+  pure $ traverse (\(Only v :. row) -> Versioned (RowVersion v) <$> decodeTriaged row) rows
 
 -- Mirrors fetchIntakeWaitlist exactly, one state over: state = 'submitted'
 -- instead of 'accepted', same column list, same shape. decodeSubmitted is
@@ -951,27 +982,27 @@ insertSubmittedIntakeRequest conn s = do
 -- so a concurrent accept/reject between the two can't be overwritten.
 -- Same affected-rows pattern as persistStaleIntakeRequest
 -- (uniqueness-races-are-outcomes).
-persistTriagedIntakeRequest :: Connection -> TriagedIntakeRequest -> IO ClaimOutcome
-persistTriagedIntakeRequest conn t = do
+persistTriagedIntakeRequest :: Connection -> RowVersion -> TriagedIntakeRequest -> IO ClaimOutcome
+persistTriagedIntakeRequest conn (RowVersion v) t = do
   let row = fromDomainTriaged t
   n <- execute conn
     "UPDATE intake_requests \
     \SET state = 'accepted', healthcare_service_id = ?, tier = ?, \
     \    due_not_before = ?, due_not_after = ?, triaged_at = ? \
-    \WHERE id = ? AND state = 'submitted'"
-    (row.healthcareServiceId, row.tier, row.dueNotBefore, row.dueNotAfter, row.triagedAt, row.id)
+    \WHERE id = ? AND state = 'submitted' AND version = ?"
+    (row.healthcareServiceId, row.tier, row.dueNotBefore, row.dueNotAfter, row.triagedAt, row.id, v)
   pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- Guarded on state = 'submitted' for the same reason as
 -- persistTriagedIntakeRequest: Rejected takes a SubmittedIntakeRequest.
-persistRejectedIntakeRequest :: Connection -> SubmittedIntakeRequest -> UTCTime -> Text -> IO ClaimOutcome
-persistRejectedIntakeRequest conn submitted rejectedAt reason = do
+persistRejectedIntakeRequest :: Connection -> RowVersion -> SubmittedIntakeRequest -> UTCTime -> Text -> IO ClaimOutcome
+persistRejectedIntakeRequest conn (RowVersion v) submitted rejectedAt reason = do
   let row = fromDomainRejected submitted rejectedAt reason
   n <- execute conn
     "UPDATE intake_requests \
     \SET state = 'rejected', rejected_at = ?, rejection_reason = ? \
-    \WHERE id = ? AND state = 'submitted'"
-    (row.rejectedAt, row.rejectionReason, row.id)
+    \WHERE id = ? AND state = 'submitted' AND version = ?"
+    (row.rejectedAt, row.rejectionReason, row.id, v)
   pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- Reclaims an Appointed request back to Accepted — a single-table
@@ -988,13 +1019,13 @@ persistRejectedIntakeRequest conn submitted rejectedAt reason = do
 -- the 'appointed' -> non-'appointed' transition (deletes the
 -- corresponding row) via its existing OLD.state = 'appointed' AND
 -- NEW.state != 'appointed' branch — no trigger changes needed for this.
-persistReclaimedIntakeRequest :: Connection -> IntakeRequestId -> IO ClaimOutcome
-persistReclaimedIntakeRequest conn (IntakeRequestId rid) = do
+persistReclaimedIntakeRequest :: Connection -> RowVersion -> IntakeRequestId -> IO ClaimOutcome
+persistReclaimedIntakeRequest conn (RowVersion v) (IntakeRequestId rid) = do
   n <- execute conn
     "UPDATE intake_requests \
     \SET state = 'accepted', appointed_doctor_id = NULL, start_time = NULL, duration_minutes = NULL \
-    \WHERE id = ? AND state = 'appointed'"
-    (Only rid)
+    \WHERE id = ? AND state = 'appointed' AND version = ?"
+    (rid, v)
   pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- Closes out an Accepted request that never got matched or withdrawn —
@@ -1005,12 +1036,12 @@ persistReclaimedIntakeRequest conn (IntakeRequestId rid) = do
 -- doctor_calendar interaction — an 'accepted' row was never in
 -- doctor_calendar (only 'appointed' rows and slots are), so no trigger
 -- changes needed for this either.
-persistStaleIntakeRequest :: Connection -> IntakeRequestId -> UTCTime -> IO ClaimOutcome
-persistStaleIntakeRequest conn (IntakeRequestId rid) staleAt = do
+persistStaleIntakeRequest :: Connection -> RowVersion -> IntakeRequestId -> UTCTime -> IO ClaimOutcome
+persistStaleIntakeRequest conn (RowVersion v) (IntakeRequestId rid) staleAt = do
   n <- execute conn
     "UPDATE intake_requests SET state = 'stale', stale_at = ? \
-    \WHERE id = ? AND state = 'accepted'"
-    (staleAt, rid)
+    \WHERE id = ? AND state = 'accepted' AND version = ?"
+    (staleAt, rid, v)
   pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- Conditioned on state = 'appointed': the initial fetch in Service.hs
@@ -1020,14 +1051,14 @@ persistStaleIntakeRequest conn (IntakeRequestId rid) staleAt = do
 -- reason it closed for — an undetectable data-corruption outcome, not a
 -- visible duplicate like the slot-creation race. AlreadyClaimed here means
 -- the request was no longer 'appointed' by the time this write ran.
-persistClosedIntakeRequestIfAppointed :: Connection -> AppointedIntakeRequest -> CloseReason -> IO ClaimOutcome
-persistClosedIntakeRequestIfAppointed conn appointed reason = do
+persistClosedIntakeRequestIfAppointed :: Connection -> RowVersion -> AppointedIntakeRequest -> CloseReason -> IO ClaimOutcome
+persistClosedIntakeRequestIfAppointed conn (RowVersion v) appointed reason = do
   let row = fromDomainClosed appointed reason
   n <- execute conn
     "UPDATE intake_requests SET state = 'closed', close_reason = ?, closed_by_party = ?, \
     \       cancelled_at = ?, cancellation_note = ? \
-    \WHERE id = ? AND state = 'appointed'"
-    (row.closeReason, row.closedByParty, row.cancelledAt, row.cancellationNote, row.id)
+    \WHERE id = ? AND state = 'appointed' AND version = ?"
+    (row.closeReason, row.closedByParty, row.cancelledAt, row.cancellationNote, row.id, v)
   pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -1047,10 +1078,9 @@ persistClosedIntakeRequestIfAppointed conn appointed reason = do
 -- operations targeting the same SLOT; this guards two operations
 -- targeting the same REQUEST. Both can independently fail, which is why
 -- persistMatchedIntakeRequest below still needs compound rollback even
--- though matching no longer inserts into a second table — state itself
--- is the version discriminator for this transition, no separate
--- row_version column needed (nothing in this model changes state
--- without it being a real lifecycle transition worth naming).
+-- though matching no longer inserts into a second table. The state guard
+-- makes the transition legal; the version check makes it fresh (the row
+-- is the one the caller read — see ROW VERSION above).
 -- Wrapped in try/catch for 23P01 alongside the pre-existing affected-rows
 -- check: this UPDATE can now lose two independently-caused ways once
 -- doctor_calendar exists — the WHERE state = 'accepted' guard matching
@@ -1060,14 +1090,14 @@ persistClosedIntakeRequestIfAppointed conn appointed reason = do
 -- e.g. a concurrent reassignment). Both fold to AlreadyClaimed — see
 -- persistMatchedIntakeRequest below for why that fold is deliberately not
 -- unpicked one level up, and the tradeoff that decision accepts.
-claimAcceptedIntakeRequest :: Connection -> IntakeRequestId -> AppointedIntakeRequest -> IO ClaimOutcome
-claimAcceptedIntakeRequest conn (IntakeRequestId rid) appointed = do
+claimAcceptedIntakeRequest :: Connection -> RowVersion -> IntakeRequestId -> AppointedIntakeRequest -> IO ClaimOutcome
+claimAcceptedIntakeRequest conn (RowVersion v) (IntakeRequestId rid) appointed = do
   let row = fromDomainAppointed appointed
   result <- try $ execute conn
     "UPDATE intake_requests \
     \SET state = 'appointed', appointed_doctor_id = ?, start_time = ?, duration_minutes = ? \
-    \WHERE id = ? AND state = 'accepted'"
-    (row.appointedDoctorId, row.startTime, row.durationMinutes, rid)
+    \WHERE id = ? AND state = 'accepted' AND version = ?"
+    (row.appointedDoctorId, row.startTime, row.durationMinutes, rid, v)
   case result of
     Right n                        -> pure (if n > 0 then Claimed else AlreadyClaimed)
     Left e | sqlState e == "23P01" -> pure AlreadyClaimed
@@ -1137,15 +1167,15 @@ instance Exception MatchAbort
 -- atomic-multi-table-write exists to prevent). Throwing MatchAbort inside
 -- withTransaction's action triggers exactly that rollback; handle just
 -- outside translates it back into the corresponding MatchPersistOutcome.
-persistMatchedIntakeRequest :: Connection -> SlotId -> AppointedIntakeRequest -> IO MatchPersistOutcome
-persistMatchedIntakeRequest conn matchedSlotId appointed =
+persistMatchedIntakeRequest :: Connection -> SlotId -> RowVersion -> AppointedIntakeRequest -> IO MatchPersistOutcome
+persistMatchedIntakeRequest conn matchedSlotId requestVersion appointed =
   handle recoverAbort $ withTransaction conn $ do
     slotOutcome <- deleteSlot conn matchedSlotId
     case slotOutcome of
       AlreadyClaimed -> throwIO SlotGone
       Claimed -> do
         let reqId = appointed.triaged.submitted.id
-        reqOutcome <- claimAcceptedIntakeRequest conn reqId appointed
+        reqOutcome <- claimAcceptedIntakeRequest conn requestVersion reqId appointed
         case reqOutcome of
           AlreadyClaimed -> throwIO RequestGone
           Claimed        -> pure MatchPersisted

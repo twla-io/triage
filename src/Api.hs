@@ -125,7 +125,7 @@ import Domain
   , SlotId (..)
   )
 import Persistence (ConnectionPool, DecodeError)
-import Service     (MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..))
+import Service     (Fresh (..), MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..))
 import Transport
   ( AcceptIntakeRequestRequest (..)
   , AppointedIntakeRequestDTO
@@ -372,18 +372,21 @@ handleServiceError (HealthcareServiceNotFound (HealthcareServiceId sid)) =
   pure (envelope "healthcareServiceNotFound" (object ["healthcareServiceId" .= UUID.toText sid]))
 
 -- For shape (c) proper: Service.hs mutations returning
--- IO (Either ServiceError a). The success side genuinely varies per call
+-- IO (Either ServiceError (Fresh a)). ChangedSinceRead — the request
+-- changed between the operation's fetch and its write — is the same
+-- "requestChangedSinceRead" outcome for every caller. The success side genuinely varies per call
 -- site (the value's own DTO conversion, and the success outcome's tag
 -- name) while the error side never does — handleServiceError above
 -- already covers all six non-decode constructors identically — so this
 -- takes a success tag and a toDetail conversion, not onSuccess/onError
 -- continuations (servant-implementation.md section 4's own reasoning).
-runService :: ToJSON dto => Text -> IO (Either ServiceError a) -> (a -> dto) -> AppM Value
+runService :: ToJSON dto => Text -> IO (Either ServiceError (Fresh a)) -> (a -> dto) -> AppM Value
 runService successTag action toDetail = do
   result <- liftIO action
   case result of
-    Left se -> handleServiceError se
-    Right a -> pure (envelope successTag (toDetail a))
+    Left se                -> handleServiceError se
+    Right (Applied a)      -> pure (envelope successTag (toDetail a))
+    Right ChangedSinceRead -> pure (envelopeEmpty "requestChangedSinceRead")
 
 -- For matchAcceptedIntakeRequestToSlot's IO (Either ServiceError
 -- MatchOutcome) shape — verified against Service.hs directly: MatchOutcome
@@ -396,12 +399,13 @@ runMatchOutcome :: IO (Either ServiceError MatchOutcome) -> AppM Value
 runMatchOutcome action = do
   result <- liftIO action
   case result of
-    Left se                     -> handleServiceError se
-    Right (Matched appointed)   -> pure (envelope "matched" (fromDomainAppointedIntakeRequest appointed))
-    Right NoEligibleRequest     -> pure (envelopeEmpty "noEligibleRequest")
-    Right RequestIneligible     -> pure (envelopeEmpty "requestIneligible")
-    Right SlotAlreadyClaimed    -> pure (envelopeEmpty "slotAlreadyClaimed")
-    Right RequestAlreadyClaimed -> pure (envelopeEmpty "requestAlreadyClaimed")
+    Left se                       -> handleServiceError se
+    Right (Matched appointed)     -> pure (envelope "matched" (fromDomainAppointedIntakeRequest appointed))
+    Right NoEligibleRequest       -> pure (envelopeEmpty "noEligibleRequest")
+    Right RequestIneligible       -> pure (envelopeEmpty "requestIneligible")
+    Right SlotAlreadyClaimed      -> pure (envelopeEmpty "slotAlreadyClaimed")
+    Right RequestAlreadyClaimed   -> pure (envelopeEmpty "requestAlreadyClaimed")
+    Right RequestChangedSinceRead -> pure (envelopeEmpty "requestChangedSinceRead")
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- DOCTOR

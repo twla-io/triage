@@ -54,12 +54,13 @@ handleServiceError (RequestNotYetTriaged rid)       = pure (envelope "requestNot
 handleServiceError (RequestNotAppointed rid)        = pure (envelope "requestNotAppointed" rid)
 handleServiceError (RequestAlreadyClosed rid)       = pure (envelope "requestAlreadyClosed" rid)
 
-runService :: ToJSON dto => Text -> IO (Either ServiceError a) -> (a -> dto) -> AppM Value
+runService :: ToJSON dto => Text -> IO (Either ServiceError (Fresh a)) -> (a -> dto) -> AppM Value
 runService successTag action toDetail = do
   result <- liftIO action
   case result of
-    Left se -> handleServiceError se
-    Right a -> pure (envelope successTag (toDetail a))
+    Left se                -> handleServiceError se
+    Right (Applied a)      -> pure (envelope successTag (toDetail a))
+    Right ChangedSinceRead -> pure (envelopeEmpty "requestChangedSinceRead")
 
 envelope :: ToJSON dto => Text -> dto -> Value
 envelope tag detail = object ["outcome" .= tag, "detail" .= toJSON detail]
