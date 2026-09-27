@@ -139,7 +139,7 @@ function AppointmentDetailsModal({ entry, onClose }: { entry: CalendarEntryDTO |
               Doctor:
             </Text>{' '}
             {doctorName}
-            {entry.doctorRequirement?.type === 'specificDoctor' ? ' (specifically requested)' : ' (any doctor requested)'}
+            {entry.doctorRequirement?.type === 'specificDoctor' ? ' (specific doctor required)' : ' (any doctor)'}
           </Text>
           <Text size="sm">
             <Text span fw={500}>

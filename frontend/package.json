@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "generate-types": "openapi-typescript http://localhost:8080/swagger.json -o src/api/types.ts"
+    "generate-types": "mkdir -p node_modules/.cache && swagger2openapi http://localhost:8080/swagger.json -o node_modules/.cache/openapi.json && openapi-typescript node_modules/.cache/openapi.json -o src/api/types.ts"
   },
   "dependencies": {
     "@mantine/core": "^7.17.0",
@@ -26,6 +26,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "openapi-typescript": "^7.6.1",
+    "swagger2openapi": "^7.0.8",
     "typescript": "^5.7.3",
     "vite": "^6.0.11"
   }

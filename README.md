@@ -26,8 +26,11 @@ unrelated to `IntakeRequest`'s naming — this is the service catalog, a
 broader concept than any one request's front-door path.
 
 **Doctor Requirement** — `DoctorRequirement = AnyDoctor | SpecificDoctor
-DoctorId`. Structurally absent from `Emergency`/`Urgent` priority — those
-tiers have no time slack to spend waiting on a specific doctor.
+DoctorId`, recorded as two different facts: what the request asked for
+(`SubmittedIntakeRequest.requestedDoctor`) and what triage decided
+(`TriagedIntakeRequest.doctorRequirement`). Matching uses only the decided
+one. Triage decides for any priority; an `Emergency` or `Urgent` request
+waits for a specific doctor only if triage explicitly kept one.
 
 **Priority / Due constraints** — `EmergencyDue`, `UrgentDue` (each a `UTCTime`
 deadline); `RoutineDue = RoutineAnytime | RoutineNotBefore UTCTime |
@@ -40,9 +43,10 @@ patient.
 patient's raw ask to a single appointment, not a general "appointment"
 aggregate; because the relationship is confirmed 1:1 permanently, there is no
 separate `Appointment` type. One linear embedding chain: `SubmittedIntakeRequest`
-(the base record — `id`, `patientId`, `narrative`, `doctorRequirement`,
+(the base record — `id`, `patientId`, `narrative`, `requestedDoctor`,
 `createdAt`; no separate "Details" type) → `TriagedIntakeRequest` (embeds
-`submitted` and adds `healthcareServiceId`, `priority`, `triagedAt`) →
+`submitted` and adds `healthcareServiceId`, `priority`, `doctorRequirement`,
+`triagedAt`) →
 `AppointedIntakeRequest` (embeds `triaged` and adds `doctorId`, `start`,
 `duration`; `reclaimIntakeRequest :: AppointedIntakeRequest ->
 TriagedIntakeRequest` returns `triaged` unchanged, taking an `Appointed`

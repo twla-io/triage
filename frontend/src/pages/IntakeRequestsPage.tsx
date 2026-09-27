@@ -30,6 +30,7 @@ import {
   useRejectIntakeRequest,
   useSubmitIntakeRequest,
   useSubmittedIntakeRequests,
+  type DoctorRequirementDTO,
   type IntakeRequestDTO,
   type IntakeRequestPriorityPayload,
   type RoutineDuePayload,
@@ -69,7 +70,7 @@ function SubmitForm() {
       {
         patientId,
         narrative: narrative.trim(),
-        doctorRequirement: needsSpecificDoctor
+        requestedDoctor: needsSpecificDoctor
           ? { type: 'specificDoctor', doctorId: specificDoctorId! }
           : { type: 'anyDoctor' },
       },
@@ -103,7 +104,7 @@ function SubmitForm() {
           required
         />
         <Select
-          label="Doctor requirement"
+          label="Requested doctor"
           data={[
             { value: 'any', label: 'Any doctor' },
             { value: 'specific', label: 'Specific doctor' },
@@ -255,9 +256,20 @@ function PriorityInput({ onChange }: { onChange: (payload: IntakeRequestPriority
 
 function AcceptForm({ request }: { request: IntakeRequestDTO }) {
   const { data: services } = useHealthcareServices()
+  const { data: doctors } = useDoctors()
   const accept = useAcceptIntakeRequest()
   const [healthcareServiceId, setHealthcareServiceId] = useState<string | null>(null)
   const [priority, setPriority] = useState<IntakeRequestPriorityPayload | null>(null)
+  // Triage decides the doctor requirement matching will use; it starts as
+  // whatever the request asked for.
+  const requested = request.requestedDoctor
+  const [requiredDoctorId, setRequiredDoctorId] = useState<string | null>(
+    requested?.type === 'specificDoctor' ? (requested.doctorId ?? null) : null,
+  )
+  const doctorRequirement: DoctorRequirementDTO = requiredDoctorId
+    ? { type: 'specificDoctor', doctorId: requiredDoctorId }
+    : { type: 'anyDoctor' }
+  const waitsOnDoctor = requiredDoctorId !== null && priority !== null && priority.type !== 'routine'
 
   return (
     <Paper withBorder p="sm" mt="xs">
@@ -271,12 +283,30 @@ function AcceptForm({ request }: { request: IntakeRequestDTO }) {
           required
         />
         <PriorityInput onChange={setPriority} />
+        <Select
+          label="Doctor requirement"
+          description="Matching uses this. Leave empty for any doctor."
+          placeholder="Any doctor"
+          data={(doctors ?? []).map((d) => ({ value: d.id, label: d.name }))}
+          value={requiredDoctorId}
+          onChange={setRequiredDoctorId}
+          clearable
+        />
+        {waitsOnDoctor && (
+          <Alert color="yellow">
+            This request will wait for that doctor even if other doctors have free slots before its deadline.
+          </Alert>
+        )}
         <Group>
           <Button
             size="xs"
             disabled={!healthcareServiceId || !priority}
             loading={accept.isPending}
-            onClick={() => healthcareServiceId && priority && accept.mutate({ id: request.id, healthcareServiceId, priority })}
+            onClick={() =>
+              healthcareServiceId &&
+              priority &&
+              accept.mutate({ id: request.id, healthcareServiceId, priority, doctorRequirement })
+            }
           >
             Confirm accept
           </Button>
@@ -337,7 +367,7 @@ function SubmittedSection() {
             <Stack gap={2}>
               <Text fw={600}>{request.narrative}</Text>
               <Text size="sm" c="dimmed">
-                {request.doctorRequirement.type === 'specificDoctor' ? 'Specific doctor requested' : 'Any doctor'} · submitted{' '}
+                {request.requestedDoctor?.type === 'specificDoctor' ? 'Specific doctor requested' : 'Any doctor'} · submitted{' '}
                 {dayjs(request.createdAt).format('MMM D, h:mm A')}
               </Text>
             </Stack>

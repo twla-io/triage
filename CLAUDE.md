@@ -38,11 +38,10 @@ Inferred from configuration, not run:
   8080). Swagger UI at `/swagger-ui`, spec at `/swagger.json`.
 - `cd frontend && npm run dev` — Vite on 5173; API base URL from
   `VITE_API_BASE_URL`, default `http://localhost:8080`.
-- `cd frontend && npm run generate-types` — meant to regenerate
-  `src/api/types.ts` from the running backend's `/swagger.json`, but
-  **currently broken**: the backend serves Swagger 2.0 and the installed
-  openapi-typescript v7 only reads OpenAPI 3, so `types.ts` is out of
-  date. Don't hand-edit it; the fix is its own decision.
+- `cd frontend && npm run generate-types` — with the backend running,
+  converts its Swagger 2.0 `/swagger.json` to OpenAPI 3
+  (`swagger2openapi`) and regenerates `src/api/types.ts`
+  (openapi-typescript v7). Run 2026-09-28. Don't hand-edit `types.ts`.
 - `docker build .` — backend image only; frontend hosting is undecided.
 
 ## Modules and dependencies

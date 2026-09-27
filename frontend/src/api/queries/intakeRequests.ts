@@ -54,7 +54,7 @@ export function useClosedIntakeRequests(range: ClosedRange) {
 export interface SubmitIntakeRequestInput {
   patientId: string
   narrative: string
-  doctorRequirement: DoctorRequirementDTO
+  requestedDoctor: DoctorRequirementDTO
 }
 
 function invalidateIntakeQueries(queryClient: ReturnType<typeof useQueryClient>) {
@@ -76,11 +76,18 @@ export function useAcceptIntakeRequest() {
       id,
       healthcareServiceId,
       priority,
+      doctorRequirement,
     }: {
       id: string
       healthcareServiceId: string
       priority: IntakeRequestPriorityPayload
-    }) => postEnveloped<IntakeRequestDTO>(`/intake-requests/${id}/accept`, { healthcareServiceId, priority }),
+      doctorRequirement: DoctorRequirementDTO
+    }) =>
+      postEnveloped<IntakeRequestDTO>(`/intake-requests/${id}/accept`, {
+        healthcareServiceId,
+        priority,
+        doctorRequirement,
+      }),
     onSuccess: () => invalidateIntakeQueries(queryClient),
   })
 }

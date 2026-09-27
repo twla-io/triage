@@ -134,8 +134,11 @@ data HealthcareService = HealthcareService
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DOCTOR REQUIREMENT
--- Structural absence on Emergency/Urgent: those tiers have no time slack to
--- spend waiting on a specific doctor. Only RoutineRequest carries this.
+-- Recorded twice, as two different facts: what the request asked for
+-- (SubmittedIntakeRequest.requestedDoctor) and what triage decided
+-- (TriagedIntakeRequest.doctorRequirement). Matching uses only the decided
+-- one. Triage decides for any priority; an Emergency or Urgent request
+-- waits for a specific doctor only if triage explicitly kept one.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data DoctorRequirement
@@ -240,7 +243,7 @@ data SubmittedIntakeRequest = SubmittedIntakeRequest
   { id                :: IntakeRequestId
   , patientId         :: PatientId
   , narrative         :: Text
-  , doctorRequirement :: DoctorRequirement
+  , requestedDoctor   :: DoctorRequirement
   , createdAt         :: UTCTime
   }
   deriving (Show, Eq)
@@ -249,6 +252,7 @@ data TriagedIntakeRequest = TriagedIntakeRequest
   { submitted           :: SubmittedIntakeRequest
   , healthcareServiceId :: HealthcareServiceId
   , priority             :: IntakeRequestPriority
+  , doctorRequirement    :: DoctorRequirement
   , triagedAt            :: UTCTime
   }
   deriving (Show, Eq)
@@ -330,10 +334,11 @@ acceptIntakeRequest
   :: SubmittedIntakeRequest
   -> HealthcareServiceId
   -> IntakeRequestPriority
+  -> DoctorRequirement
   -> UTCTime
   -> TriagedIntakeRequest
-acceptIntakeRequest submitted healthcareServiceId priority triagedAt =
-  TriagedIntakeRequest { submitted, healthcareServiceId, priority, triagedAt }
+acceptIntakeRequest submitted healthcareServiceId priority doctorRequirement triagedAt =
+  TriagedIntakeRequest { submitted, healthcareServiceId, priority, doctorRequirement, triagedAt }
 
 -- Appointed -> Accepted. The request goes back to the waitlist exactly as
 -- it was triaged: same IntakeRequestId, priority and triagedAt.
@@ -448,9 +453,9 @@ matchesTime (Routine   (RoutineWithin earliest latest)) slotStart =
   slotStart >= earliest && slotStart <= latest
 
 matches :: AvailableSlot -> TriagedIntakeRequest -> Bool
-matches slot TriagedIntakeRequest { healthcareServiceId, priority, submitted } =
+matches slot TriagedIntakeRequest { healthcareServiceId, priority, doctorRequirement } =
      slot.healthcareServiceId == healthcareServiceId
-  && matchesDoctorRequirement slot submitted.doctorRequirement
+  && matchesDoctorRequirement slot doctorRequirement
   && matchesTime priority slot.start
 
 matchIntakeRequestToSlot

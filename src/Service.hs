@@ -374,13 +374,13 @@ submitIntakeRequest
   :: ConnectionPool
   -> PatientId
   -> Text                -- narrative
-  -> DoctorRequirement
+  -> DoctorRequirement   -- requestedDoctor
   -> UTCTime             -- createdAt
   -> IO SubmittedIntakeRequest
-submitIntakeRequest pool patientId narrative doctorRequirement createdAt =
+submitIntakeRequest pool patientId narrative requestedDoctor createdAt =
   withResource pool $ \conn -> do
     reqId <- newIntakeRequestId
-    let submitted = SubmittedIntakeRequest { id = reqId, patientId, narrative, doctorRequirement, createdAt }
+    let submitted = SubmittedIntakeRequest { id = reqId, patientId, narrative, requestedDoctor, createdAt }
     insertSubmittedIntakeRequest conn submitted
     pure submitted
 
@@ -399,16 +399,17 @@ acceptSubmittedIntakeRequest
   -> IntakeRequestId
   -> HealthcareServiceId
   -> IntakeRequestPriority
+  -> DoctorRequirement   -- decided by triage; matching uses this
   -> UTCTime             -- triagedAt
   -> IO (Either ServiceError (Fresh TriagedIntakeRequest))
-acceptSubmittedIntakeRequest pool requestId healthcareServiceId priority triagedAt =
+acceptSubmittedIntakeRequest pool requestId healthcareServiceId priority doctorRequirement triagedAt =
   withResource pool $ \conn -> do
     reqResult <- Persistence.fetchIntakeRequest conn requestId
     case reqResult of
       Left err                                         -> pure (Left (PersistenceDecodeError err))
       Right Nothing                                    -> pure (Left (RequestNotFound requestId))
       Right (Just (Versioned v (Submitted submitted))) -> do
-        let triaged = acceptIntakeRequest submitted healthcareServiceId priority triagedAt
+        let triaged = acceptIntakeRequest submitted healthcareServiceId priority doctorRequirement triagedAt
         claim <- persistTriagedIntakeRequest conn v triaged
         pure $ case claim of
           Claimed        -> Right (Applied triaged)

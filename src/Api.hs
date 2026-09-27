@@ -818,7 +818,7 @@ submitIntakeRequestHandler req = do
   createdAt <- liftIO getCurrentTime
   submitted <- liftIO
     (Service.submitIntakeRequest pool (PatientId req.patientId) req.narrative
-      (toDomainDoctorRequirement req.doctorRequirement) createdAt)
+      (toDomainDoctorRequirement req.requestedDoctor) createdAt)
   pure (fromDomainIntakeRequest (Submitted submitted))
 
 fetchIntakeWaitlistHandler :: AppM [IntakeRequestDTO]
@@ -857,7 +857,8 @@ acceptSubmittedIntakeRequestHandler uid req = do
   triagedAt <- liftIO getCurrentTime
   runService "accepted"
     (Service.acceptSubmittedIntakeRequest pool (IntakeRequestId uid)
-      (HealthcareServiceId req.healthcareServiceId) domainPriority triagedAt)
+      (HealthcareServiceId req.healthcareServiceId) domainPriority
+      (toDomainDoctorRequirement req.doctorRequirement) triagedAt)
     (fromDomainIntakeRequest . Accepted)
 
 rejectSubmittedIntakeRequestHandler :: UUID -> RejectIntakeRequestRequest -> AppM Value

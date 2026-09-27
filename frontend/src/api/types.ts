@@ -664,7 +664,7 @@ export interface paths {
             };
             requestBody: {
                 content: {
-                    "application/json;charset=utf-8": components["schemas"]["AvailableSlotDTO"];
+                    "application/json;charset=utf-8": components["schemas"]["MatchIntakeRequestRequest"];
                 };
             };
             responses: {
@@ -967,6 +967,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         AcceptIntakeRequestRequest: {
+            doctorRequirement: components["schemas"]["DoctorRequirementDTO"];
             healthcareServiceId: components["schemas"]["UUID"];
             priority: components["schemas"]["IntakeRequestPriorityDTO"];
         };
@@ -980,6 +981,7 @@ export interface components {
             narrative: string;
             patientId: components["schemas"]["UUID"];
             priority: components["schemas"]["IntakeRequestPriorityDTO"];
+            requestedDoctor: components["schemas"]["DoctorRequirementDTO"];
             start: components["schemas"]["UTCTime"];
             triagedAt: components["schemas"]["UTCTime"];
         };
@@ -1004,6 +1006,7 @@ export interface components {
             narrative?: string;
             patientId?: components["schemas"]["UUID"];
             priority?: components["schemas"]["IntakeRequestPriorityDTO"];
+            requestedDoctor?: components["schemas"]["DoctorRequirementDTO"];
             start: components["schemas"]["UTCTime"];
             triagedAt?: components["schemas"]["UTCTime"];
             /** @enum {string} */
@@ -1024,7 +1027,6 @@ export interface components {
         };
         CreateAvailableSlotRequest: {
             doctorId: components["schemas"]["UUID"];
-            duration: components["schemas"]["DurationDTO"];
             healthcareServiceId: components["schemas"]["UUID"];
             start: components["schemas"]["UTCTime"];
         };
@@ -1060,7 +1062,7 @@ export interface components {
             closeReason?: components["schemas"]["CloseReasonDTO"];
             createdAt: components["schemas"]["UTCTime"];
             doctorId?: components["schemas"]["UUID"];
-            doctorRequirement: components["schemas"]["DoctorRequirementDTO"];
+            doctorRequirement?: components["schemas"]["DoctorRequirementDTO"];
             duration?: components["schemas"]["DurationDTO"];
             healthcareServiceId?: components["schemas"]["UUID"];
             id: components["schemas"]["UUID"];
@@ -1069,6 +1071,7 @@ export interface components {
             priority?: components["schemas"]["IntakeRequestPriorityDTO"];
             rejectedAt?: components["schemas"]["UTCTime"];
             rejectionReason?: string;
+            requestedDoctor: components["schemas"]["DoctorRequirementDTO"];
             staleAt?: components["schemas"]["UTCTime"];
             start?: components["schemas"]["UTCTime"];
             triagedAt?: components["schemas"]["UTCTime"];
@@ -1084,6 +1087,9 @@ export interface components {
             /** @enum {string} */
             type: "emergency" | "urgent" | "routine";
         };
+        MatchIntakeRequestRequest: {
+            slotId: components["schemas"]["UUID"];
+        };
         PatientDTO: {
             id: components["schemas"]["UUID"];
             name: string;
@@ -1092,9 +1098,9 @@ export interface components {
             rejectionReason: string;
         };
         SubmitIntakeRequestRequest: {
-            doctorRequirement: components["schemas"]["DoctorRequirementDTO"];
             narrative: string;
             patientId: components["schemas"]["UUID"];
+            requestedDoctor: components["schemas"]["DoctorRequirementDTO"];
         };
         /**
          * Format: yyyy-mm-ddThh:MM:ssZ

@@ -56,7 +56,7 @@ data SubmittedIntakeRequest = SubmittedIntakeRequest
   { id                :: IntakeRequestId
   , patientId         :: PatientId
   , narrative         :: Text
-  , doctorRequirement :: DoctorRequirement
+  , requestedDoctor   :: DoctorRequirement   -- what the request asked for
   , createdAt         :: UTCTime
   }
 
@@ -264,15 +264,16 @@ the rule and checks it for values it holds. See `docs/decisions.md`'s
 
 ```haskell
 matches :: AvailableSlot -> TriagedIntakeRequest -> Bool
-matches slot TriagedIntakeRequest { healthcareServiceId, priority, submitted } =
+matches slot TriagedIntakeRequest { healthcareServiceId, priority, doctorRequirement } =
      slot.healthcareServiceId == healthcareServiceId
-  && matchesDoctorRequirement slot submitted.doctorRequirement
+  && matchesDoctorRequirement slot doctorRequirement
   && matchesTime priority slot.start
 ```
 
 A slot and a triaged request `matches` when the slot's service matches the
-request's, the slot's doctor satisfies the request's `DoctorRequirement`
-(`AnyDoctor` or a specific one), and the slot's start time satisfies the
+request's, the slot's doctor satisfies the `DoctorRequirement` triage decided
+(`AnyDoctor` or a specific one — not the `requestedDoctor` the request asked
+for), and the slot's start time satisfies the
 request's priority-carried deadline (or window, for `Routine`).
 
 ```haskell

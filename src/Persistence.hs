@@ -504,7 +504,7 @@ data IntakeRequestRow = IntakeRequestRow
   { id                  :: UUID
   , patientId           :: UUID
   , narrative           :: Text
-  , requiredDoctorId    :: Maybe UUID
+  , requestedDoctorId   :: Maybe UUID
   , createdAt           :: UTCTime
   , state               :: Text
   , rejectedAt          :: Maybe UTCTime
@@ -514,6 +514,7 @@ data IntakeRequestRow = IntakeRequestRow
   , dueNotBefore        :: Maybe UTCTime
   , dueNotAfter         :: Maybe UTCTime
   , triagedAt           :: Maybe UTCTime
+  , requiredDoctorId    :: Maybe UUID
   , appointedDoctorId   :: Maybe UUID
   , startTime           :: Maybe UTCTime
   , durationMinutes     :: Maybe Int
@@ -532,13 +533,13 @@ instance FromRow IntakeRequestRow where
   fromRow =
     IntakeRequestRow
       <$> field <*> field <*> field <*> field <*> field
-      -- id, patient_id, narrative, required_doctor_id, created_at
+      -- id, patient_id, narrative, requested_doctor_id, created_at
       <*> field
       -- state
       <*> field <*> field
       -- rejected_at, rejection_reason
-      <*> field <*> field <*> field <*> field <*> field
-      -- healthcare_service_id, tier, due_not_before, due_not_after, triaged_at
+      <*> field <*> field <*> field <*> field <*> field <*> field
+      -- healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, required_doctor_id
       <*> field <*> field <*> field
       -- appointed_doctor_id, start_time, duration_minutes
       <*> field <*> field
@@ -626,7 +627,7 @@ encodeCloseReason (NoShow party)            = ("no_show", Just (encodeParty part
 decodeSubmitted :: IntakeRequestRow -> SubmittedIntakeRequest
 decodeSubmitted row = SubmittedIntakeRequest
   { id = IntakeRequestId row.id, patientId = PatientId row.patientId
-  , narrative = row.narrative, doctorRequirement = decodeDoctorRequirement row.requiredDoctorId
+  , narrative = row.narrative, requestedDoctor = decodeDoctorRequirement row.requestedDoctorId
   , createdAt = row.createdAt
   }
 
@@ -635,7 +636,8 @@ decodeTriaged row = case (row.healthcareServiceId, row.tier, row.triagedAt) of
   (Just svcId, Just tier', Just triagedAt') ->
     (\p -> TriagedIntakeRequest
       { submitted = decodeSubmitted row, healthcareServiceId = HealthcareServiceId svcId
-      , priority = p, triagedAt = triagedAt'
+      , priority = p, doctorRequirement = decodeDoctorRequirement row.requiredDoctorId
+      , triagedAt = triagedAt'
       })
     <$> decodePriority tier' row.dueNotBefore row.dueNotAfter
   _ -> Left (InvalidTriagedRowShape row.state)
@@ -683,10 +685,11 @@ fromDomainSubmitted s =
       PatientId pid        = s.patientId
   in IntakeRequestRow
        { id = rid, patientId = pid, narrative = s.narrative
-       , requiredDoctorId = encodeDoctorRequirement s.doctorRequirement, createdAt = s.createdAt
+       , requestedDoctorId = encodeDoctorRequirement s.requestedDoctor, createdAt = s.createdAt
        , state = "submitted"
        , rejectedAt = Nothing, rejectionReason = Nothing
        , healthcareServiceId = Nothing, tier = Nothing, dueNotBefore = Nothing, dueNotAfter = Nothing, triagedAt = Nothing
+       , requiredDoctorId = Nothing
        , appointedDoctorId = Nothing, startTime = Nothing, durationMinutes = Nothing
        , withdrawnAt = Nothing, withdrawalNote = Nothing
        , staleAt = Nothing
@@ -704,6 +707,7 @@ fromDomainTriaged t =
   in (fromDomainSubmitted t.submitted)
        { state = "accepted", healthcareServiceId = Just svcId, tier = Just tierText
        , dueNotBefore = lo, dueNotAfter = hi, triagedAt = Just t.triagedAt
+       , requiredDoctorId = encodeDoctorRequirement t.doctorRequirement
        }
 
 fromDomainAppointed :: AppointedIntakeRequest -> IntakeRequestRow
@@ -742,9 +746,9 @@ fromDomainClosed appointed reason =
 fetchIntakeRequest :: Connection -> IntakeRequestId -> IO (Either DecodeError (Maybe (Versioned IntakeRequest)))
 fetchIntakeRequest conn (IntakeRequestId rid) = do
   rows <- query conn
-    "SELECT version, id, patient_id, narrative, required_doctor_id, created_at, state, \
+    "SELECT version, id, patient_id, narrative, requested_doctor_id, created_at, state, \
     \       rejected_at, rejection_reason, \
-    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, required_doctor_id, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
     \       stale_at, \
@@ -765,9 +769,9 @@ fetchIntakeRequest conn (IntakeRequestId rid) = do
 fetchIntakeWaitlist :: Connection -> IO (Either DecodeError [Versioned TriagedIntakeRequest])
 fetchIntakeWaitlist conn = do
   rows <- query_ conn
-    "SELECT version, id, patient_id, narrative, required_doctor_id, created_at, state, \
+    "SELECT version, id, patient_id, narrative, requested_doctor_id, created_at, state, \
     \       rejected_at, rejection_reason, \
-    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, required_doctor_id, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
     \       stale_at, \
@@ -789,9 +793,9 @@ fetchIntakeWaitlist conn = do
 fetchSubmittedIntakeRequests :: Connection -> IO (Either DecodeError [SubmittedIntakeRequest])
 fetchSubmittedIntakeRequests conn = do
   rows <- query_ conn
-    "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
+    "SELECT id, patient_id, narrative, requested_doctor_id, created_at, state, \
     \       rejected_at, rejection_reason, \
-    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, required_doctor_id, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
     \       stale_at, \
@@ -846,9 +850,9 @@ fetchAppointedIntakeRequests
 fetchAppointedIntakeRequests conn mRangeStart mRangeEnd mDoctorId = do
   let mDoctorUuid = (\(DoctorId d) -> d) <$> mDoctorId
   rows <- query conn
-    "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
+    "SELECT id, patient_id, narrative, requested_doctor_id, created_at, state, \
     \       rejected_at, rejection_reason, \
-    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, required_doctor_id, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
     \       stale_at, \
@@ -899,9 +903,9 @@ fetchClosedIntakeRequests
 fetchClosedIntakeRequests conn rangeStart rangeEnd mDoctorId = do
   let mDoctorUuid = (\(DoctorId d) -> d) <$> mDoctorId
   rows <- query conn
-    "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
+    "SELECT id, patient_id, narrative, requested_doctor_id, created_at, state, \
     \       rejected_at, rejection_reason, \
-    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, required_doctor_id, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
     \       stale_at, \
@@ -939,9 +943,9 @@ fetchDoctorCalendar conn did@(DoctorId doctorUuid) rangeStart rangeEnd = do
     \  AND start_time + make_interval(mins => duration_minutes) > ?"
     (doctorUuid, rangeEnd, rangeStart)
   appointedRows <- query conn
-    "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
+    "SELECT id, patient_id, narrative, requested_doctor_id, created_at, state, \
     \       rejected_at, rejection_reason, \
-    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, required_doctor_id, \
     \       appointed_doctor_id, start_time, duration_minutes, \
     \       withdrawn_at, withdrawal_note, \
     \       stale_at, \
@@ -963,17 +967,17 @@ insertSubmittedIntakeRequest conn s = do
   let row = fromDomainSubmitted s
   _ <- execute conn
     "INSERT INTO intake_requests \
-    \(id, patient_id, narrative, required_doctor_id, created_at, state, \
+    \(id, patient_id, narrative, requested_doctor_id, created_at, state, \
     \ rejected_at, rejection_reason, \
-    \ healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \ healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, required_doctor_id, \
     \ appointed_doctor_id, start_time, duration_minutes, \
     \ withdrawn_at, withdrawal_note, \
     \ stale_at, \
     \ close_reason, closed_by_party, cancelled_at, cancellation_note) \
     \VALUES (?, ?, ?, ?, ?, 'submitted', \
-    \        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, \
+    \        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, \
     \        NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
-    (row.id, row.patientId, row.narrative, row.requiredDoctorId, row.createdAt)
+    (row.id, row.patientId, row.narrative, row.requestedDoctorId, row.createdAt)
   pure ()
 
 -- Guarded on state = 'submitted': Domain.acceptIntakeRequest takes a
@@ -988,9 +992,9 @@ persistTriagedIntakeRequest conn (RowVersion v) t = do
   n <- execute conn
     "UPDATE intake_requests \
     \SET state = 'accepted', healthcare_service_id = ?, tier = ?, \
-    \    due_not_before = ?, due_not_after = ?, triaged_at = ? \
+    \    due_not_before = ?, due_not_after = ?, triaged_at = ?, required_doctor_id = ? \
     \WHERE id = ? AND state = 'submitted' AND version = ?"
-    (row.healthcareServiceId, row.tier, row.dueNotBefore, row.dueNotAfter, row.triagedAt, row.id, v)
+    (row.healthcareServiceId, row.tier, row.dueNotBefore, row.dueNotAfter, row.triagedAt, row.requiredDoctorId, row.id, v)
   pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- Guarded on state = 'submitted' for the same reason as

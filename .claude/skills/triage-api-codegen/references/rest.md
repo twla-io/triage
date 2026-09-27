@@ -13,7 +13,7 @@
 | `createHealthcareService :: ConnectionPool -> Text -> Duration -> IO HealthcareService` | `POST` | `/healthcare-services` |
 | `createAvailableSlot :: ConnectionPool -> DoctorId -> HealthcareServiceId -> UTCTime -> IO (Either ServiceError SlotCreationOutcome)` | `POST` | `/slots` |
 | `submitIntakeRequest :: ConnectionPool -> PatientId -> Text -> DoctorRequirement -> UTCTime -> IO SubmittedIntakeRequest` | `POST` | `/intake-requests` |
-| `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> UTCTime -> IO (Either ServiceError (Fresh TriagedIntakeRequest))` | `POST` | `/intake-requests/:id/accept` |
+| `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> DoctorRequirement -> UTCTime -> IO (Either ServiceError (Fresh TriagedIntakeRequest))` | `POST` | `/intake-requests/:id/accept` |
 | `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError (Fresh IntakeRequest))` | `POST` | `/intake-requests/:id/reject` |
 | `matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)` | (internal — not its own route, see below) | — |
 | `matchAcceptedIntakeRequestToSlot :: ConnectionPool -> IntakeRequestId -> SlotId -> IO (Either ServiceError MatchOutcome)` | `POST` | `/intake-requests/:id/match` |
