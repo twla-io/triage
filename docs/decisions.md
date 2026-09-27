@@ -667,6 +667,14 @@ hold for stored data.
 
 **Unknown service:** a new `ServiceError`, `HealthcareServiceNotFound`, not an outcome. Services are never deleted, so an unknown id is the caller's mistake, not a lost race. Services are never updated either, so the fetched duration can't go stale before the insert.
 
+## Updates follow the transition rules defined in Domain.hs (2026-09-27)
+
+**Found:** `persistTriagedIntakeRequest` and `persistRejectedIntakeRequest` wrote with `WHERE id = ?` only, so a concurrent accept/reject could overwrite each other (fixed in `819eae5`). `Domain.hs` defined the precondition all along — both transitions take a `SubmittedIntakeRequest` — but no rule said how a transition's source case becomes a guard on the write. `uniqueness-races-are-outcomes` framed guarding as a judgment about which races mattered; close was guarded, accept/reject were never considered, and the Appointment→IntakeRequest fold carried them over unchanged.
+
+**Decided:** `triage-db-codegen` gains `updates-follow-domain-transitions`: an `UPDATE` may change a sum type's case from A to B only if `Domain.hs` defines that transition, and it is conditioned on `state = 'A'` with an affected-rows check. A is found mechanically — the case whose payload type is exactly the transition's input type; embedding an earlier stage as history doesn't make a case that stage. One source case per write, never `IN (...)`. The skill also now states that a new or changed rule applies to existing functions, not only new ones.
+
+**Consequence for the model:** the derivation needs every non-terminal case of a sum type to have a distinct payload type. That holds today and is now a property to preserve in `Domain.hs`.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
