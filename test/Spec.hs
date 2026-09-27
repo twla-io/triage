@@ -461,6 +461,16 @@ main = hspec $ do
           .&&. appointed.duration === slot.duration
         Nothing -> property True
 
+  describe "reclaimIntakeRequest" $
+    prop "undoes a match: returns the triaged request that was matched" $ do
+      sid  <- arbitrary
+      did  <- arbitrary
+      slot <- genAvailableSlotFor sid did
+      req  <- genTriagedRequestFor sid
+      pure $ case matchIntakeRequestToSlot slot req of
+        Just appointed -> reclaimIntakeRequest appointed === req
+        Nothing        -> property True
+
   describe "checkIntakeWaitlist" $ do
     prop "chooses Emergency over Urgent and Routine" $ do
       sid         <- arbitrary

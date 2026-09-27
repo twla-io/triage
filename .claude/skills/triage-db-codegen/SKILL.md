@@ -223,10 +223,10 @@ Derived transitions for `IntakeRequest` — re-derive this table from `Domain.hs
 | Accepted → Appointed | `matchIntakeRequestToSlot :: … -> TriagedIntakeRequest -> …` | `state = 'accepted'` | `claimAcceptedIntakeRequest` (in `persistMatchedIntakeRequest`) |
 | Accepted → Stale | `Stale TriagedIntakeRequest …` | `state = 'accepted'` | `persistStaleIntakeRequest` |
 | Accepted → Withdrawn | `WithdrawnFromAccepted TriagedIntakeRequest …` | `state = 'accepted'` | none yet — guard it when written |
-| Appointed → Accepted | reclaim: `Accepted appointed.triaged` — see note below | `state = 'appointed'` | `persistReclaimedIntakeRequest` |
+| Appointed → Accepted | `reclaimIntakeRequest :: AppointedIntakeRequest -> TriagedIntakeRequest` | `state = 'appointed'` | `persistReclaimedIntakeRequest` |
 | Appointed → Closed | `Closed AppointedIntakeRequest …` | `state = 'appointed'` | `persistClosedIntakeRequestIfAppointed` |
 
-**Known gap — reclaim is not a signature.** Reclaim is defined only by the comment on `AppointedIntakeRequest`'s `triaged` field (field access, no function or constructor), so it can't be derived from types; it is in this table because the comment defines it. Field access alone never defines a transition — otherwise `Stale`/`Closed` values could be unwrapped back to `Accepted`, which `Domain.hs` forbids. Until `Domain.hs` gives reclaim a signature, treat this row as the one hand-kept entry.
+Every transition is a `Domain.hs` function or constructor. Field access alone never defines one — otherwise a `Stale` or `Closed` value could be unwrapped back to `Accepted`, which `Domain.hs` forbids. Reclaim used to exist only as field access (`appointed.triaged`) and got the signature `reclaimIntakeRequest` for exactly this reason.
 
 **Why this is a named rule:** accept and reject were written with `WHERE id = ?` only and stayed that way until commit `819eae5`, while every transition written later was guarded. The old framing of `uniqueness-races-are-outcomes` asked which races were worth guarding; close was chosen, and accept/reject were never considered — though `Domain.hs` defined their source case all along.
 

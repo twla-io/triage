@@ -69,8 +69,8 @@ data TriagedIntakeRequest = TriagedIntakeRequest
 
 data AppointedIntakeRequest = AppointedIntakeRequest
   { triaged  :: TriagedIntakeRequest
-    -- ^ Also how a request is reclaimed back to Accepted — appointed.triaged
-    -- is already that value; no dedicated reclaim function needed.
+    -- ^ The request this appointment came from, unchanged — what
+    -- reclaimIntakeRequest returns.
   , doctorId :: DoctorId
   , start    :: UTCTime
   , duration :: Duration
@@ -311,9 +311,12 @@ reclaimAppointedIntakeRequest
 This works because `AppointedIntakeRequest` already embeds the
 `TriagedIntakeRequest` it came from, unchanged, as its `triaged` field (see
 "Each stage embeds the one before it" above) — reclaiming an `Appointed`
-request back to `Accepted` is free: plain field access
-(`appointed.triaged`), no re-triage, no new information produced, the same
-`IntakeRequestId`/`triagedAt`/priority carried through exactly.
+request back to `Accepted` is free: `reclaimIntakeRequest ::
+AppointedIntakeRequest -> TriagedIntakeRequest` returns that embedded value,
+no re-triage, no new information produced, the same
+`IntakeRequestId`/`triagedAt`/priority carried through exactly. It is a named
+function, not bare field access, so that every lifecycle transition in this
+module is a signature (see `docs/decisions.md`, 2026-09-27).
 
 - **Reassignment** = `reclaimAppointedIntakeRequest`, then
   `matchAcceptedIntakeRequestToSlot` against a different slot, back-to-back.

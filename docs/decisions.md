@@ -508,6 +508,8 @@ churns often enough to make this a recurring source of missed updates.
 
 ## Reassignment and displacement both compose from reclaimAppointedIntakeRequest, not a dedicated transition (2026-07-13)
 
+**Superseded in part (2026-09-27):** the "No new `Domain.hs` function is needed" point — reclaim now has a signature, `reclaimIntakeRequest`. See "Reclaim gets a signature in Domain.hs" below.
+
 **Found:** `persistReassignedIntakeRequest` had a real bug — it updated
 `intake_requests`' `appointed_doctor_id`/`start_time`/`duration_minutes`
 to the new slot's values but never deleted the `slots` row that slot came
@@ -674,6 +676,12 @@ hold for stored data.
 **Decided:** `triage-db-codegen` gains `updates-follow-domain-transitions`: an `UPDATE` may change a sum type's case from A to B only if `Domain.hs` defines that transition, and it is conditioned on `state = 'A'` with an affected-rows check. A is found mechanically — the case whose payload type is exactly the transition's input type; embedding an earlier stage as history doesn't make a case that stage. One source case per write, never `IN (...)`. The skill also now states that a new or changed rule applies to existing functions, not only new ones.
 
 **Consequence for the model:** the derivation needs every non-terminal case of a sum type to have a distinct payload type. That holds today and is now a property to preserve in `Domain.hs`.
+
+## Reclaim gets a signature in Domain.hs (2026-09-27)
+
+**Found:** a clean-room generation from `Domain.hs` and `triage-db-codegen` alone derived every lifecycle transition's source case from its input type — except reclaim, which existed only as field access (`Accepted appointed.triaged`) described in a comment. `Accepted`'s constructor takes `TriagedIntakeRequest`, Accepted's own payload, so the Appointed source was invisible in the types. The 2026-07-13 entry had called this the same precedent as `Rejected`/`Closed`, but those are constructors that take the source stage (`Rejected SubmittedIntakeRequest …`, `Closed AppointedIntakeRequest …`), so their source case is derivable; reclaim's wasn't.
+
+**Decided:** `reclaimIntakeRequest :: AppointedIntakeRequest -> TriagedIntakeRequest` in `Domain.hs`. It is still just the embedded value — no re-triage, same `IntakeRequestId`/priority/`triagedAt` — but now every transition is a function or constructor signature, so `updates-follow-domain-transitions` derives the whole transition set from types with no hand-kept row. `Service.reclaimAppointedIntakeRequest` calls it, pairing the way `acceptIntakeRequest`/`acceptSubmittedIntakeRequest` do. A property test checks that reclaiming undoes a match exactly.
 
 ---
 

@@ -40,14 +40,14 @@
 -- precondition (the same shape as acceptSubmittedIntakeRequest below, not
 -- the precision-of-meaning shape this bullet used to show), and
 -- closeAppointedIntakeRequest has no Domain.hs verb to collide with in
--- the first place (same reason reclaimAppointedIntakeRequest doesn't fit
--- this test either — see its own comment). Forcing either into this
--- bullet's old shape would misstate what it actually demonstrates.
+-- the first place. Forcing either into this bullet's old shape would
+-- misstate what it actually demonstrates.
 --
 -- acceptIntakeRequest / acceptSubmittedIntakeRequest is the
 -- clearer worked example, since there "Submitted" is a precondition in the
 -- literal sense (a stored state, fetched and checked) rather than a
--- structural-precision distinction.
+-- structural-precision distinction. reclaimIntakeRequest /
+-- reclaimAppointedIntakeRequest is the same shape, with "Appointed".
 
 module Service
   ( -- ── Errors / outcomes ────────────────────────────────────────────────
@@ -130,6 +130,7 @@ import Domain
   , checkIntakeWaitlist
   , durationToNominalDiffTime
   , matchIntakeRequestToSlot
+  , reclaimIntakeRequest
   )
 -- Qualified alongside the unqualified import below because thirteen of
 -- this module's own top-level names (fetchDoctor, fetchPatient,
@@ -538,13 +539,11 @@ persistMatch conn slot appointed = do
     RequestAlreadyMatched -> RequestAlreadyClaimed
 
 -- Reclaims an Appointed request back to Accepted. Mirrors
--- Domain's appointed.triaged field access directly — there is no
--- Domain-level "reclaim" function to wrap, same as
--- rejectSubmittedIntakeRequest/closeAppointedIntakeRequest construct
--- their result directly rather than calling a Domain verb. This
--- wrapper's whole job is the precondition check: fetch by
--- IntakeRequestId, confirm Right (Just (Appointed appointed)), reject
--- otherwise.
+-- Domain.reclaimIntakeRequest, which takes a bare AppointedIntakeRequest
+-- and can't check it came from a currently Appointed stored request —
+-- per verifies-the-precondition, this wrapper is defined by that check
+-- (fetch by IntakeRequestId, confirm Right (Just (Appointed appointed)),
+-- reject otherwise), so it carries "Appointed" in its name.
 --
 -- Reassignment and displacement are no longer separate operations —
 -- both compose from this plus matchAcceptedIntakeRequestToSlot (see
@@ -574,7 +573,7 @@ reclaimAppointedIntakeRequest pool requestId = withResource pool $ \conn -> do
     Right (Just (Appointed appointed)) -> do
       claim <- persistReclaimedIntakeRequest conn requestId
       pure $ case claim of
-        Claimed        -> Right appointed.triaged
+        Claimed        -> Right (reclaimIntakeRequest appointed)
         AlreadyClaimed -> Left (RequestAlreadyClosed requestId)
         -- AlreadyClaimed here means the request left 'appointed' between
         -- this function's own fetch and its write (e.g. concurrently

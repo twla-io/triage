@@ -44,8 +44,9 @@ separate `Appointment` type. One linear embedding chain: `SubmittedIntakeRequest
 `createdAt`; no separate "Details" type) → `TriagedIntakeRequest` (embeds
 `submitted` and adds `healthcareServiceId`, `priority`, `triagedAt`) →
 `AppointedIntakeRequest` (embeds `triaged` and adds `doctorId`, `start`,
-`duration`; `triaged` is also how an `Appointed` request is reclaimed back to
-`Accepted` — direct field access, no dedicated function). `WithdrawnIntakeRequest = WithdrawnFromSubmitted
+`duration`; `reclaimIntakeRequest :: AppointedIntakeRequest ->
+TriagedIntakeRequest` returns `triaged` unchanged, taking an `Appointed`
+request back to `Accepted`). `WithdrawnIntakeRequest = WithdrawnFromSubmitted
 SubmittedIntakeRequest UTCTime (Maybe Text) | WithdrawnFromAccepted
 TriagedIntakeRequest UTCTime (Maybe Text)` — only two cases; ending an
 `Appointed` request is always `Closed` instead. `AppointmentParty = ByDoctor
@@ -120,8 +121,8 @@ no separate offer/accept step. `matchIntakeRequestToSlot` returns the
 are copied once into the request at the moment of matching, and the original
 slot ceases to be referenced or exist thereafter. There is no dedicated
 reassignment function: an `Appointed` request is reclaimed back to `Accepted`
-via plain field access (`appointed.triaged`, already the value to return to),
-then re-matched like any other waitlisted request — the caller composes
+with `reclaimIntakeRequest` (the embedded `triaged` value, unchanged), then
+re-matched like any other waitlisted request — the caller composes
 these two existing operations rather than a third one existing for this.
 There is no `rejectIntakeRequest` function either — rejection is direct
 construction (`Rejected submitted rejectedAt reason`), no dedicated function.

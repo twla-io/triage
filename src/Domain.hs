@@ -48,6 +48,7 @@ module Domain
   , CloseReason (..)
   , IntakeRequest (..)           -- constructor open — no invariant to protect
   , acceptIntakeRequest
+  , reclaimIntakeRequest
 
   -- ── Slot ─────────────────────────────────────────────────────────────────
   , AvailableSlot (..)
@@ -254,8 +255,8 @@ data TriagedIntakeRequest = TriagedIntakeRequest
 
 data AppointedIntakeRequest = AppointedIntakeRequest
   { triaged  :: TriagedIntakeRequest
-    -- ^ Also how a request is reclaimed back to Accepted — appointed.triaged
-    -- is already that value; no dedicated reclaim function needed.
+    -- ^ The request this appointment came from, unchanged — what
+    -- reclaimIntakeRequest returns.
   , doctorId :: DoctorId
   , start    :: UTCTime
   , duration :: Duration
@@ -332,6 +333,11 @@ acceptIntakeRequest
   -> TriagedIntakeRequest
 acceptIntakeRequest submitted healthcareServiceId priority triagedAt =
   TriagedIntakeRequest { submitted, healthcareServiceId, priority, triagedAt }
+
+-- Appointed -> Accepted. The request goes back to the waitlist exactly as
+-- it was triaged: same IntakeRequestId, priority and triagedAt.
+reclaimIntakeRequest :: AppointedIntakeRequest -> TriagedIntakeRequest
+reclaimIntakeRequest appointed = appointed.triaged
 
 -- No rejectIntakeRequest function. Rejection is direct construction —
 -- Rejected submitted rejectedAt reason — same precedent as
