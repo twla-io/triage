@@ -16,7 +16,7 @@
 | `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> UTCTime -> IO (Either ServiceError TriagedIntakeRequest)` | `POST` | `/intake-requests/:id/accept` |
 | `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError IntakeRequest)` | `POST` | `/intake-requests/:id/reject` |
 | `matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)` | (internal — not its own route, see below) | — |
-| `matchAcceptedIntakeRequestToSlot :: ConnectionPool -> IntakeRequestId -> AvailableSlot -> IO (Either ServiceError MatchOutcome)` | `POST` | `/intake-requests/:id/match` |
+| `matchAcceptedIntakeRequestToSlot :: ConnectionPool -> IntakeRequestId -> SlotId -> IO (Either ServiceError MatchOutcome)` | `POST` | `/intake-requests/:id/match` |
 | `reclaimAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either ServiceError TriagedIntakeRequest)` | `POST` | `/intake-requests/:id/reclaim` — a directly-callable endpoint, per `action-endpoints-not-generic-patch` (`SKILL.md`); not gated behind any higher-level action |
 | `closeAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either ServiceError IntakeRequest)` | `POST` | `/intake-requests/:id/close` |
 

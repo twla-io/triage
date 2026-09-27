@@ -19,6 +19,7 @@ This skill encodes specific decisions already made for `triage`'s `Service.hs`, 
 | `pool-in-connection-scoped` | Every public function takes `ConnectionPool`, checks out one `Connection` via `withResource`, holds it for the whole operation — never a bare `Connection` parameter |
 | `guard-every-fetch-then-write-gap` | Any fetch-then-write operation needs an affected-rows/existence guard at write time, regardless of whether a literal DB constraint sits underneath — flag this when *proposing* the function, don't wait for it to be caught after the fact |
 | `caller-supplied-facts` | Timestamps, reasons, and other facts the caller already knows are always parameters, never minted internally (no `getCurrentTime` inside a `Service.hs` function) |
+| `stored-facts-by-reference` | An operation on an existing stored entity takes its ID and fetches it; the caller never supplies facts the database already holds |
 
 ## Architecture this skill fits into
 
@@ -75,7 +76,15 @@ Any `Service.hs` operation shaped "fetch a row, check something about it, then w
 
 No `Service.hs` function calls `getCurrentTime` (or equivalent) internally to produce a `UTCTime` it then persists. `createdAt`, `triagedAt`, and `CloseReason`'s `Cancelled`-carried timestamp are all caller-supplied parameters — established by `submitHealthcareRequest`, `triageSubmittedRequest`, and `closeAppointment` alike. This is a different category from ID generation (`newAppointmentId` and friends, minted internally per `Persistence.hs`'s own note on why that responsibility moved to `Service.hs`): an ID is arbitrary and has no meaning outside being unique, so minting it here is pure orchestration; a timestamp asserts *when something actually happened*, which the caller is closer to and more authoritative about than this layer — minting it here would silently substitute "when this function happened to run" for "when the event actually occurred," which are not always the same moment.
 
-Where a whole `Domain.hs` value already carries the fact in question (`AvailableSlot`'s `start`, `CloseReason`'s `Cancelled` timestamp), take that value whole rather than decomposing it into separate parameters and reconstructing it — the caller already assembled it correctly; re-threading its fields individually only invites the two copies drifting apart.
+Where the caller is the authority on a whole `Domain.hs` value (`CloseReason`, including its `Cancelled` timestamp; the fields of an `AvailableSlot` being created), take that value whole rather than decomposing it into separate parameters and reconstructing it — re-threading its fields individually only invites the two copies drifting apart. This applies only to facts the caller is the authority on. A value describing something that already exists in storage is never taken from the caller; see `stored-facts-by-reference`.
+
+## `stored-facts-by-reference` — Existing entities come in as IDs and are fetched, never passed in whole
+
+When a `Service.hs` operation acts on something that already exists in storage (a slot being matched, a request being accepted), its signature takes that thing's ID and the function fetches the stored value itself. It never takes the entity's fields, or a whole `Domain.hs` value assembled by the caller: the caller is not the authority on facts the database already holds. The test for each parameter: is the caller the authority on this fact (a timestamp it observed, a reason, a triage judgment, the fields of something being *created*), or is the database (anything about an entity that already exists)? The second kind is fetched.
+
+**Why this is a named rule:** `matchAcceptedIntakeRequestToSlot` used to take an `AvailableSlot` from its caller. `persistMatchedIntakeRequest` deleted the stored slot by `slot.id` but wrote the appointment from the caller's `doctorId`/`start`/`duration`, so an API client could book a request at a time of its choosing. No rule stated this, and the old wording of `caller-supplied-facts` pointed the other way. Fixed in commit `452969e`; see `docs/decisions.md`.
+
+**Known exception:** `matchWaitlistToSlot` still takes an `AvailableSlot` and has no caller today. It's safe only when the slot passed in was produced by the server itself, e.g. the value `createAvailableSlot` just stored. It must never receive a slot decoded from a request.
 
 ## When unsure
 

@@ -649,6 +649,16 @@ One that holds within a single row maps to a `CHECK`; one that spans rows
 maps to `EXCLUDE`/`UNIQUE`, and only the latter depends on the database to
 hold for stored data.
 
+## Stored facts are referenced by ID, never accepted from the caller (2026-09-27)
+
+**Found:** `POST /intake-requests/:id/match` accepted a whole `AvailableSlotDTO`. `persistMatchedIntakeRequest` deleted the stored slot by its id, but the appointment copied the client-sent doctor, start and duration. So any API client could book a request at a time, and for `AnyDoctor` requests with a doctor, of its choosing. The only limits were `matches` and the `doctor_calendar` `EXCLUDE` constraint. The shipped frontend always sent the slot unchanged. This was found while discussing whether to seal `AvailableSlot`, not by a test.
+
+**Cause:** it started in `Service.hs`. From its first version (`1776d9d`), Service functions took a whole `AvailableSlot` from their caller, and the service skill's `caller-supplied-facts` rule then made that a convention ("take that value whole … the caller already assembled it correctly"). `matchAcceptedIntakeRequestToSlot` followed it. The API skill copied the signature and satisfied it the easiest way, by decoding the slot from the request body ("`AvailableSlotDTO`, reused directly"). That was the last point where untrusted input entered, and the question "who is the authority on these fields?" wasn't asked.
+
+**Decided:** an operation on an existing stored entity takes its ID and fetches the stored value; the caller never supplies facts the database holds (`stored-facts-by-reference`, in `triage-service-codegen`). API request bodies follow from the Service signature, so there is no separate API-side rule. The match route now takes `{slotId}`. A missing slot reports `SlotAlreadyClaimed`: slots are deleted on match, so "claimed a moment ago" and "never existed" look identical, and a lost race is an outcome, not an error.
+
+**Not yet done:** integration tests against a real database for the write paths. That's the kind of test that would have caught this.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
