@@ -152,7 +152,7 @@ data DoctorRequirement
 -- window (or Anytime).
 --
 -- RoutineWithin excluded from exports — use mkRoutineWithin (enforces
--- from <= to, the only structural invariant in this module).
+-- from <= to).
 -- ═══════════════════════════════════════════════════════════════════════════
 
 newtype EmergencyDue = EmergencyDue UTCTime
@@ -299,9 +299,10 @@ data CloseReason
   deriving (Show, Eq)
 
 -- All of Rejected/Withdrawn/Stale/Closed are permanently terminal — no
--- transitions out of any of them. A displaced or redisplaced patient always
--- becomes a brand new IntakeRequest (new IntakeRequestId), never a
--- transition back out of a terminal case. Do not add one.
+-- transitions out of any of them. Do not add one. A patient who needs to be
+-- seen again after a terminal case gets a brand new IntakeRequest (new
+-- IntakeRequestId). A patient displaced from an appointment is not in a
+-- terminal case: reclaimIntakeRequest returns the same request to Accepted.
 --
 -- Stale is reachable only from Accepted: staff manually recognizing that an
 -- accepted request never got matched to a slot and never got withdrawn, and

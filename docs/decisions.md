@@ -317,6 +317,8 @@ exact bug this entry documents.
 
 ## IntakeRequest: Appointment folded into one sum type, one identity (2026-07-11)
 
+**Superseded in part (2026-07-13):** displacement no longer creates a new `IntakeRequest` — it reclaims the same request back to `Accepted` (see "Reassignment and displacement both compose from reclaimAppointedIntakeRequest..." below). A new request is still needed after a terminal case.
+
 **Decided:** `HealthcareRequest` was over-scoped — renamed to
 `IntakeRequest` to name its actual, narrower scope (the intake artifact: the
 front-door path from a patient's raw ask to a single appointment, not a
@@ -410,6 +412,8 @@ carries one. `Rejected` originally didn't, which was the inconsistency;
 adding `rejectedAt` brings it in line with the others.
 
 ## All terminal states (Rejected/Withdrawn/Closed) confirmed permanently terminal, no reopening (2026-07-11)
+
+**Superseded in part (2026-07-13):** displacement no longer creates a new `IntakeRequest` — it reclaims the same request back to `Accepted` (see "Reassignment and displacement both compose from reclaimAppointedIntakeRequest..." below). A new request is still needed after a terminal case.
 
 **Decided:** `Rejected`, `Withdrawn`, and `Closed` are all permanently
 terminal — no transitions out of any of them, confirmed against
