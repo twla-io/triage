@@ -22,6 +22,8 @@ misinforms every layer generated from it.
 
 ## Persistence schema: discriminator column over side-tables (2026-07-11)
 
+**Note (2026-09-27):** seven states since `Stale` was added (2026-07-18); the rest of this entry is unchanged history.
+
 **Decided:** Sealed sum types persist as a single table with a discriminator
 column, not one side-table per state. This session extended that principle
 further: `IntakeRequest`'s six lifecycle states (`submitted`/`rejected`/
@@ -98,6 +100,8 @@ request's identity across the move.
 shouldn't affect its identity at all.
 
 ## intake_requests lifecycle: six states, no delete-on-consumption, waitlist is a plain filter (2026-07-11)
+
+**Note (2026-09-27):** seven states since `Stale` was added (2026-07-18); the rest of this entry is unchanged history.
 
 **Decided:** `intake_requests` state is six-valued (`submitted`/`rejected`/
 `accepted`/`appointed`/`withdrawn`/`closed`), confirmed against `Domain.hs`'s

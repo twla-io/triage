@@ -5,44 +5,48 @@ description: Conventions for generating a frontend UI or UX flow from triage's D
 
 # triage-ui-codegen
 
-`Domain.hs` is the single source of truth for the `triage` scheduling domain. UI affordances, form structure, and client-side state should all be **derived** from it, not designed independently from screenshots or vague descriptions of "what the doctor wants to see."
+`Domain.hs` is the single source of truth for the `triage` scheduling domain. UI affordances, form structure, and client-side state should all be **derived** from it (and from the routes `Api.hs` actually exposes), not designed independently from screenshots or vague descriptions of "what the doctor wants to see."
 
 ## Invariants (non-negotiable)
 
-### Available actions must mirror exactly which transitions are type-valid for the current state
+### Available actions must mirror exactly which transitions are defined for the current state
 
-This is the most important rule in this skill, and the one most likely to be silently violated. If a `Slot` is `Available`, the only valid action is booking it via `satisfyHealthcareRequest` — never show a "decline" or "cancel" control, because no domain function accepts an `AvailableSlot` for those operations. If a `Slot` is `Booked`, the relevant actions come from `Appointment`'s lifecycle (`Cancelled`, `NoShow`, `Completed`) plus `reassignSlot` for moving to a different slot, not from any Slot-level transition.
+This is the most important rule in this skill, and the one most likely to be silently violated. An `IntakeRequest`'s valid actions are exactly the transitions `Domain.hs` defines out of its current case — nothing more. A `Submitted` request can be accepted or rejected, never matched to a slot (there's no triage yet). An `Appointed` request can be closed or reclaimed, never accepted again. `Rejected`, `Withdrawn`, `Stale` and `Closed` are terminal: show them read-only, with no action controls at all.
 
-Concretely: **build the set of enabled controls from the current state's type, not from a general-purpose "what can a slot do" menu with conditions sprinkled on top.** A `case` over the `Slot`/`Appointment`/`AppointmentRequest` constructor should produce the exact list of valid actions — if a new constructor is added to a domain type later, the UI should fail to compile (in a typed frontend) or at minimum visibly need updating, not silently render a stale action list.
+Concretely: **build the set of enabled controls from the current state, not from a general-purpose "what can a request do" menu with conditions sprinkled on top.** A `switch` over the request's `type` should produce the exact list of valid actions; if a new case is added to `IntakeRequest` later, the UI should fail to type-check (with the generated API types) or at minimum visibly need updating, not silently render a stale action list. See `references/state-to-affordance-mapping.md` for the table.
 
 ### Client-side state mirrors the domain's sum types directly
 
-Don't model a `Slot`'s state in the frontend as independent booleans (`isPending`, `isOffered`, `isAvailable`, `isBooked`) that could disagree with each other. Mirror the discriminated union directly — a TypeScript discriminated union, a single enum field with state-specific optional fields gated by it, or equivalent in whatever framework is used. The whole reason the Haskell side encodes state as separate types instead of a status flag is to make invalid combinations unrepresentable; reintroducing independent booleans on the frontend throws that guarantee away at the last mile.
+Don't model a request's state in the frontend as independent booleans (`isAccepted`, `isAppointed`, `isClosed`) that could disagree with each other. Mirror the discriminated union directly — the API already serializes every sum type as one flat object with a `"type"` field (`tagged-flat-serialization` in `triage-api-codegen`), which maps straight onto a TypeScript discriminated union. The whole reason the Haskell side encodes state as separate types instead of a status flag is to make invalid combinations unrepresentable; reintroducing independent booleans on the frontend throws that guarantee away at the last mile.
 
-### Structural absence stays absent in the UI, not just hidden
+### Show every outcome the server can answer with
 
-`EmergencyRequest` has no doctor-preference field — not `Nothing`, structurally absent. The UI for registering an emergency appointment request should not display a disabled or empty doctor-preference selector; the control shouldn't exist on that form at all. If a form is shared across `Urgent`/`Routine`/`Emergency` registration, the doctor-preference field should be conditionally rendered based on which request type is selected, not present-but-disabled.
+Mutations answer `200` with `{"outcome": tag, "detail": …}` for success, errors and outcomes alike (`error-vs-outcome-mapping`). A form that only checks for HTTP errors silently swallows answers like `requestNotSubmittedAnymore` or `requestChangedSinceRead`. Show any outcome other than the expected success tag, with readable text where it helps — `requestChangedSinceRead` means the request changed since the screen loaded, so the user should reload and decide again.
 
-### `DueAt`'s four cases are a mode choice, not two independent date pickers
+### `RoutineDue`'s four cases are a mode choice, not two independent date pickers
 
 ```haskell
-data DueAt = Anytime | NotBefore UTCTime | NotAfter UTCTime | Within UTCTime UTCTime
+data RoutineDue = RoutineAnytime | RoutineNotBefore UTCTime | RoutineNotAfter UTCTime | RoutineWithin UTCTime UTCTime
 ```
 
-Present this as an explicit choice (e.g. a select: "Anytime / Not before / Not after / Within a range") that then reveals exactly the date input(s) that mode needs — one field for `NotBefore`/`NotAfter`, two for `Within`, none for `Anytime`. Don't present two independent optional "from"/"to" date fields and leave the user to infer which combination means what; that reintroduces ambiguity the sum type was specifically designed to remove (see `Domain.hs`'s comment on why `DueAt` has four named cases instead of `Maybe (UTCTime, UTCTime)`).
+Present this as an explicit choice (e.g. a select: "Anytime / Not before / Not after / Within a range") that then reveals exactly the date input(s) that mode needs — one field for not-before/not-after, two for within, none for anytime. Don't present two independent optional "from"/"to" fields and leave the user to infer which combination means what; that reintroduces the ambiguity the sum type exists to remove. `Emergency` and `Urgent` priorities carry exactly one deadline each — one date field, no mode choice.
 
 ### Priority gets consistent visual treatment
 
-`AppointmentPriority`/the waitlist entry tiers use Emergency/Urgent/Routine throughout the domain and the existing presentation materials use a consistent color mapping: **red = Emergency, amber = Urgent, green = Routine**. Any new UI surfacing priority (a waitlist view, a doctor's queue) should reuse this mapping rather than inventing a new one — consistency here matters because the doctor and staff will see both the presentations and the actual product.
+`IntakeRequestPriority`'s tiers use a consistent color mapping: **red = Emergency, amber = Urgent, green = Routine** (`frontend/src/components/PriorityBadge.tsx`). Any new UI surfacing priority should reuse that component or mapping rather than inventing a new one.
 
-## Strategy choices — confirm with the user before assuming
+## Open: doctor requirement and priority
 
-- **Frontend framework** — not assumed by this skill. Ask, or check the existing codebase, before generating React/Vue/Svelte/etc.-specific code.
-- **Component granularity** — whether state-to-affordance mapping (see `references/state-to-affordance-mapping.md`) lives in one shared component per entity type or is duplicated per screen. Prefer one shared mapping if multiple screens need to render the same entity's available actions, to avoid the actions list drifting out of sync between screens.
+An earlier version of this skill said the doctor-preference control must be structurally absent for Emergency/Urgent requests, and `Domain.hs`'s `DOCTOR REQUIREMENT` comment still says so. The current types disagree: `doctorRequirement` is a field of `SubmittedIntakeRequest`, set before triage assigns a priority, so every request carries one. Until that's resolved in `Domain.hs`, the submit form shows the doctor selector for every request (there's no priority yet at submit time). Don't invent a rule either way — flag it.
+
+## Strategy choices
+
+- **Frontend stack** — React 18 + TypeScript + Vite, Mantine, TanStack Query, react-router (see `frontend/package.json`). Follow it; don't introduce another framework.
+- **Component granularity** — keep one state-to-actions mapping per entity, shared by every screen that renders that entity's actions, so the action lists can't drift apart between screens.
 
 ## Reference
 
-- `references/state-to-affordance-mapping.md` — a complete table of every `Slot`/`Appointment`/`AppointmentRequest` state and the actions valid in that state, derived directly from `Domain.hs`'s Commands. Use this as the source for any "what buttons should this screen show" question rather than re-deriving it ad hoc.
+- `references/state-to-affordance-mapping.md` — every `IntakeRequest` case, the actions valid in it, and the `Domain.hs` transition and route behind each. Use it as the source for any "what buttons should this screen show" question rather than re-deriving it ad hoc.
 
 ## When unsure
 

@@ -13,12 +13,13 @@
 | `createHealthcareService :: ConnectionPool -> Text -> Duration -> IO HealthcareService` | `POST` | `/healthcare-services` |
 | `createAvailableSlot :: ConnectionPool -> DoctorId -> HealthcareServiceId -> UTCTime -> IO (Either ServiceError SlotCreationOutcome)` | `POST` | `/slots` |
 | `submitIntakeRequest :: ConnectionPool -> PatientId -> Text -> DoctorRequirement -> UTCTime -> IO SubmittedIntakeRequest` | `POST` | `/intake-requests` |
-| `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> UTCTime -> IO (Either ServiceError TriagedIntakeRequest)` | `POST` | `/intake-requests/:id/accept` |
-| `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError IntakeRequest)` | `POST` | `/intake-requests/:id/reject` |
+| `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> UTCTime -> IO (Either ServiceError (Fresh TriagedIntakeRequest))` | `POST` | `/intake-requests/:id/accept` |
+| `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError (Fresh IntakeRequest))` | `POST` | `/intake-requests/:id/reject` |
 | `matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)` | (internal — not its own route, see below) | — |
 | `matchAcceptedIntakeRequestToSlot :: ConnectionPool -> IntakeRequestId -> SlotId -> IO (Either ServiceError MatchOutcome)` | `POST` | `/intake-requests/:id/match` |
-| `reclaimAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either ServiceError TriagedIntakeRequest)` | `POST` | `/intake-requests/:id/reclaim` — a directly-callable endpoint, per `action-endpoints-not-generic-patch` (`SKILL.md`); not gated behind any higher-level action |
-| `closeAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either ServiceError IntakeRequest)` | `POST` | `/intake-requests/:id/close` |
+| `reclaimAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either ServiceError (Fresh TriagedIntakeRequest))` | `POST` | `/intake-requests/:id/reclaim` — a directly-callable endpoint, per `action-endpoints-not-generic-patch` (`SKILL.md`); not gated behind any higher-level action |
+| `markIntakeRequestStale :: ConnectionPool -> IntakeRequestId -> UTCTime -> IO (Either ServiceError (Fresh TriagedIntakeRequest))` | `POST` | `/intake-requests/:id/mark-stale` |
+| `closeAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either ServiceError (Fresh IntakeRequest))` | `POST` | `/intake-requests/:id/close` |
 
 All action-suffixed, per `action-endpoints-not-generic-patch` (`SKILL.md`) — never `PATCH /intake-requests/:id` with a state field.
 
@@ -33,7 +34,7 @@ POST /slots → createAvailableSlot → matchWaitlistToSlot → response reflect
 
 Route naming mirrors each function's own name, per `commands-vs-queries-naming` (`SKILL.md`): singular `fetch<Noun>` takes an ID path parameter, plural `fetch<Noun>s` lists. Range/filter parameters (`UTCTime` bounds, optional `DoctorId`/`HealthcareServiceId`) are query parameters, not path segments, since none of them identify a single resource.
 
-| `Service.hs` function | HTTP | Route (example) |
+| `Service.hs` function | HTTP | Route |
 |---|---|---|
 | `fetchDoctor :: ConnectionPool -> DoctorId -> IO (Maybe Doctor)` | `GET` | `/doctors/:id` |
 | `fetchPatient :: ConnectionPool -> PatientId -> IO (Maybe Patient)` | `GET` | `/patients/:id` |
@@ -42,18 +43,20 @@ Route naming mirrors each function's own name, per `commands-vs-queries-naming` 
 | `fetchPatients :: ConnectionPool -> IO [Patient]` | `GET` | `/patients` |
 | `fetchHealthcareServices :: ConnectionPool -> IO (Either DecodeError [HealthcareService])` | `GET` | `/healthcare-services` |
 | `fetchAvailableSlots :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId -> Maybe HealthcareServiceId -> IO (Either DecodeError [AvailableSlot])` | `GET` | `/slots?start=...&end=...&doctorId=...&healthcareServiceId=...` |
-| `fetchIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either DecodeError (Maybe IntakeRequest))` | `GET` | `/intake-requests/:id` (example) |
-| `fetchIntakeWaitlist :: ConnectionPool -> IO (Either DecodeError [TriagedIntakeRequest])` | `GET` | `/intake-requests/waitlist` (example) |
-| `fetchAppointedIntakeRequests :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId -> IO (Either DecodeError [AppointedIntakeRequest])` | `GET` | `/intake-requests/appointed?start=...&end=...&doctorId=...` |
+| `fetchIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either DecodeError (Maybe IntakeRequest))` | `GET` | `/intake-requests/:id` |
+| `fetchIntakeWaitlist :: ConnectionPool -> IO (Either DecodeError [TriagedIntakeRequest])` | `GET` | `/intake-requests/waitlist` |
+| `fetchSubmittedIntakeRequests :: ConnectionPool -> IO (Either DecodeError [SubmittedIntakeRequest])` | `GET` | `/intake-requests/submitted` |
+| `fetchAppointedIntakeRequests :: ConnectionPool -> Maybe UTCTime -> Maybe UTCTime -> Maybe DoctorId -> IO (Either DecodeError [AppointedIntakeRequest])` | `GET` | `/intake-requests/appointed?start=...&end=...&doctorId=...` (all optional) |
+| `fetchClosedIntakeRequests :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId -> IO (Either DecodeError [IntakeRequest])` | `GET` | `/intake-requests/closed?start=...&end=...&doctorId=...` (range required) |
 | `fetchCalendarView :: ConnectionPool -> UTCTime -> UTCTime -> Maybe DoctorId -> IO (Either DecodeError [CalendarEntry])` | `GET` | `/calendar?start=...&end=...&doctorId=...` |
 
-`CalendarEntry`'s two constructors (`Slot AvailableSlot` / `Appointment AppointedIntakeRequest`) need a wire shape before `/calendar`'s response body can be written — not decided here, same status as the six-state `IntakeRequest` shape below.
+`CalendarEntry`'s two constructors (`Slot AvailableSlot` / `Appointment AppointedIntakeRequest`) serialize per `tagged-flat-serialization`, as `CalendarEntryDTO` with `"type": "slot"` / `"type": "appointment"` (`Transport.hs`).
 
 ## Request/response shapes
 
 Following `SKILL.md`'s rules:
 - IDs are plain UUID strings in JSON bodies, never wrapped (`opaque-uuid-ids`).
-- `IntakeRequest`'s six states need a decided wire shape before response bodies for `/intake-requests/:id`-style routes can be written — **not decided**, see `SKILL.md`'s open questions. Don't invent a shape here to unblock this table; the routes above are named and verb-mapped without committing to what their response bodies look like.
+- `IntakeRequest`'s seven states serialize per `tagged-flat-serialization`: one flat object per case with a `"type"` field (`IntakeRequestDTO` in `Transport.hs`).
 
 ## Error and outcome responses
 

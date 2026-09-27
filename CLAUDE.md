@@ -38,8 +38,11 @@ Inferred from configuration, not run:
   8080). Swagger UI at `/swagger-ui`, spec at `/swagger.json`.
 - `cd frontend && npm run dev` — Vite on 5173; API base URL from
   `VITE_API_BASE_URL`, default `http://localhost:8080`.
-- `cd frontend && npm run generate-types` — regenerates
-  `src/api/types.ts` from the running backend's `/swagger.json`.
+- `cd frontend && npm run generate-types` — meant to regenerate
+  `src/api/types.ts` from the running backend's `/swagger.json`, but
+  **currently broken**: the backend serves Swagger 2.0 and the installed
+  openapi-typescript v7 only reads OpenAPI 3, so `types.ts` is out of
+  date. Don't hand-edit it; the fix is its own decision.
 - `docker build .` — backend image only; frontend hosting is undecided.
 
 ## Modules and dependencies
@@ -138,10 +141,9 @@ protects, and never derive `FromJSON` generically on a sealed type.
 - `triage-api-codegen` — `Transport.hs` + `Api.hs` (plus its `references/`)
 - `triage-ui-codegen` — `frontend/`
 
-Some skill text predates the current code (e.g. `triage-api-codegen` still
-says no API exists). Where a skill's description of *current state*
-conflicts with code, trust the code and point out the conflict. Don't
-silently follow either one.
+Skill text can fall behind the code; it has before. Where a skill's
+description of *current state* conflicts with code, trust the code and
+point out the conflict. Don't silently follow either one.
 
 ## Workflow discipline (non-negotiable)
 
