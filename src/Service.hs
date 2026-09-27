@@ -162,6 +162,7 @@ import Persistence
   , DecodeError
   , MatchPersistOutcome (..)
   , fetchDoctorCalendar
+  , fetchSlot
   , insertAvailableSlot
   , insertDoctor
   , insertHealthcareService
@@ -206,7 +207,10 @@ data ServiceError
 --     NoEligibleRequest because there was no scan here to come up empty;
 --     the caller picked wrong, try a different slot or request.
 --   * SlotAlreadyClaimed: a concurrent operation claimed this exact slot
---     first — try a different slot.
+--     first — try a different slot. Also what
+--     matchAcceptedIntakeRequestToSlot reports when its slot fetch finds no
+--     row: under deleted-on-match, "claimed a moment ago" and "never
+--     existed" look identical.
 --   * RequestAlreadyClaimed: the request is no longer available to match,
 --     via either of two paths that deliberately collapse to this one
 --     constructor. Path one: matchAcceptedIntakeRequestToSlot's own fetch
@@ -224,7 +228,8 @@ data ServiceError
 --     appointed when it looked vs. a moment later, only that it's
 --     already scheduled and should be dropped from further consideration.
 -- SlotAlreadyClaimed is translated from Persistence.MatchPersistOutcome's
--- SlotAlreadyGone; RequestAlreadyClaimed from
+-- SlotAlreadyGone, or produced directly by matchAcceptedIntakeRequestToSlot
+-- when fetchSlot returns Nothing; RequestAlreadyClaimed from
 -- Persistence.MatchPersistOutcome's RequestAlreadyMatched, which now
 -- guards claimAcceptedIntakeRequest's UPDATE ... WHERE state = 'accepted'
 -- (two concurrent matches both trying to move the same intake_requests
@@ -458,21 +463,34 @@ matchWaitlistToSlot pool slot = withResource pool $ \conn -> do
 -- here, not a new ServiceError: the shared write path can't tell "already
 -- matched before this call" from "matched a moment after this call's own
 -- fetch" — see the OUTCOMES comment above.
+--
+-- Takes a SlotId, not an AvailableSlot, and matches against the stored
+-- slot: the caller is not authoritative about a slot's doctor/start/
+-- duration, and those are what the appointment copies. A missing slot is
+-- SlotAlreadyClaimed — under deleted-on-match, "claimed a moment ago" and
+-- "never existed" look identical, and the former is the realistic case.
+-- Slots are never updated, only deleted, so the fetch-then-write gap is
+-- covered by persistMatchedIntakeRequest's existing slot-side guard.
 matchAcceptedIntakeRequestToSlot
   :: ConnectionPool
   -> IntakeRequestId
-  -> AvailableSlot
+  -> SlotId
   -> IO (Either ServiceError MatchOutcome)
-matchAcceptedIntakeRequestToSlot pool requestId slot = withResource pool $ \conn -> do
+matchAcceptedIntakeRequestToSlot pool requestId slotId = withResource pool $ \conn -> do
   reqResult <- Persistence.fetchIntakeRequest conn requestId
   case reqResult of
     Left err                        -> pure (Left (PersistenceDecodeError err))
     Right Nothing                   -> pure (Left (RequestNotFound requestId))
     Right (Just (Submitted _))      -> pure (Left (RequestNotYetTriaged requestId))
-    Right (Just (Accepted triaged)) ->
-      case matchIntakeRequestToSlot slot triaged of
-        Nothing        -> pure (Right RequestIneligible)
-        Just appointed -> Right <$> persistMatch conn slot appointed
+    Right (Just (Accepted triaged)) -> do
+      slotResult <- fetchSlot conn slotId
+      case slotResult of
+        Left err          -> pure (Left (PersistenceDecodeError err))
+        Right Nothing     -> pure (Right SlotAlreadyClaimed)
+        Right (Just slot) ->
+          case matchIntakeRequestToSlot slot triaged of
+            Nothing        -> pure (Right RequestIneligible)
+            Just appointed -> Right <$> persistMatch conn slot appointed
     Right (Just (Appointed _))      -> pure (Right RequestAlreadyClaimed)
     Right (Just (Rejected {}))      -> pure (Left (RequestNotAccepted requestId))
     Right (Just (Withdrawn _))      -> pure (Left (RequestNotAccepted requestId))

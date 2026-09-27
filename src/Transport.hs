@@ -112,6 +112,7 @@ module Transport
   , SubmitIntakeRequestRequest (..)
   , AcceptIntakeRequestRequest (..)
   , RejectIntakeRequestRequest (..)
+  , MatchIntakeRequestRequest (..)
 
     -- ── Calendar Entry ───────────────────────────────────────────────────
   , CalendarEntryDTO (..)
@@ -1633,6 +1634,28 @@ instance ToSchema RejectIntakeRequestRequest where
   declareNamedSchema _ = do
     textRef <- declareSchemaRef (Proxy :: Proxy Text)
     pure $ objectSchema "RejectIntakeRequestRequest" [("rejectionReason", textRef)] ["rejectionReason"]
+
+-- Only the slot's id, never the slot's fields: the appointment copies the
+-- stored slot's doctor/start/duration, which the client is not
+-- authoritative about. Service.matchAcceptedIntakeRequestToSlot fetches
+-- the slot itself.
+newtype MatchIntakeRequestRequest = MatchIntakeRequestRequest
+  { slotId :: UUID
+  }
+  deriving (Show, Eq)
+
+instance ToJSON MatchIntakeRequestRequest where
+  toJSON dto = object ["slotId" .= UUID.toText dto.slotId]
+
+instance FromJSON MatchIntakeRequestRequest where
+  parseJSON = withObject "MatchIntakeRequestRequest" $ \v -> do
+    slotIdText <- v .: "slotId"
+    MatchIntakeRequestRequest <$> parseUUIDField slotIdText
+
+instance ToSchema MatchIntakeRequestRequest where
+  declareNamedSchema _ = do
+    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
+    pure $ objectSchema "MatchIntakeRequestRequest" [("slotId", uuidRef)] ["slotId"]
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- CALENDAR ENTRY

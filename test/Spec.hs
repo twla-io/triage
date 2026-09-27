@@ -45,6 +45,7 @@ import Transport
   , IntakeRequestDTO (..)
   , IntakeRequestPriorityDTO (..)
   , PatientDTO (..)
+  , MatchIntakeRequestRequest (..)
   , RejectIntakeRequestRequest (..)
   , RoutineDueDTO (..)
   , SubmitIntakeRequestRequest (..)
@@ -320,6 +321,9 @@ instance Arbitrary AcceptIntakeRequestRequest where
 
 instance Arbitrary RejectIntakeRequestRequest where
   arbitrary = RejectIntakeRequestRequest <$> genText
+
+instance Arbitrary MatchIntakeRequestRequest where
+  arbitrary = MatchIntakeRequestRequest <$> genUUID
 
 instance Arbitrary CalendarEntryDTO where
   arbitrary = oneof [SlotEntryDTO <$> arbitrary, AppointmentEntryDTO <$> arbitrary]

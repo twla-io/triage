@@ -20,7 +20,7 @@ import { formatDue, PriorityBadge } from '../components/PriorityBadge'
 import { usePatients } from '../api/queries/patients'
 import { useDoctors } from '../api/queries/doctors'
 import { useHealthcareServices } from '../api/queries/services'
-import { useAvailableSlots, type AvailableSlotDTO } from '../api/queries/slots'
+import { useAvailableSlots } from '../api/queries/slots'
 import {
   useAcceptIntakeRequest,
   useClosedIntakeRequests,
@@ -363,8 +363,6 @@ function MatchForm({ request }: { request: IntakeRequestDTO }) {
   const match = useMatchIntakeRequest()
   const [slotId, setSlotId] = useState<string | null>(null)
 
-  const selectedSlot: AvailableSlotDTO | undefined = slots?.find((s) => s.id === slotId)
-
   return (
     <Paper withBorder p="sm" mt="xs">
       <Group maw={480}>
@@ -382,9 +380,9 @@ function MatchForm({ request }: { request: IntakeRequestDTO }) {
         <Button
           size="xs"
           mt={22}
-          disabled={!selectedSlot}
+          disabled={!slotId}
           loading={match.isPending}
-          onClick={() => selectedSlot && match.mutate({ id: request.id, slot: selectedSlot })}
+          onClick={() => slotId && match.mutate({ id: request.id, slotId })}
         >
           Match
         </Button>

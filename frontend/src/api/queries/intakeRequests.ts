@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { get, post, postEnveloped, toQuery, type Schemas } from '../client'
-import type { AvailableSlotDTO } from './slots'
 
 export type IntakeRequestDTO = Schemas['IntakeRequestDTO']
 export type DoctorRequirementDTO = Schemas['DoctorRequirementDTO']
@@ -98,8 +97,8 @@ export function useRejectIntakeRequest() {
 export function useMatchIntakeRequest() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, slot }: { id: string; slot: AvailableSlotDTO }) =>
-      postEnveloped(`/intake-requests/${id}/match`, slot),
+    mutationFn: ({ id, slotId }: { id: string; slotId: string }) =>
+      postEnveloped(`/intake-requests/${id}/match`, { slotId }),
     onSuccess: () => {
       invalidateIntakeQueries(queryClient)
       queryClient.invalidateQueries({ queryKey: ['slots'] })

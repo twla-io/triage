@@ -123,6 +123,7 @@ import Domain
   , IntakeRequest (Accepted, Stale, Submitted)
   , IntakeRequestId (..)
   , PatientId (..)
+  , SlotId (..)
   )
 import Persistence (ConnectionPool, DecodeError)
 import Service     (MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..))
@@ -140,6 +141,7 @@ import Transport
   , HealthcareServiceDTO
   , IntakeRequestDTO
   , PatientDTO
+  , MatchIntakeRequestRequest (..)
   , RejectIntakeRequestRequest (..)
   , SubmitIntakeRequestRequest (..)
   , closeReasonFromRequest
@@ -150,7 +152,6 @@ import Transport
   , fromDomainHealthcareService
   , fromDomainIntakeRequest
   , fromDomainPatient
-  , toDomainAvailableSlot
   , toDomainDoctorRequirement
   , toDomainDuration
   , toDomainIntakeRequestPriority
@@ -578,9 +579,9 @@ type SlotAPI =
 createAvailableSlotHandler :: CreateAvailableSlotRequest -> AppM Value
 createAvailableSlotHandler req = do
   pool   <- ask
-  slotId <- liftIO Service.newSlotId
+  newId <- liftIO Service.newSlotId
   let slot = AvailableSlot
-        { id                  = slotId
+        { id                  = newId
         , doctorId            = DoctorId req.doctorId
         , healthcareServiceId = HealthcareServiceId req.healthcareServiceId
         , start               = req.start
@@ -741,14 +742,13 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 --
 -- matchAcceptedIntakeRequestToSlotHandler is MatchOutcome-shaped —
 -- verified against Service.hs directly: matchAcceptedIntakeRequestToSlot
--- :: ConnectionPool -> IntakeRequestId -> AvailableSlot -> IO (Either
+-- :: ConnectionPool -> IntakeRequestId -> SlotId -> IO (Either
 -- ServiceError MatchOutcome), wrapped via the new runMatchOutcome (see
--- MIDDLEWARE above). Reuses AvailableSlotDTO as the request body directly
--- (servant-implementation.md section 5's settled table), for a different
--- reason than SlotAPI's own reuse of it as a response DTO: unlike
--- createAvailableSlot (server mints a NEW slot's id), matching identifies
--- an EXISTING slot the caller already knows the real id of, so accepting
--- the id field here is correct, not a leftover assumption.
+-- MIDDLEWARE above). The request body is MatchIntakeRequestRequest — the
+-- slot's id only. It used to be a whole AvailableSlotDTO, which let the
+-- appointment copy a client-sent doctor/start/duration while only the id
+-- was used to delete the slot; Service.hs now matches against the stored
+-- slot instead.
 --
 -- reclaimAppointedIntakeRequestHandler has no request body at all — per
 -- the settled design, reclaim needs nothing beyond the path id. Verified
@@ -810,7 +810,7 @@ type IntakeRequestAPI =
        :> Get '[JSON] [IntakeRequestDTO]
   :<|> Capture "id" UUID :> "accept" :> ReqBody '[JSON] AcceptIntakeRequestRequest :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "reject" :> ReqBody '[JSON] RejectIntakeRequestRequest :> Post '[JSON] Value
-  :<|> Capture "id" UUID :> "match" :> ReqBody '[JSON] AvailableSlotDTO :> Post '[JSON] Value
+  :<|> Capture "id" UUID :> "match" :> ReqBody '[JSON] MatchIntakeRequestRequest :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "reclaim" :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "mark-stale" :> Post '[JSON] Value
   :<|> Capture "id" UUID :> "close" :> ReqBody '[JSON] CloseReasonRequestDTO :> Post '[JSON] Value
@@ -872,11 +872,11 @@ rejectSubmittedIntakeRequestHandler uid req = do
     (Service.rejectSubmittedIntakeRequest pool (IntakeRequestId uid) rejectedAt req.rejectionReason)
     fromDomainIntakeRequest
 
-matchAcceptedIntakeRequestToSlotHandler :: UUID -> AvailableSlotDTO -> AppM Value
-matchAcceptedIntakeRequestToSlotHandler uid slotDto = do
+matchAcceptedIntakeRequestToSlotHandler :: UUID -> MatchIntakeRequestRequest -> AppM Value
+matchAcceptedIntakeRequestToSlotHandler uid req = do
   pool <- ask
   runMatchOutcome
-    (Service.matchAcceptedIntakeRequestToSlot pool (IntakeRequestId uid) (toDomainAvailableSlot slotDto))
+    (Service.matchAcceptedIntakeRequestToSlot pool (IntakeRequestId uid) (SlotId req.slotId))
 
 reclaimAppointedIntakeRequestHandler :: UUID -> AppM Value
 reclaimAppointedIntakeRequestHandler uid = do
