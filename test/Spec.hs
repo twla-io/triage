@@ -16,6 +16,7 @@ import Prelude hiding (id)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
+import Data.Maybe (isJust)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian, addUTCTime)
@@ -133,6 +134,62 @@ genTriagedRequestFor sid = do
   baseRequest <- genSubmittedIntakeRequest
   prio        <- genPriority
   acceptIntakeRequest baseRequest sid prio <$> genMoment
+
+-- Built from explicit parts rather than record updates: start/doctorId/
+-- duration are shared field names across AvailableSlot and
+-- AppointedIntakeRequest, so an update on them would be ambiguous.
+genAvailableSlotAt :: DoctorId -> UTCTime -> Duration -> Gen AvailableSlot
+genAvailableSlotAt did moment dur = do
+  newSlotId <- arbitrary
+  sid       <- arbitrary
+  pure AvailableSlot
+    { id = newSlotId, doctorId = did
+    , healthcareServiceId = sid, start = moment, duration = dur }
+
+genCalendarEntryAt :: DoctorId -> UTCTime -> Duration -> Gen CalendarEntry
+genCalendarEntryAt did moment dur = oneof
+  [ Slot <$> genAvailableSlotAt did moment dur
+  , do req <- arbitrary >>= genTriagedRequestFor
+       pure $ Appointment AppointedIntakeRequest
+         { triaged = req, doctorId = did, start = moment, duration = dur }
+  ]
+
+-- Starts on a quarter-hour grid over three hours, so entries of the same
+-- doctor overlap, touch, and miss each other often enough to matter.
+genGridMoment :: Gen UTCTime
+genGridMoment = do
+  quarter <- choose (0, 12 :: Integer)
+  pure (addUTCTime (fromIntegral quarter * 900) (UTCTime (fromGregorian 2026 1 1) 0))
+
+genCalendarEntryFor :: DoctorId -> Gen CalendarEntry
+genCalendarEntryFor did = do
+  moment <- genGridMoment
+  genCalendarEntryAt did moment =<< arbitrary
+
+-- Short lists: on a thirteen-start grid, long ones almost always overlap.
+genCalendarEntries :: Gen [CalendarEntry]
+genCalendarEntries = do
+  doctors <- vectorOf 2 arbitrary
+  n       <- choose (0, 4)
+  vectorOf n (elements doctors >>= genCalendarEntryFor)
+
+calendarEntryDoctorOf :: CalendarEntry -> DoctorId
+calendarEntryDoctorOf (Slot s)        = s.doctorId
+calendarEntryDoctorOf (Appointment a) = a.doctorId
+
+calendarEntryEndOf :: CalendarEntry -> UTCTime
+calendarEntryEndOf e = addUTCTime (durationToNominalDiffTime (dur e)) (calendarEntryStart e)
+  where
+    dur (Slot s)        = s.duration
+    dur (Appointment a) = a.duration
+
+-- Reference definition, checked against every existing entry: same
+-- doctor, half-open intervals intersect.
+overlapsNaive :: CalendarEntry -> CalendarEntry -> Bool
+overlapsNaive a b =
+     calendarEntryDoctorOf a == calendarEntryDoctorOf b
+  && calendarEntryStart a < calendarEntryEndOf b
+  && calendarEntryStart b < calendarEntryEndOf a
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- TRANSPORT DTO ARBITRARY INSTANCES
@@ -443,6 +500,39 @@ main = hspec $ do
           .&&. property (matches slot narrow)
           .&&. appointed.triaged.priority === Routine narrowDue
         Nothing -> property False
+
+  describe "mkDoctorCalendar" $
+    prop "succeeds exactly when no two entries of the same doctor overlap" $ do
+      entries <- genCalendarEntries
+      let pairs = [ (a, b) | (i, a) <- zip [0 :: Int ..] entries
+                           , (j, b) <- zip [0 ..] entries, i < j ]
+      pure $ isJust (mkDoctorCalendar entries)
+         === not (any (uncurry overlapsNaive) pairs)
+
+  describe "addAvailableSlot" $ do
+    prop "succeeds exactly when the calendar's entries plus the slot still form a calendar" $ do
+      entries <- genCalendarEntries
+      did     <- elements (map calendarEntryDoctorOf entries ++ [DoctorId UUID.nil])
+      moment  <- genGridMoment
+      slot    <- genAvailableSlotAt did moment =<< arbitrary
+      pure $ case mkDoctorCalendar entries of
+        Just calendar ->
+          isJust (addAvailableSlot slot calendar)
+            === isJust (mkDoctorCalendar (entries ++ [Slot slot]))
+        Nothing -> property Discard
+
+    prop "accepts a slot starting exactly where another entry ends" $ do
+      did   <- arbitrary
+      entry <- genCalendarEntryFor did
+      slot  <- genAvailableSlotAt did (calendarEntryEndOf entry) =<< arbitrary
+      pure $ isJust (mkDoctorCalendar [entry] >>= addAvailableSlot slot)
+
+    prop "never rejects a slot because of another doctor's entry" $ do
+      did1  <- arbitrary
+      did2  <- arbitrary `suchThat` (/= did1)
+      entry <- genCalendarEntryFor did1
+      slot  <- genAvailableSlotAt did2 (calendarEntryStart entry) =<< arbitrary
+      pure $ isJust (mkDoctorCalendar [entry] >>= addAvailableSlot slot)
 
   -- Route-level, not type-level, unlike the property tests above —
   -- validateEveryToJSON (servant-swagger) generates its own per-type

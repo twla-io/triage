@@ -11,7 +11,7 @@
 | `createDoctor :: ConnectionPool -> Text -> IO Doctor` | `POST` | `/doctors` |
 | `createPatient :: ConnectionPool -> Text -> IO Patient` | `POST` | `/patients` |
 | `createHealthcareService :: ConnectionPool -> Text -> Duration -> IO HealthcareService` | `POST` | `/healthcare-services` |
-| `createAvailableSlot :: ConnectionPool -> AvailableSlot -> IO SlotCreationOutcome` | `POST` | `/slots` |
+| `createAvailableSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError SlotCreationOutcome)` | `POST` | `/slots` |
 | `submitIntakeRequest :: ConnectionPool -> PatientId -> Text -> DoctorRequirement -> UTCTime -> IO SubmittedIntakeRequest` | `POST` | `/intake-requests` |
 | `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> UTCTime -> IO (Either ServiceError TriagedIntakeRequest)` | `POST` | `/intake-requests/:id/accept` |
 | `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError IntakeRequest)` | `POST` | `/intake-requests/:id/reject` |

@@ -36,7 +36,7 @@ No wrapper environment record. `AppM` is bare `ReaderT ConnectionPool Handler` �
 - **(b) `IO (Either DecodeError a)`** — reads that can fail to decode a stored row (`fetchHealthcareService`, `fetchAvailableSlots`, `fetchIntakeRequest`, `fetchCalendarView`, ...). No `ServiceError` is involved at all here — a `DecodeError` is unconditionally `500`, per `error-vs-outcome-mapping`'s own `500` case (`PersistenceDecodeError`/anything outside the domain's vocabulary).
 - **(c) `IO (Either ServiceError a)`** — mutations. Here the split is *not* uniform: only `PersistenceDecodeError` (one constructor of `ServiceError`) is `500`; every other `ServiceError` constructor (`RequestNotFound`, `RequestNotSubmittedAnymore`, ...) is a `200` with a discriminated body, per `error-vs-outcome-mapping`.
 
-Four shared `AppM`-returning helpers exist: `runRead` for (b), and `runService`/`runMatchOutcome`/`runSlotCreation` for (c) and its two outcome-typed relatives (see below) — plus `envelope`/`envelopeEmpty` as small shared response builders, not counted as outcome-translation helpers in their own right since neither one, alone, decides what's `500` versus `200`. A single, uniform helper covering every shape doesn't work precisely because they disagree about whether *every* Left is `500` or only one constructor of it is, and (for `MatchOutcome`/`SlotCreationOutcome` below) about whether there's an `Either`/`ServiceError` layer at all.
+Four shared `AppM`-returning helpers exist: `runRead` for (b), and `runService`/`runMatchOutcome`/`runSlotCreation` for (c) and its two outcome-typed relatives (see below) — plus `envelope`/`envelopeEmpty` as small shared response builders, not counted as outcome-translation helpers in their own right since neither one, alone, decides what's `500` versus `200`. A single, uniform helper covering every shape doesn't work precisely because they disagree about whether *every* Left is `500` or only one constructor of it is, and (for `MatchOutcome`/`SlotCreationOutcome` below) about how their outcome constructors map to responses.
 
 **Why a naive `Either ServiceError a`-preserving `runService` was rejected:** a version that merely throws a `500` as a side effect when it sees `PersistenceDecodeError`, while still returning `Either ServiceError a` as its type, leaves `PersistenceDecodeError` sitting in the return type as a case that can never actually reach the caller (it was already handled, by throwing, before returning) — a phantom, unreachable branch every caller would still have to pattern-match against to be exhaustive, for a case that can't occur. `runService` instead needs to narrow away that constructor before handing anything back to its caller.
 
@@ -85,15 +85,16 @@ runMatchOutcome action = do
     Right RequestAlreadyClaimed -> pure (envelopeEmpty "requestAlreadyClaimed")
 ```
 
-**`runSlotCreation`**, for `createAvailableSlot`'s bare `IO SlotCreationOutcome` shape — no `ServiceError`/`Either` at all (confirmed against `Service.hs` directly: `SlotCreated AvailableSlot | SlotConflict`):
+**`runSlotCreation`**, for `createAvailableSlot`'s `IO (Either ServiceError SlotCreationOutcome)` shape (`SlotCreated AvailableSlot | SlotConflict`), sharing `handleServiceError` for the `Left` case like `runMatchOutcome`. The `Left` arises from `PersistenceDecodeError` when the doctor's stored calendar fails to decode (see `docs/decisions.md`'s "Doctor calendar" entry):
 
 ```haskell
-runSlotCreation :: IO SlotCreationOutcome -> AppM Value
+runSlotCreation :: IO (Either ServiceError SlotCreationOutcome) -> AppM Value
 runSlotCreation action = do
-  outcome <- liftIO action
-  pure $ case outcome of
-    SlotCreated slot -> envelope "slotCreated" (fromDomainAvailableSlot slot)
-    SlotConflict     -> envelopeEmpty "slotConflict"
+  result <- liftIO action
+  case result of
+    Left se                  -> handleServiceError se
+    Right (SlotCreated slot) -> pure (envelope "slotCreated" (fromDomainAvailableSlot slot))
+    Right SlotConflict       -> pure (envelopeEmpty "slotConflict")
 ```
 
 **A real design question was raised and settled here: should `POST /slots` (`createAvailableSlot`) also invoke `matchWaitlistToSlot` and combine both results into one response?** `checkwaitlist-not-an-endpoint` (`SKILL.md`) already says the handler that creates a slot is the natural place to also call `matchWaitlistToSlot` — but "the natural place to call it" and "compose its result into the same response" are different questions, and this rejects the second. Composing the two at the API layer would mean `Api.hs` implementing an orchestration decision `Service.hs` itself doesn't make: `createAvailableSlot` and `matchWaitlistToSlot` are two fully independent `Service.hs` functions, and nothing in `Service.hs` composes them into one call. A newly created `AvailableSlot` has two genuinely independent paths to being consumed — a manual claim via `matchAcceptedIntakeRequestToSlot`, or automatic dispatch via `matchWaitlistToSlot` — and neither is a default the other subsumes; composing them into one API response would silently privilege the automatic path over the manual one. **The actual, current answer:** `POST /slots`'s response reflects *only* `createAvailableSlot`'s own `SlotCreationOutcome`, via `runSlotCreation`, full stop. Whether and how a newly created slot gets matched against the waitlist afterward is left open — unaddressed by this endpoint, for later. (`checkwaitlist-not-an-endpoint`'s own text in `SKILL.md` may still read as implying composition; that text hasn't been updated with a cross-reference to this resolution in this pass — flagging that as outstanding rather than silently leaving the two documents in tension.)

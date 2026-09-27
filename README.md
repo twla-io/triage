@@ -69,6 +69,18 @@ staff-initiated action, never automatic or timer-driven.
 until claimed, then fully absorbed into the appointed request; there is no
 post-booking slot state, no freeing, and no sealed "proof" wrapper.
 
+**Doctor Calendar** — `CalendarEntry = Slot AvailableSlot | Appointment
+AppointedIntakeRequest`: everything that occupies a doctor's time.
+`DoctorCalendar`: all doctors' entries, where no two entries of the same
+doctor overlap; entries occupy half-open intervals `[start, end)`, so
+touching is not overlapping. `mkDoctorCalendar :: [CalendarEntry] -> Maybe
+DoctorCalendar` builds one from existing entries; `addAvailableSlot ::
+AvailableSlot -> DoctorCalendar -> Maybe DoctorCalendar` grows it — a slot
+is the only thing ever added; appointments arrive by matching, which takes
+over the slot's exact interval. A value cannot prove it matches what is
+currently stored, so stored data needs the same invariant enforced where it
+lives.
+
 ### Sealed vs. open
 
 Constructors are hidden only where there's an invariant to protect:
@@ -78,9 +90,12 @@ Constructors are hidden only where there's an invariant to protect:
   `routineWithinBounds` (returns `Nothing` for any other constructor), the
   read-only accessor a downstream layer needs to encode an already-valid
   value without the constructor itself being exported.
+- `DoctorCalendar` — construct only via `mkDoctorCalendar` and grow only via
+  `addAvailableSlot`, both of which enforce the no-overlap invariant for the
+  value they build.
 
 Every other type (`IntakeRequestPriority`, `AvailableSlot`,
-`SubmittedIntakeRequest`, `TriagedIntakeRequest`, `AppointedIntakeRequest`,
+`CalendarEntry`, `SubmittedIntakeRequest`, `TriagedIntakeRequest`, `AppointedIntakeRequest`,
 `WithdrawnIntakeRequest`, `IntakeRequest`, ...) exports its constructors
 openly — there's no invariant beyond what its own field types already
 enforce.

@@ -22,8 +22,8 @@
 -- too, but its list/get reads are shape (b) (IO (Either DecodeError a)) —
 -- the first section to actually need the runRead helper (see the
 -- MIDDLEWARE section below). SlotAPI's create is shape (c)'s
--- SlotCreationOutcome relative (no ServiceError/Either at all — see
--- MIDDLEWARE's own runSlotCreation). IntakeRequestAPI's submit is shape
+-- SlotCreationOutcome relative (IO (Either ServiceError
+-- SlotCreationOutcome) — see MIDDLEWARE's own runSlotCreation). IntakeRequestAPI's submit is shape
 -- (a) again (submitIntakeRequest is bare IO — verified, not assumed);
 -- accept/reject/reclaim/mark-stale/close are shape (c) proper (IO (Either
 -- ServiceError a)), via runService/handleServiceError; match is
@@ -279,7 +279,7 @@ corsPolicy req = case lookup "Origin" (requestHeaders req) of
 -- runRead exists for shape (b) (IO (Either DecodeError a)) —
 -- HealthcareServiceAPI's list/get reads were the first section that
 -- needed it. runSlotCreation/envelope/envelopeEmpty exist for SlotAPI's
--- create (IO SlotCreationOutcome — no ServiceError/Either at all, its own
+-- create (IO (Either ServiceError SlotCreationOutcome), its own
 -- outcome-typed shape). handleServiceError/runService exist for shape (c)
 -- proper — mutations returning IO (Either ServiceError a) — needed by
 -- acceptSubmittedIntakeRequestHandler/rejectSubmittedIntakeRequestHandler/
@@ -323,18 +323,19 @@ envelope tag detail = object ["outcome" .= tag, "detail" .= toJSON detail]
 envelopeEmpty :: Text -> Value
 envelopeEmpty tag = object ["outcome" .= tag, "detail" .= Null]
 
--- For createAvailableSlot's bare IO SlotCreationOutcome shape — no
--- ServiceError/Either at all (verified against Service.hs directly:
--- SlotCreated AvailableSlot | SlotConflict). Per checkwaitlist-not-an-
+-- For createAvailableSlot's IO (Either ServiceError SlotCreationOutcome)
+-- shape (SlotCreated AvailableSlot | SlotConflict), sharing
+-- handleServiceError for the Left case like runMatchOutcome. Per checkwaitlist-not-an-
 -- endpoint/servant-implementation.md section 4's own resolved design
 -- question, this deliberately does NOT also invoke matchWaitlistToSlot —
 -- the response reflects only SlotCreationOutcome, full stop.
-runSlotCreation :: IO SlotCreationOutcome -> AppM Value
+runSlotCreation :: IO (Either ServiceError SlotCreationOutcome) -> AppM Value
 runSlotCreation action = do
-  outcome <- liftIO action
-  pure $ case outcome of
-    SlotCreated slot -> envelope "slotCreated" (fromDomainAvailableSlot slot)
-    SlotConflict     -> envelopeEmpty "slotConflict"
+  result <- liftIO action
+  case result of
+    Left se                  -> handleServiceError se
+    Right (SlotCreated slot) -> pure (envelope "slotCreated" (fromDomainAvailableSlot slot))
+    Right SlotConflict       -> pure (envelopeEmpty "slotConflict")
 
 -- IntakeRequestId (Domain.hs) has no ToJSON instance of its own (Domain.hs
 -- has no serialization awareness of any kind — see its own Layering

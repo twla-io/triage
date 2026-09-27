@@ -87,8 +87,6 @@ module Service
 
     -- ── Calendar (composes the two reads above into one time-ordered
     --    view — see the CALENDAR section below) ─────────────────────────
-  , CalendarEntry (..)
-  , calendarEntryStart
   , fetchCalendarView
 
     -- ── ID generation (moved from Persistence.hs — an orchestration
@@ -103,13 +101,14 @@ module Service
 import Data.List                  (sortOn)
 import Data.Pool                  (withResource)
 import Data.Text                  (Text)
-import Data.Time                  (UTCTime)
+import Data.Time                  (UTCTime, addUTCTime)
 import Data.UUID.V4               (nextRandom)
 import Database.PostgreSQL.Simple (Connection)
 
 import Domain
   ( AppointedIntakeRequest (..)
   , AvailableSlot (..)
+  , CalendarEntry (..)
   , CloseReason
   , Doctor (..)
   , DoctorId (..)
@@ -126,7 +125,10 @@ import Domain
   , SubmittedIntakeRequest (..)
   , TriagedIntakeRequest
   , acceptIntakeRequest
+  , addAvailableSlot
+  , calendarEntryStart
   , checkIntakeWaitlist
+  , durationToNominalDiffTime
   , matchIntakeRequestToSlot
   )
 -- Qualified alongside the unqualified import below because thirteen of
@@ -159,6 +161,7 @@ import Persistence
   , ConnectionPool
   , DecodeError
   , MatchPersistOutcome (..)
+  , fetchDoctorCalendar
   , insertAvailableSlot
   , insertDoctor
   , insertHealthcareService
@@ -260,22 +263,32 @@ data SlotCreationOutcome
 -- OPERATIONS
 -- ═══════════════════════════════════════════════════════════════════════
 
--- Creates a new AvailableSlot. Nothing in Domain.hs to wrap here —
--- AvailableSlot is an open record with no smart constructor, same as
--- SubmittedIntakeRequest below — so this is a thin pass-through to
--- Persistence.insertAvailableSlot, translating its SlotOverlap result
--- into this module's own SlotCreationOutcome. Named createAvailableSlot,
+-- Creates a new AvailableSlot: fetches the doctor's stored entries that
+-- intersect the new slot's interval, checks it fits via
+-- Domain.addAvailableSlot, then inserts. A concurrent insert between the
+-- fetch and the write is caught by doctor_calendar's EXCLUDE constraint
+-- (Persistence.insertAvailableSlot's SlotOverlap) — both paths report the
+-- same SlotConflict, since to the caller both mean "this time is taken".
+-- Stored entries that already overlap surface as PersistenceDecodeError
+-- (OverlappingCalendarEntries). Named createAvailableSlot,
 -- not submitAvailableSlot — "submit" implies something flowing to an
 -- authority for acceptance/rejection (correct for SubmittedIntakeRequest,
 -- which awaits a triager's judgment); a slot is declared into existence
 -- by the authority itself, no acceptance step, so "create" is the
 -- accurate verb here.
-createAvailableSlot :: ConnectionPool -> AvailableSlot -> IO SlotCreationOutcome
+createAvailableSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError SlotCreationOutcome)
 createAvailableSlot pool slot = withResource pool $ \conn -> do
-  result <- insertAvailableSlot conn slot
-  pure $ case result of
-    Right () -> SlotCreated slot
-    Left _   -> SlotConflict
+  let end = addUTCTime (durationToNominalDiffTime slot.duration) slot.start
+  calendarResult <- fetchDoctorCalendar conn slot.doctorId slot.start end
+  case calendarResult of
+    Left err -> pure (Left (PersistenceDecodeError err))
+    Right calendar -> case addAvailableSlot slot calendar of
+      Nothing -> pure (Right SlotConflict)
+      Just _  -> do
+        result <- insertAvailableSlot conn slot
+        pure . Right $ case result of
+          Right () -> SlotCreated slot
+          Left _   -> SlotConflict
 
 -- Creates a new Doctor. Doctor is an open record with no invariant beyond
 -- its field types (id-types-plain, minimal-types-minimal-tables) —
@@ -724,32 +737,10 @@ fetchSubmittedIntakeRequests pool = withResource pool $ \conn ->
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- CALENDAR
--- CalendarEntry is a Service.hs-level type, deliberately not added to
--- Domain.hs — it's not a domain concept with a lifecycle or invariant to
--- protect, it's a display-composition of two already-real things
--- (AvailableSlot, AppointedIntakeRequest), same category as
--- MatchOutcome/SlotCreationOutcome above.
---
--- "Appointment" as a constructor name deliberately reintroduces a word
--- this redesign removed as a TYPE (the old Appointment/OpenAppointment/
--- ClosedAppointment, folded into IntakeRequest — see docs/decisions.md).
--- This is a deliberate, non-colliding reuse: Haskell's separate type/
--- constructor namespaces make it safe (CalendarEntry's Appointment
--- constructor and the long-gone Appointment type were never going to
--- collide even when the type still existed), and it's the same precedent
--- AppointmentParty survived that same redesign under — the activity/event
--- "appointment" is still real vocabulary even though no entity type
--- represents it anymore.
+-- CalendarEntry itself lives in Domain.hs, as the unit DoctorCalendar's
+-- no-overlap invariant is stated over (see docs/decisions.md). This
+-- section only composes the stored entries into a time-ordered view.
 -- ═══════════════════════════════════════════════════════════════════════
-
-data CalendarEntry
-  = Slot        AvailableSlot
-  | Appointment AppointedIntakeRequest
-  deriving (Show, Eq)
-
-calendarEntryStart :: CalendarEntry -> UTCTime
-calendarEntryStart (Slot s)        = s.start
-calendarEntryStart (Appointment a) = a.start
 
 -- Composes fetchAvailableSlots and fetchAppointedIntakeRequests rather
 -- than reading doctor_calendar directly — that table's schema is

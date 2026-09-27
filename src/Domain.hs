@@ -51,7 +51,13 @@ module Domain
 
   -- ── Slot ─────────────────────────────────────────────────────────────────
   , AvailableSlot (..)
-  , slotEnd
+
+  -- ── Doctor Calendar ──────────────────────────────────────────────────────
+  , CalendarEntry (..)
+  , calendarEntryStart
+  , DoctorCalendar             -- sealed: a doctor's entries never overlap
+  , mkDoctorCalendar
+  , addAvailableSlot
 
   -- ── Protocol ─────────────────────────────────────────────────────────────
   , matches
@@ -59,11 +65,15 @@ module Domain
   , checkIntakeWaitlist
   ) where
 
-import Data.List  (sortOn)
-import Data.Maybe (listToMaybe, mapMaybe)
-import Data.Text  (Text)
-import Data.Time  (NominalDiffTime, UTCTime, addUTCTime)
-import Data.UUID  (UUID)
+import Control.Monad   (foldM)
+import Data.List       (sortOn)
+import Data.Map.Strict (Map)
+import Data.Maybe      (listToMaybe, mapMaybe)
+import Data.Text       (Text)
+import Data.Time       (NominalDiffTime, UTCTime, addUTCTime)
+import Data.UUID       (UUID)
+
+import qualified Data.Map.Strict as Map
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ID WRAPPERS
@@ -347,8 +357,71 @@ data AvailableSlot = AvailableSlot
   }
   deriving (Show, Eq)
 
-slotEnd :: AvailableSlot -> UTCTime
-slotEnd s = addUTCTime (durationToNominalDiffTime s.duration) s.start
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DOCTOR CALENDAR
+-- Everything that occupies a doctor's time: available slots and appointed
+-- intake requests. No two entries of the same doctor may overlap; entries
+-- occupy half-open intervals [start, end), so touching is not overlapping.
+--
+-- DoctorCalendar's constructor excluded from exports — build it only via
+-- mkDoctorCalendar (from existing entries) and grow it only via
+-- addAvailableSlot: a slot is the only thing ever added to a calendar;
+-- appointments arrive by matching, which takes over its slot's exact
+-- interval. Both enforce the no-overlap invariant for the value they build.
+-- A value cannot prove it matches what is currently stored, so stored data
+-- needs this same invariant enforced where it lives.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data CalendarEntry
+  = Slot        AvailableSlot
+  | Appointment AppointedIntakeRequest
+  deriving (Show, Eq)
+
+calendarEntryDoctor :: CalendarEntry -> DoctorId
+calendarEntryDoctor (Slot s)        = s.doctorId
+calendarEntryDoctor (Appointment a) = a.doctorId
+
+calendarEntryStart :: CalendarEntry -> UTCTime
+calendarEntryStart (Slot s)        = s.start
+calendarEntryStart (Appointment a) = a.start
+
+calendarEntryDuration :: CalendarEntry -> Duration
+calendarEntryDuration (Slot s)        = s.duration
+calendarEntryDuration (Appointment a) = a.duration
+
+calendarEntryEnd :: CalendarEntry -> UTCTime
+calendarEntryEnd e =
+  addUTCTime (durationToNominalDiffTime (calendarEntryDuration e)) (calendarEntryStart e)
+
+-- Keyed by start within each doctor: non-overlapping entries of non-zero
+-- duration never share a start.
+newtype DoctorCalendar =
+  DoctorCalendar (Map DoctorId (Map UTCTime CalendarEntry))
+  deriving (Show, Eq)
+
+mkDoctorCalendar :: [CalendarEntry] -> Maybe DoctorCalendar
+mkDoctorCalendar = foldM (flip addCalendarEntry) (DoctorCalendar Map.empty)
+
+addAvailableSlot :: AvailableSlot -> DoctorCalendar -> Maybe DoctorCalendar
+addAvailableSlot = addCalendarEntry . Slot
+
+-- Only the nearest neighbour on each side needs checking: the existing
+-- entries already don't overlap, so the one starting just before ends
+-- latest among all earlier ones.
+addCalendarEntry :: CalendarEntry -> DoctorCalendar -> Maybe DoctorCalendar
+addCalendarEntry entry (DoctorCalendar calendar)
+  | clashesWithPrevious || clashesWithNext = Nothing
+  | otherwise = Just . DoctorCalendar $
+      Map.insert doctor (Map.insert start entry own) calendar
+  where
+    doctor = calendarEntryDoctor entry
+    start  = calendarEntryStart entry
+    end    = calendarEntryEnd entry
+    own    = Map.findWithDefault Map.empty doctor calendar
+    clashesWithPrevious =
+      maybe False (\(_, prev) -> calendarEntryEnd prev > start) (Map.lookupLT start own)
+    clashesWithNext =
+      maybe False (\(next, _) -> next < end) (Map.lookupGE start own)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- PROTOCOL

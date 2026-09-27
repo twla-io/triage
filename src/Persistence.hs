@@ -77,6 +77,9 @@ module Persistence
   , MatchPersistOutcome (..)
   , claimAcceptedIntakeRequest
   , persistMatchedIntakeRequest
+
+    -- ── Doctor calendar ──────────────────────────────────────────────────
+  , fetchDoctorCalendar
   ) where
 
 import Control.Exception                  (Exception, handle, throwIO, try)
@@ -92,8 +95,10 @@ import Domain
   ( AppointedIntakeRequest (..)
   , AppointmentParty (..)
   , AvailableSlot (..)
+  , CalendarEntry (..)
   , CloseReason (..)
   , Doctor (..)
+  , DoctorCalendar
   , DoctorId (..)
   , DoctorRequirement (..)
   , Duration (..)
@@ -111,6 +116,7 @@ import Domain
   , TriagedIntakeRequest (..)
   , UrgentDue (..)
   , WithdrawnIntakeRequest (..)
+  , mkDoctorCalendar
   , mkRoutineWithin
   , routineWithinBounds
   )
@@ -149,6 +155,10 @@ data DecodeError
     -- ^ a row claiming state = 'appointed' but missing one of
     -- appointed_doctor_id/start_time/duration_minutes — distinct from
     -- InvalidTriagedRowShape, which is a different malformed-row shape.
+  | OverlappingCalendarEntries DoctorId
+    -- ^ this doctor's stored slots/appointments overlap, rejected by
+    -- mkDoctorCalendar — the same smart-constructor-on-decode check
+    -- InvalidWithin is for mkRoutineWithin.
   deriving (Show, Eq)
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -872,6 +882,50 @@ fetchClosedIntakeRequests conn rangeStart rangeEnd mDoctorId = do
     \ORDER BY start_time"
     (rangeStart, rangeEnd, mDoctorUuid, mDoctorUuid)
   pure (traverse toDomainIntakeRequest rows)
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- DOCTOR CALENDAR
+-- One doctor's stored slots and appointments whose intervals intersect
+-- [rangeStart, rangeEnd), decoded through Domain's mkDoctorCalendar. The
+-- intersect filter only selects rows — returning more than needed is
+-- harmless; whether a new slot fits is decided by Domain's
+-- addAvailableSlot, not here. Reads slots/intake_requests rather than
+-- doctor_calendar, same reason as fetchAppointedIntakeRequests above.
+-- ═══════════════════════════════════════════════════════════════════════
+
+fetchDoctorCalendar
+  :: Connection
+  -> DoctorId
+  -> UTCTime                     -- range start (inclusive)
+  -> UTCTime                     -- range end (exclusive)
+  -> IO (Either DecodeError DoctorCalendar)
+fetchDoctorCalendar conn did@(DoctorId doctorUuid) rangeStart rangeEnd = do
+  slotRows <- query conn
+    "SELECT id, doctor_id, healthcare_service_id, start_time, duration_minutes \
+    \FROM slots \
+    \WHERE doctor_id = ? \
+    \  AND start_time < ? \
+    \  AND start_time + make_interval(mins => duration_minutes) > ?"
+    (doctorUuid, rangeEnd, rangeStart)
+  appointedRows <- query conn
+    "SELECT id, patient_id, narrative, required_doctor_id, created_at, state, \
+    \       rejected_at, rejection_reason, \
+    \       healthcare_service_id, tier, due_not_before, due_not_after, triaged_at, \
+    \       appointed_doctor_id, start_time, duration_minutes, \
+    \       withdrawn_at, withdrawal_note, \
+    \       stale_at, \
+    \       close_reason, closed_by_party, cancelled_at, cancellation_note \
+    \FROM intake_requests \
+    \WHERE state = 'appointed' \
+    \  AND appointed_doctor_id = ? \
+    \  AND start_time < ? \
+    \  AND start_time + make_interval(mins => duration_minutes) > ?"
+    (doctorUuid, rangeEnd, rangeStart)
+  pure $ do
+    slots     <- traverse toDomainSlot slotRows
+    appointed <- traverse decodeAppointed appointedRows
+    maybe (Left (OverlappingCalendarEntries did)) Right $
+      mkDoctorCalendar (map Slot slots ++ map Appointment appointed)
 
 insertSubmittedIntakeRequest :: Connection -> SubmittedIntakeRequest -> IO ()
 insertSubmittedIntakeRequest conn s = do

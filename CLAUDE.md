@@ -48,12 +48,12 @@ Direct imports between internal modules (no cycles):
 - `Domain` — imports none of the others
 - `Persistence` → `Domain`
 - `Service` → `Domain`, `Persistence`
-- `Transport` → `Domain`, `Service` (for `CalendarEntry` only)
+- `Transport` → `Domain`
 - `Api` → `Domain`, `Persistence`, `Service`, `Transport`
 - `app/Main.hs` → `Api`
 
 - **`src/Domain.hs`** — pure types and functions; depends only on
-  `base`/`text`/`time`/`uuid`. No IO, SQL, or JSON awareness.
+  `base`/`containers`/`text`/`time`/`uuid`. No IO, SQL, or JSON awareness.
 - **`src/Persistence.hs`** + **`migrations/0001_init.sql`** —
   postgresql-simple. Row types with row-shaped `toDomainX`/`fromDomainX`
   (decoding fails loudly with `DecodeError`); fetch/insert/persist
@@ -67,8 +67,7 @@ Direct imports between internal modules (no cycles):
   and the `CalendarEntry` view.
 - **`src/Transport.hs`** — aeson DTO twin types with hand-written
   `ToJSON`/`FromJSON`/`ToSchema` and JSON-shaped `toDomainX`/`fromDomainX`.
-  Domain types carry no JSON instances. Imports `Service` for
-  `CalendarEntry`.
+  Domain types carry no JSON instances.
 - **`src/Api.hs`** — Servant REST routes, handlers, config, CORS, Swagger.
   Handlers supply timestamps (`getCurrentTime`). Mutations respond with an
   `{"outcome", "detail"}` envelope. `app/Main.hs` just calls `Api.main`.
@@ -83,8 +82,10 @@ or protects against races. Enforcement is split:
 
 - **Types / smart constructors (Domain):** each lifecycle stage embeds its
   predecessor whole, so an `AppointedIntakeRequest` can't be built without
-  a `TriagedIntakeRequest`. `mkRoutineWithin` enforces `from <= to`. Types
-  do *not* prove a value matches what is currently stored.
+  a `TriagedIntakeRequest`. `mkRoutineWithin` enforces `from <= to`.
+  `mkDoctorCalendar`/`addAvailableSlot` enforce no overlap per doctor
+  within a `DoctorCalendar` value. Types do *not* prove a value matches
+  what is currently stored.
 - **Pure functions (Domain):** `matches` / `matchIntakeRequestToSlot` check
   service, doctor requirement, and time window; `checkIntakeWaitlist` picks
   the highest-priority eligible request. Reject, stale, withdraw, close and
@@ -92,8 +93,9 @@ or protects against races. Enforcement is split:
   function.
 - **Service:** verifies the stored state before each transition (e.g.
   accept/reject require `Submitted`, match/stale require `Accepted`,
-  reclaim/close require `Appointed`). This check is a separate read, not
-  held in a transaction with the write.
+  reclaim/close require `Appointed`; slot creation checks
+  `addAvailableSlot` against the doctor's stored calendar). This check is a
+  separate read, not held in a transaction with the write.
 - **Persistence writes:** match, reclaim, mark-stale and close use
   state-conditioned `UPDATE`s with affected-rows checks (`ClaimOutcome`),
   so a concurrent change surfaces as an outcome. Matching (delete slot +
@@ -113,10 +115,14 @@ or protects against races. Enforcement is split:
 ## Sealing in Domain.hs — selective, and that's the point
 
 Constructors are hidden only where an identified invariant needs
-protection. Currently the only sealed case: `RoutineDue`'s `RoutineWithin`
-— built only via `mkRoutineWithin` (`from <= to`). The read-only
-`routineWithinBounds` exists so other layers can encode it without the
-constructor.
+protection. Currently two sealed cases:
+- `RoutineDue`'s `RoutineWithin` — built only via `mkRoutineWithin`
+  (`from <= to`). The read-only `routineWithinBounds` exists so other
+  layers can encode it without the constructor.
+- `DoctorCalendar` — built only via `mkDoctorCalendar` and grown only via
+  `addAvailableSlot` (no two entries of a doctor overlap). This invariant
+  spans stored rows, so the database (`doctor_calendar`'s `EXCLUDE`) is
+  what enforces it for stored data; the type declares it.
 
 Other constructors remain open deliberately. Their field types enforce
 structural requirements, while matching eligibility is checked by domain

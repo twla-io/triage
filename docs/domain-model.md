@@ -186,13 +186,13 @@ value (same tier, same due value) — `sortOn` is stable, so that's settled by
 input-list order, not by a designed rule. Not currently a problem worth
 solving.
 
-`RoutineDue`'s `RoutineWithin` case is the only sealed constructor in the
-entire module — export it and any caller could build a `RoutineWithin` with
-`from > to`, a range that can never match anything. `mkRoutineWithin :: UTCTime
--> UTCTime -> Maybe RoutineDue` is the only way to construct one, and
-enforces `from <= to`. Nothing else in `Domain.hs` currently needs sealing
-(see `CLAUDE.md`'s "Sealing in Domain.hs" section for the full statement of
-that rule). Because the constructor is hidden, a caller that already holds a
+`RoutineDue`'s `RoutineWithin` case is sealed — export it and any caller
+could build a `RoutineWithin` with `from > to`, a range that can never
+match anything. `mkRoutineWithin :: UTCTime -> UTCTime -> Maybe RoutineDue`
+is the only way to construct one, and enforces `from <= to`. The only other
+sealed type is `DoctorCalendar` (see "Doctor calendar" below); see
+`CLAUDE.md`'s "Sealing in Domain.hs" section for the full statement of that
+rule. Because the constructor is hidden, a caller that already holds a
 valid `RoutineDue` and needs to read its bounds back out — Persistence,
 encoding one for storage — can't pattern-match on it directly; that's what
 `routineWithinBounds :: RoutineDue -> Maybe (UTCTime, UTCTime)` is for, a
@@ -229,6 +229,36 @@ One consequence worth calling out: if a cancelled or reassigned request's
 original time should become bookable again, that is an explicit new
 `AvailableSlot` created by the caller — not an automatic transition
 triggered by the cancellation or reassignment itself.
+
+## Doctor calendar
+
+```haskell
+data CalendarEntry
+  = Slot        AvailableSlot
+  | Appointment AppointedIntakeRequest
+
+mkDoctorCalendar :: [CalendarEntry] -> Maybe DoctorCalendar
+addAvailableSlot :: AvailableSlot -> DoctorCalendar -> Maybe DoctorCalendar
+```
+
+A doctor's time is occupied by available slots and appointed requests. No
+two entries of the same doctor may overlap. Entries occupy half-open
+intervals `[start, end)`, so an entry starting exactly where another ends
+does not overlap it.
+
+`DoctorCalendar` covers the whole practice and is sealed: the only ways to
+get one are `mkDoctorCalendar` (from existing entries) and
+`addAvailableSlot`, and both return `Nothing` rather than a calendar with
+an overlap. A slot is the only thing ever *added* to a calendar.
+Appointments arrive by matching, which takes over the slot's exact
+interval, so matching cannot create an overlap and
+`matchIntakeRequestToSlot` takes no calendar.
+
+A `DoctorCalendar` value only proves that *its own* entries don't overlap,
+not that it matches what is stored right now. Stored data is protected by
+the database (`doctor_calendar`'s `EXCLUDE` constraint); `Domain.hs` states
+the rule and checks it for values it holds. See `docs/decisions.md`'s
+"Doctor calendar" entry.
 
 ## Waitlist matching
 

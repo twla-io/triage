@@ -583,6 +583,72 @@ given an earlier deadline, for having been displaced) is a separate,
 genuinely open question, untouched by this change — see Open Questions
 below.
 
+## Doctor calendar: the no-overlap invariant is declared in Domain.hs, enforced by the database (2026-09-27)
+
+**Problem:** the no-overlap rule (see "Overlap prevention" above) was
+enforced only by `doctor_calendar`'s `EXCLUDE` constraint and appeared
+nowhere in `Domain.hs` or `docs/domain-model.md`. Since `Domain.hs` is the
+spec every other layer is derived from, a real domain invariant was
+invisible to anyone reading the spec.
+
+**Why Domain.hs can declare it but not enforce it:** every other invariant
+in `Domain.hs` holds within one value (`mkRoutineWithin`'s `from <= to`).
+This one spans every stored slot and appointed request of a doctor. A
+`DoctorCalendar` value is a snapshot of what was read; it cannot prove it
+matches what is stored now. Enforcing the rule with a pure check alone is
+exactly the naive check-then-insert rejected above. So the database
+constraint stays the enforcement; `Domain.hs` states the rule and checks it
+for values it holds.
+
+**Decided:**
+
+- `CalendarEntry` (`Slot AvailableSlot | Appointment
+  AppointedIntakeRequest`) moves from `Service.hs` to `Domain.hs`. This
+  reverses `Service.hs`'s earlier note that it was "not a domain concept
+  with an invariant to protect" — it is now the unit the invariant is
+  stated over. `Transport.hs` imports it from `Domain`, so Transport no
+  longer depends on Service.
+- `DoctorCalendar` is sealed, practice-wide (`Map DoctorId (Map UTCTime
+  CalendarEntry)`), matching the single `doctor_calendar` table. Intervals
+  are half-open `[start, end)`, the same as `tstzrange`'s default `[)`.
+- Two ways in: `mkDoctorCalendar :: [CalendarEntry] -> Maybe
+  DoctorCalendar` rebuilds a calendar from stored entries;
+  `addAvailableSlot :: AvailableSlot -> DoctorCalendar -> Maybe
+  DoctorCalendar` is the one domain operation that adds time. Appointments
+  are never added: they arrive by matching, which takes over the slot's
+  exact interval and so cannot create an overlap.
+  `matchIntakeRequestToSlot` therefore takes no calendar.
+- `slotEnd` removed — it had no users outside `Domain.hs`; end times only
+  matter to the overlap rule, which is stated over calendar entries.
+- `Service.createAvailableSlot` now fetches the doctor's entries that
+  intersect the new slot (`Persistence.fetchDoctorCalendar`), checks
+  `addAvailableSlot`, then inserts — the same "Service checks, Persistence
+  guards the write" pattern as match/accept. Both a failed check and an
+  `EXCLUDE` violation report `SlotConflict`. Its signature becomes
+  `IO (Either ServiceError SlotCreationOutcome)`.
+- Stored entries that already overlap fail decoding as
+  `DecodeError`'s `OverlappingCalendarEntries`, surfaced as
+  `PersistenceDecodeError` (500) — the same smart-constructor-on-decode
+  pattern as `InvalidWithin` for `mkRoutineWithin`.
+
+**Rejected:**
+
+- `DoctorCalendar` as the enforcement (loaded, checked, saved): the
+  check-then-insert race above. Making it a versioned aggregate would close
+  the race but gives appointments two owners (the calendar and the
+  `IntakeRequest` lifecycle) and is convention-enforced, the same reason
+  advisory locks were rejected.
+- A per-doctor calendar (`Map UTCTime CalendarEntry`): `addAvailableSlot`
+  would need a second failure reason (entry for a different doctor).
+- A fetch window of "start minus the longest duration": hard-codes that
+  the longest `Duration` is 60 minutes outside `Domain.hs`. The intersect
+  query only selects rows; returning more than needed is harmless.
+
+**General rule this establishes:** `Domain.hs` declares every invariant.
+One that holds within a single row maps to a `CHECK`; one that spans rows
+maps to `EXCLUDE`/`UNIQUE`, and only the latter depends on the database to
+hold for stored data.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)

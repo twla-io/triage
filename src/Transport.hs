@@ -148,6 +148,7 @@ import Domain
   ( AppointedIntakeRequest (..)
   , AppointmentParty (..)
   , AvailableSlot (..)
+  , CalendarEntry (..)
   , CloseReason (..)
   , Doctor (..)
   , DoctorId (..)
@@ -170,19 +171,6 @@ import Domain
   , mkRoutineWithin
   , routineWithinBounds
   )
-
--- CalendarEntry has no Domain.hs equivalent to import instead — it's a
--- Service.hs-level type by design (see Service.hs's own CALENDAR section:
--- "not a domain concept with a lifecycle or invariant to protect, it's a
--- display-composition of two already-real things"). This is Transport's
--- first dependency on anything beyond Domain, but it isn't a layering
--- violation: triage-api-codegen's own architecture diagram already places
--- Transport downstream of Service (Domain -> Persistence -> Service ->
--- Transport -> API), unlike the earlier TransportError-vs-
--- Persistence.DecodeError choice, where an equivalent concept existed
--- Domain-side and depending on Persistence there would have been an
--- arbitrary sideways dependency instead of a real need.
-import Service (CalendarEntry (..))
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- DECODE ERRORS
@@ -1648,10 +1636,8 @@ instance ToSchema RejectIntakeRequestRequest where
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- CALENDAR ENTRY
--- CalendarEntry lives in Service.hs, not Domain.hs (see the import note
--- above) — two cases, Slot AvailableSlot | Appointment
--- AppointedIntakeRequest, verified against Service.hs directly rather
--- than assumed.
+-- Domain.hs's CalendarEntry has two cases, Slot AvailableSlot |
+-- Appointment AppointedIntakeRequest.
 --
 -- AvailableSlotDTO's fields (id, doctorId, healthcareServiceId, start,
 -- duration) are a strict subset of AppointedIntakeRequestDTO's fields —
