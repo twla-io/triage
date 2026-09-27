@@ -191,6 +191,7 @@ data ServiceError
   | RequestNotYetTriaged IntakeRequestId
   | RequestNotAppointed IntakeRequestId
   | RequestAlreadyClosed IntakeRequestId
+  | HealthcareServiceNotFound HealthcareServiceId
   deriving (Show, Eq)
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -268,7 +269,13 @@ data SlotCreationOutcome
 -- OPERATIONS
 -- ═══════════════════════════════════════════════════════════════════════
 
--- Creates a new AvailableSlot: fetches the doctor's stored entries that
+-- Creates a new AvailableSlot. The slot's duration is always its
+-- HealthcareService's, fetched here (stored-facts-by-reference): the
+-- caller names the service, never the length. A missing service is
+-- HealthcareServiceNotFound, not an outcome — services are never deleted,
+-- so an unknown id is the caller's mistake, not a lost race — and since
+-- services are never updated either, the fetched duration can't go stale
+-- before the insert. Then fetches the doctor's stored entries that
 -- intersect the new slot's interval, checks it fits via
 -- Domain.addAvailableSlot, then inserts. A concurrent insert between the
 -- fetch and the write is caught by doctor_calendar's EXCLUDE constraint
@@ -281,19 +288,31 @@ data SlotCreationOutcome
 -- which awaits a triager's judgment); a slot is declared into existence
 -- by the authority itself, no acceptance step, so "create" is the
 -- accurate verb here.
-createAvailableSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError SlotCreationOutcome)
-createAvailableSlot pool slot = withResource pool $ \conn -> do
-  let end = addUTCTime (durationToNominalDiffTime slot.duration) slot.start
-  calendarResult <- fetchDoctorCalendar conn slot.doctorId slot.start end
-  case calendarResult of
-    Left err -> pure (Left (PersistenceDecodeError err))
-    Right calendar -> case addAvailableSlot slot calendar of
-      Nothing -> pure (Right SlotConflict)
-      Just _  -> do
-        result <- insertAvailableSlot conn slot
-        pure . Right $ case result of
-          Right () -> SlotCreated slot
-          Left _   -> SlotConflict
+createAvailableSlot
+  :: ConnectionPool
+  -> DoctorId
+  -> HealthcareServiceId
+  -> UTCTime             -- start
+  -> IO (Either ServiceError SlotCreationOutcome)
+createAvailableSlot pool doctorId healthcareServiceId start = withResource pool $ \conn -> do
+  serviceResult <- Persistence.fetchHealthcareService conn healthcareServiceId
+  case serviceResult of
+    Left err            -> pure (Left (PersistenceDecodeError err))
+    Right Nothing       -> pure (Left (HealthcareServiceNotFound healthcareServiceId))
+    Right (Just service) -> do
+      slotId <- newSlotId
+      let slot = AvailableSlot { id = slotId, doctorId, healthcareServiceId, start, duration = service.duration }
+          end  = addUTCTime (durationToNominalDiffTime slot.duration) slot.start
+      calendarResult <- fetchDoctorCalendar conn doctorId start end
+      case calendarResult of
+        Left err -> pure (Left (PersistenceDecodeError err))
+        Right calendar -> case addAvailableSlot slot calendar of
+          Nothing -> pure (Right SlotConflict)
+          Just _  -> do
+            result <- insertAvailableSlot conn slot
+            pure . Right $ case result of
+              Right () -> SlotCreated slot
+              Left _   -> SlotConflict
 
 -- Creates a new Doctor. Doctor is an open record with no invariant beyond
 -- its field types (id-types-plain, minimal-types-minimal-tables) —

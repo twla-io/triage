@@ -117,8 +117,7 @@ import qualified Database.PostgreSQL.Simple as PG
 import qualified Service
 
 import Domain
-  ( AvailableSlot (..)
-  , DoctorId (..)
+  ( DoctorId (..)
   , HealthcareServiceId (..)
   , IntakeRequest (Accepted, Stale, Submitted)
   , IntakeRequestId (..)
@@ -369,6 +368,8 @@ handleServiceError (RequestNotAccepted rid)         = pure (envelope "requestNot
 handleServiceError (RequestNotYetTriaged rid)       = pure (envelope "requestNotYetTriaged" (requestIdDetail rid))
 handleServiceError (RequestNotAppointed rid)        = pure (envelope "requestNotAppointed" (requestIdDetail rid))
 handleServiceError (RequestAlreadyClosed rid)       = pure (envelope "requestAlreadyClosed" (requestIdDetail rid))
+handleServiceError (HealthcareServiceNotFound (HealthcareServiceId sid)) =
+  pure (envelope "healthcareServiceNotFound" (object ["healthcareServiceId" .= UUID.toText sid]))
 
 -- For shape (c) proper: Service.hs mutations returning
 -- IO (Either ServiceError a). The success side genuinely varies per call
@@ -539,15 +540,13 @@ healthcareServiceServer =
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- SLOT
--- createAvailableSlotHandler is SlotCreationOutcome-shaped — verified
--- against Service.hs directly: createAvailableSlot :: ConnectionPool ->
--- AvailableSlot -> IO SlotCreationOutcome, no ServiceError/Either at all.
--- Unlike every other create* handler, the request DTO has no id field
--- (CreateAvailableSlotRequest, see Transport.hs) — Service.hs mints no
--- SlotId internally the way createDoctor/createPatient/
--- createHealthcareService mint their own IDs, so this handler mints one
--- itself (Service.newSlotId) before constructing the AvailableSlot to
--- pass down. The response is the {"outcome", "detail"} envelope via
+-- createAvailableSlotHandler — verified against Service.hs directly:
+-- createAvailableSlot :: ConnectionPool -> DoctorId -> HealthcareServiceId
+-- -> UTCTime -> IO (Either ServiceError SlotCreationOutcome). Service.hs
+-- mints the SlotId and takes the duration from the stored
+-- HealthcareService, so the handler only passes the caller's three facts
+-- through; an unknown service comes back as HealthcareServiceNotFound via
+-- handleServiceError. The response is the {"outcome", "detail"} envelope via
 -- runSlotCreation, not a bare AvailableSlotDTO — and per
 -- checkwaitlist-not-an-endpoint's already-settled resolution, this does
 -- NOT also call matchWaitlistToSlot; the response reflects only this
@@ -578,16 +577,9 @@ type SlotAPI =
 
 createAvailableSlotHandler :: CreateAvailableSlotRequest -> AppM Value
 createAvailableSlotHandler req = do
-  pool   <- ask
-  newId <- liftIO Service.newSlotId
-  let slot = AvailableSlot
-        { id                  = newId
-        , doctorId            = DoctorId req.doctorId
-        , healthcareServiceId = HealthcareServiceId req.healthcareServiceId
-        , start               = req.start
-        , duration            = toDomainDuration req.duration
-        }
-  runSlotCreation (Service.createAvailableSlot pool slot)
+  pool <- ask
+  runSlotCreation
+    (Service.createAvailableSlot pool (DoctorId req.doctorId) (HealthcareServiceId req.healthcareServiceId) req.start)
 
 listAvailableSlotsHandler :: UTCTime -> UTCTime -> Maybe UUID -> Maybe UUID -> AppM [AvailableSlotDTO]
 listAvailableSlotsHandler rangeStart rangeEnd mDoctorUUID mServiceUUID = do

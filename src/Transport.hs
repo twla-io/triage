@@ -591,22 +591,16 @@ fromDomainAvailableSlot s =
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- SLOT CREATE REQUEST
--- Request-body DTO, per servant-implementation.md section 5 — but unlike
--- every create* request above, this omits "id": Service.createAvailableSlot
--- takes a fully-formed AvailableSlot with its own SlotId already set (no
--- Service.hs function mints one internally, unlike Doctor/Patient/
--- HealthcareService's create functions), so to keep this endpoint
--- consistent with every other create* endpoint — server mints the ID,
--- client never supplies it — the API layer mints the SlotId itself
--- (Service.newSlotId) and this DTO simply has no id field to carry one
--- prematurely. Otherwise identical field set to AvailableSlotDTO minus id.
+-- Request-body DTO, per servant-implementation.md section 5. No "id" (the
+-- server mints the SlotId, as for every create* endpoint) and no
+-- "duration": a slot's duration is always its HealthcareService's, which
+-- Service.createAvailableSlot fetches (stored-facts-by-reference).
 -- ═══════════════════════════════════════════════════════════════════════
 
 data CreateAvailableSlotRequest = CreateAvailableSlotRequest
   { doctorId            :: UUID
   , healthcareServiceId :: UUID
   , start               :: UTCTime
-  , duration            :: DurationDTO
   }
   deriving (Show, Eq)
 
@@ -615,7 +609,6 @@ instance ToJSON CreateAvailableSlotRequest where
     [ "doctorId" .= UUID.toText dto.doctorId
     , "healthcareServiceId" .= UUID.toText dto.healthcareServiceId
     , "start" .= dto.start
-    , "duration" .= dto.duration
     ]
 
 instance FromJSON CreateAvailableSlotRequest where
@@ -624,18 +617,15 @@ instance FromJSON CreateAvailableSlotRequest where
     healthcareServiceIdText <- v .: "healthcareServiceId"
     did                     <- parseUUIDField doctorIdText
     hsid                    <- parseUUIDField healthcareServiceIdText
-    CreateAvailableSlotRequest did hsid <$> v .: "start" <*> v .: "duration"
+    CreateAvailableSlotRequest did hsid <$> v .: "start"
 
 instance ToSchema CreateAvailableSlotRequest where
   declareNamedSchema _ = do
-    uuidRef     <- declareSchemaRef (Proxy :: Proxy UUID)
-    utcRef      <- declareSchemaRef (Proxy :: Proxy UTCTime)
-    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
+    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
+    utcRef  <- declareSchemaRef (Proxy :: Proxy UTCTime)
     pure $ objectSchema "CreateAvailableSlotRequest"
-      [ ("doctorId", uuidRef), ("healthcareServiceId", uuidRef)
-      , ("start", utcRef), ("duration", durationRef)
-      ]
-      ["doctorId", "healthcareServiceId", "start", "duration"]
+      [("doctorId", uuidRef), ("healthcareServiceId", uuidRef), ("start", utcRef)]
+      ["doctorId", "healthcareServiceId", "start"]
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- APPOINTMENT PARTY

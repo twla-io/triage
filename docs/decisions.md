@@ -659,6 +659,14 @@ hold for stored data.
 
 **Not yet done:** integration tests against a real database for the write paths. That's the kind of test that would have caught this.
 
+## A slot's duration always comes from its healthcare service (2026-09-27)
+
+**Found:** `Domain.hs` and the README already said `HealthcareService` "defines the canonical duration copied into each Slot at allocation time", but the code took the duration from the client: `CreateAvailableSlotRequest` had its own `duration` field and the New-slot form had a free duration picker. A 15-minute service could get a 60-minute slot. Nothing in the domain read `HealthcareService.duration` at all.
+
+**Decided:** keep the spec as written. `Service.createAvailableSlot` takes a `HealthcareServiceId`, fetches the service and copies its duration into the slot (`stored-facts-by-reference`); it also mints the `SlotId`, as the other create functions do. The request body and the UI picker lose `duration`; the form shows the service's duration read-only. The slot keeps its own copy, so a later change to a service would not alter existing slots.
+
+**Unknown service:** a new `ServiceError`, `HealthcareServiceNotFound`, not an outcome. Services are never deleted, so an unknown id is the caller's mistake, not a lost race. Services are never updated either, so the fetched duration can't go stale before the insert.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)

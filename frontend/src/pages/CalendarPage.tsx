@@ -23,7 +23,7 @@ import { useMemo, useState } from 'react'
 import { useCalendar, type CalendarEntryDTO } from '../api/queries/calendar'
 import { useDoctors } from '../api/queries/doctors'
 import { usePatients } from '../api/queries/patients'
-import { useHealthcareServices, DURATION_OPTIONS, type DurationType } from '../api/queries/services'
+import { useHealthcareServices, DURATION_OPTIONS } from '../api/queries/services'
 import { useCreateSlot } from '../api/queries/slots'
 import { ApiError } from '../api/client'
 import { formatDue, PriorityBadge } from '../components/PriorityBadge'
@@ -38,7 +38,7 @@ function NewSlotModal({ opened, onClose }: { opened: boolean; onClose: () => voi
   const [doctorId, setDoctorId] = useState<string | null>(null)
   const [healthcareServiceId, setHealthcareServiceId] = useState<string | null>(null)
   const [start, setStart] = useState<Date | null>(null)
-  const [duration, setDuration] = useState<DurationType>('halfAnHour')
+  const selectedService = services?.find((s) => s.id === healthcareServiceId)
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault()
@@ -47,7 +47,6 @@ function NewSlotModal({ opened, onClose }: { opened: boolean; onClose: () => voi
       doctorId,
       healthcareServiceId,
       start: start.toISOString(),
-      duration,
     })
   }
 
@@ -72,13 +71,12 @@ function NewSlotModal({ opened, onClose }: { opened: boolean; onClose: () => voi
             required
           />
           <DateTimePicker label="Start" placeholder="Pick date and time" value={start} onChange={setStart} required />
-          <Select
-            label="Duration"
-            data={DURATION_OPTIONS.map((d) => ({ value: d.value, label: d.label }))}
-            value={duration}
-            onChange={(value) => value && setDuration(value as DurationType)}
-            allowDeselect={false}
-          />
+          {selectedService && (
+            <Text size="sm" c="dimmed">
+              Duration: {DURATION_OPTIONS.find((d) => d.value === selectedService.duration.type)?.label} (set by the
+              service)
+            </Text>
+          )}
           <Group justify="flex-end">
             <Button type="submit" loading={createSlot.isPending}>
               Create slot

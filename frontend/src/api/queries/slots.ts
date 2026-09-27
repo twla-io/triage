@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { get, postEnveloped, toQuery, type Envelope, type Schemas } from '../client'
-import type { DurationType } from './services'
 
 export type AvailableSlotDTO = Schemas['AvailableSlotDTO']
 
@@ -30,7 +29,6 @@ export interface CreateSlotInput {
   doctorId: string
   healthcareServiceId: string
   start: string
-  duration: DurationType
 }
 
 // outcome is "slotCreated" (detail: AvailableSlotDTO) or "slotConflict" (detail: null).
@@ -42,7 +40,6 @@ export function useCreateSlot() {
         doctorId: input.doctorId,
         healthcareServiceId: input.healthcareServiceId,
         start: input.start,
-        duration: { type: input.duration },
       }),
     onSuccess: (result: Envelope<AvailableSlotDTO>) => {
       if (result.outcome === 'slotCreated') {

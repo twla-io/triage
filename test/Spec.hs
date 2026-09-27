@@ -243,7 +243,7 @@ instance Arbitrary AvailableSlotDTO where
   arbitrary = AvailableSlotDTO <$> genUUID <*> genUUID <*> genUUID <*> genMoment <*> arbitrary
 
 instance Arbitrary CreateAvailableSlotRequest where
-  arbitrary = CreateAvailableSlotRequest <$> genUUID <*> genUUID <*> genMoment <*> arbitrary
+  arbitrary = CreateAvailableSlotRequest <$> genUUID <*> genUUID <*> genMoment
 
 instance Arbitrary AppointmentPartyDTO where
   arbitrary = elements [ByDoctorDTO, ByPatientDTO]

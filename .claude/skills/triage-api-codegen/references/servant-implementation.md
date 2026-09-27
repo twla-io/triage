@@ -115,7 +115,7 @@ The settled request-DTO shape per mutation:
 |---|---|
 | `createDoctor` / `createPatient` | `{name}` |
 | `createHealthcareService` | `{name, duration: DurationDTO}` |
-| `createAvailableSlot` | `{doctorId, healthcareServiceId, start, duration: DurationDTO}` (`CreateAvailableSlotRequest`; the server mints the id) |
+| `createAvailableSlot` | `{doctorId, healthcareServiceId, start}` (`CreateAvailableSlotRequest`; the server mints the id and takes the duration from the service) |
 | `submitIntakeRequest` | `{patientId, narrative, doctorRequirement: DoctorRequirementDTO}` |
 | `acceptSubmittedIntakeRequest` | `{healthcareServiceId, priority: IntakeRequestPriorityDTO}` |
 | `rejectSubmittedIntakeRequest` | `{rejectionReason}` |
