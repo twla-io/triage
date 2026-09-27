@@ -945,26 +945,34 @@ insertSubmittedIntakeRequest conn s = do
     (row.id, row.patientId, row.narrative, row.requiredDoctorId, row.createdAt)
   pure ()
 
-persistTriagedIntakeRequest :: Connection -> TriagedIntakeRequest -> IO ()
+-- Guarded on state = 'submitted': Domain.acceptIntakeRequest takes a
+-- SubmittedIntakeRequest, so only a Submitted row may become Accepted.
+-- Service.hs checks that at fetch time; this re-asserts it at write time,
+-- so a concurrent accept/reject between the two can't be overwritten.
+-- Same affected-rows pattern as persistStaleIntakeRequest
+-- (uniqueness-races-are-outcomes).
+persistTriagedIntakeRequest :: Connection -> TriagedIntakeRequest -> IO ClaimOutcome
 persistTriagedIntakeRequest conn t = do
   let row = fromDomainTriaged t
-  _ <- execute conn
+  n <- execute conn
     "UPDATE intake_requests \
     \SET state = 'accepted', healthcare_service_id = ?, tier = ?, \
     \    due_not_before = ?, due_not_after = ?, triaged_at = ? \
-    \WHERE id = ?"
+    \WHERE id = ? AND state = 'submitted'"
     (row.healthcareServiceId, row.tier, row.dueNotBefore, row.dueNotAfter, row.triagedAt, row.id)
-  pure ()
+  pure (if n > 0 then Claimed else AlreadyClaimed)
 
-persistRejectedIntakeRequest :: Connection -> SubmittedIntakeRequest -> UTCTime -> Text -> IO ()
+-- Guarded on state = 'submitted' for the same reason as
+-- persistTriagedIntakeRequest: Rejected takes a SubmittedIntakeRequest.
+persistRejectedIntakeRequest :: Connection -> SubmittedIntakeRequest -> UTCTime -> Text -> IO ClaimOutcome
 persistRejectedIntakeRequest conn submitted rejectedAt reason = do
   let row = fromDomainRejected submitted rejectedAt reason
-  _ <- execute conn
+  n <- execute conn
     "UPDATE intake_requests \
     \SET state = 'rejected', rejected_at = ?, rejection_reason = ? \
-    \WHERE id = ?"
+    \WHERE id = ? AND state = 'submitted'"
     (row.rejectedAt, row.rejectionReason, row.id)
-  pure ()
+  pure (if n > 0 then Claimed else AlreadyClaimed)
 
 -- Reclaims an Appointed request back to Accepted — a single-table
 -- UPDATE, no slots interaction at all (the original slot that produced

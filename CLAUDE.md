@@ -96,14 +96,12 @@ or protects against races. Enforcement is split:
   reclaim/close require `Appointed`; slot creation checks
   `addAvailableSlot` against the doctor's stored calendar). This check is a
   separate read, not held in a transaction with the write.
-- **Persistence writes:** match, reclaim, mark-stale and close use
-  state-conditioned `UPDATE`s with affected-rows checks (`ClaimOutcome`),
-  so a concurrent change surfaces as an outcome. Matching (delete slot +
-  update request) runs in one transaction with rollback
-  (`persistMatchedIntakeRequest`). **Accept and reject currently use
-  unconditional `UPDATE`s** — no race guard, which conflicts with
-  `triage-service-codegen`'s guard-every-fetch-then-write-gap rule. It's a
-  known discrepancy, not a pattern to copy.
+- **Persistence writes:** every lifecycle transition (accept, reject,
+  match, reclaim, mark-stale, close) uses an `UPDATE` conditioned on the
+  expected current state, with an affected-rows check (`ClaimOutcome`), so
+  a concurrent change surfaces as an error or outcome instead of being
+  overwritten. Matching (delete slot + update request) runs in one
+  transaction with rollback (`persistMatchedIntakeRequest`).
 - **Database:** a `CHECK` on `intake_requests` enforces each state's column
   shape, plus the tier/deadline and close-reason shapes; durations limited
   to 15/30/60 minutes; foreign keys. `doctor_calendar` (maintained by

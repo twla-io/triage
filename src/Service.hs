@@ -381,7 +381,10 @@ submitIntakeRequest pool patientId narrative doctorRequirement createdAt =
 -- from a real, currently Submitted stored request. This wrapper is
 -- defined by that check: fetches by IntakeRequestId, confirms
 -- Right (Just (Submitted submitted)), rejects RequestNotSubmittedAnymore
--- otherwise.
+-- otherwise. The write is guarded on state = 'submitted' too
+-- (guard-every-fetch-then-write-gap); losing that race is reported as the
+-- same RequestNotSubmittedAnymore — the caller doesn't need to know
+-- whether the request moved on before its fetch or a moment after.
 acceptSubmittedIntakeRequest
   :: ConnectionPool
   -> IntakeRequestId
@@ -397,15 +400,18 @@ acceptSubmittedIntakeRequest pool requestId healthcareServiceId priority triaged
       Right Nothing                      -> pure (Left (RequestNotFound requestId))
       Right (Just (Submitted submitted)) -> do
         let triaged = acceptIntakeRequest submitted healthcareServiceId priority triagedAt
-        persistTriagedIntakeRequest conn triaged
-        pure (Right triaged)
+        claim <- persistTriagedIntakeRequest conn triaged
+        pure $ case claim of
+          Claimed        -> Right triaged
+          AlreadyClaimed -> Left (RequestNotSubmittedAnymore requestId)
       Right (Just _)                     -> pure (Left (RequestNotSubmittedAnymore requestId))
 
 -- No Domain.hs verb to wrap — rejection is direct construction
 -- (Rejected submitted rejectedAt reason), per the settled design: there
 -- is deliberately no rejectIntakeRequest function in Domain.hs. This
 -- wrapper's whole job is the same precondition check as
--- acceptSubmittedIntakeRequest's, applied to the reject path instead.
+-- acceptSubmittedIntakeRequest's, applied to the reject path instead,
+-- including the same state = 'submitted' guard on the write.
 rejectSubmittedIntakeRequest
   :: ConnectionPool
   -> IntakeRequestId
@@ -420,8 +426,10 @@ rejectSubmittedIntakeRequest pool requestId rejectedAt reason =
       Right Nothing                      -> pure (Left (RequestNotFound requestId))
       Right (Just (Submitted submitted)) -> do
         let rejected = Rejected submitted rejectedAt reason
-        persistRejectedIntakeRequest conn submitted rejectedAt reason
-        pure (Right rejected)
+        claim <- persistRejectedIntakeRequest conn submitted rejectedAt reason
+        pure $ case claim of
+          Claimed        -> Right rejected
+          AlreadyClaimed -> Left (RequestNotSubmittedAnymore requestId)
       Right (Just _)                     -> pure (Left (RequestNotSubmittedAnymore requestId))
 
 -- Mirrors Domain.checkIntakeWaitlist: a newly available slot scans the
