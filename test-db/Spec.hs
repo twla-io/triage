@@ -301,7 +301,7 @@ spec pool = do
       unknown <- DoctorId <$> nextRandom
       S.createAvailableSlot pool unknown fx.service.id t0 `shouldReturn` Left (DoctorNotFound unknown)
 
-  describe "constraints" $
+  describe "constraints" $ do
     it "a submitted request can't carry a decided doctor requirement" $ do
       fx <- fixture pool
       s  <- submit pool fx
@@ -309,6 +309,17 @@ spec pool = do
           DoctorId did        = fx.doctor.id
       result <- try (withResource pool (\c ->
         execute c "UPDATE intake_requests SET required_doctor_id = ? WHERE id = ?" (did, rid)))
+      case result of
+        Left e  -> sqlState e `shouldBe` "23514"   -- check_violation
+        Right n -> expectationFailure ("the update was accepted (" ++ show n ++ " row)")
+
+    it "a routine window can't end before it starts" $ do
+      fx <- fixture pool
+      t  <- accept pool fx AnyDoctor
+      let IntakeRequestId rid = t.submitted.id
+      result <- try (withResource pool (\c ->
+        execute c "UPDATE intake_requests SET due_not_before = ?, due_not_after = ? WHERE id = ?"
+          (minutes 60 t0, t0, rid)))
       case result of
         Left e  -> sqlState e `shouldBe` "23514"   -- check_violation
         Right n -> expectationFailure ("the update was accepted (" ++ show n ++ " row)")

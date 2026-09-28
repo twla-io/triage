@@ -178,6 +178,9 @@ CREATE TABLE intake_requests (
     (due_not_before IS NULL AND due_not_after IS NOT NULL)
   ),
 
+  -- Routine window: RoutineWithin's from <= to (mkRoutineWithin).
+  CHECK (due_not_before IS NULL OR due_not_after IS NULL OR due_not_before <= due_not_after),
+
   CHECK (
     close_reason IS NULL OR
     (close_reason = 'completed' AND closed_by_party IS NULL AND cancelled_at IS NULL) OR

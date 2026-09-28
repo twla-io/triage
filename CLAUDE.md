@@ -122,9 +122,9 @@ or protects against races. Enforcement is split:
   shape, plus the tier/deadline and close-reason shapes; durations limited
   to 15/30/60 minutes; foreign keys. `doctor_calendar` (maintained by
   triggers) plus an `EXCLUDE` constraint prevents overlapping slot or
-  appointment intervals per doctor. The DB does **not** check transition
-  order or `RoutineWithin` ordering (Persistence and Transport re-check the
-  latter when decoding).
+  appointment intervals per doctor. A `CHECK` also enforces
+  `RoutineWithin`'s `from <= to` (Persistence and Transport re-check it
+  when decoding). The DB does **not** check transition order.
 
 ## Sealing in Domain.hs — selective, and that's the point
 

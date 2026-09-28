@@ -795,6 +795,12 @@ Per expected state: every state comes after Submitted, so accept/reject only eve
 
 **Rejected:** keeping the current answers (the timing-dependent split stays, and each new operation needs a judgment call); `ChangedSinceRead` everywhere, including fetch-time mismatches (consistent, but discards what is now knowable and still doesn't separate lost races from caller mistakes).
 
+## RoutineWithin's from <= to is also a database CHECK (2026-09-28)
+
+**Found:** a clean-room generation from `Domain.hs` and `triage-db-codegen` alone (no migration, Persistence or decisions visible) added `CHECK (due_not_before <= due_not_after)`, following the skill's rule that an invariant `Domain.hs` declares over a single value maps to a `CHECK`. The real migration had no such check, and nothing in this file had decided against one — a gap, not a choice. Every other single-row rule (the tier/deadline shape, the close-reason shapes, the doctor requirement existing only after triage, the allowed durations) was already a `CHECK`; `RoutineWithin`, one of only two sealed types, sealed precisely for `from <= to`, was the exception.
+
+**Decided:** `intake_requests` gets `CHECK (due_not_before IS NULL OR due_not_after IS NULL OR due_not_before <= due_not_after)`. Decoding still goes through `mkRoutineWithin` (`sealed-type-replay`, `InvalidWithin`), now a second line of defense rather than the only one; Transport's check is unchanged. The skill names this as the live case of its single-value → `CHECK` rule.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
