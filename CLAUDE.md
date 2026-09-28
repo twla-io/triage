@@ -32,7 +32,7 @@ Run successfully when this file was last updated (2026-09-28):
     a real PostgreSQL (`test-db/Spec.hs`): creates a throwaway database,
     applies `migrations/0001_init.sql`, drops it afterwards. Needs a local
     server the current user can create databases on; extra libpq keywords
-    via `TRIAGE_TEST_PG`. Run 2026-09-28: 22 examples, 0 failures.
+    via `TRIAGE_TEST_PG`. Run 2026-09-28: 24 examples, 0 failures.
 - `cd frontend && npm run build` (`tsc -b && vite build`)
 
 Inferred from configuration, not run:
