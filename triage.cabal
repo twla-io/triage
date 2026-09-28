@@ -72,3 +72,19 @@ test-suite triage-test
     , uuid
   default-language:     Haskell2010
   ghc-options:          -Wall
+
+-- Needs a running PostgreSQL; see test-db/Spec.hs.
+test-suite triage-db-test
+  type:                 exitcode-stdio-1.0
+  main-is:              Spec.hs
+  hs-source-dirs:       test-db
+  build-depends:
+      base
+    , triage
+    , hspec
+    , postgresql-simple
+    , resource-pool
+    , time
+    , uuid
+  default-language:     Haskell2010
+  ghc-options:          -Wall -threaded

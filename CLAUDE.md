@@ -22,11 +22,17 @@ Toolchain is **cabal** (no `stack.yaml`). `cabal.project` pins
 `with-compiler: ghc-9.10.3`, which must already be on PATH
 (e.g. `ghcup install ghc 9.10.3`).
 
-Run successfully when this file was last updated (2026-09-26):
+Run successfully when this file was last updated (2026-09-28):
 - `cabal build all`
-- `cabal test` — hspec/QuickCheck: pure `Domain` properties plus a check
-  that every API body's `ToJSON` matches its Swagger schema. No database
-  tests exist.
+- `cabal test` — runs both suites below.
+  - `cabal test triage-test` — hspec/QuickCheck: pure `Domain` properties
+    plus a check that every API body's `ToJSON` matches its Swagger
+    schema. No database needed.
+  - `cabal test triage-db-test` — the SQL behind Persistence/Service against
+    a real PostgreSQL (`test-db/Spec.hs`): creates a throwaway database,
+    applies `migrations/0001_init.sql`, drops it afterwards. Needs a local
+    server the current user can create databases on; extra libpq keywords
+    via `TRIAGE_TEST_PG`. Run 2026-09-28: 18 examples, 0 failures.
 - `cd frontend && npm run build` (`tsc -b && vite build`)
 
 Inferred from configuration, not run:
