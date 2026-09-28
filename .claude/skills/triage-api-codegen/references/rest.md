@@ -13,12 +13,12 @@
 | `createHealthcareService :: ConnectionPool -> Text -> Duration -> IO HealthcareService` | `POST` | `/healthcare-services` |
 | `createAvailableSlot :: ConnectionPool -> DoctorId -> HealthcareServiceId -> UTCTime -> IO (Either ServiceError SlotCreationOutcome)` | `POST` | `/slots` |
 | `submitIntakeRequest :: ConnectionPool -> PatientId -> Text -> UTCTime -> IO (Either ServiceError SubmittedIntakeRequest)` | `POST` | `/intake-requests` |
-| `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> DoctorRequirement -> UTCTime -> IO (Either ServiceError (Fresh TriagedIntakeRequest))` | `POST` | `/intake-requests/:id/accept` |
-| `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError (Fresh IntakeRequest))` | `POST` | `/intake-requests/:id/reject` |
+| `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> DoctorRequirement -> UTCTime -> IO (Either ServiceError (TransitionOutcome TriagedIntakeRequest))` | `POST` | `/intake-requests/:id/accept` |
+| `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError (TransitionOutcome IntakeRequest))` | `POST` | `/intake-requests/:id/reject` |
 | `matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)` | (internal — not its own route, see below) | — |
 | `matchAcceptedIntakeRequestToSlot :: ConnectionPool -> IntakeRequestId -> SlotId -> IO (Either ServiceError MatchOutcome)` | `POST` | `/intake-requests/:id/match` |
-| `markIntakeRequestStale :: ConnectionPool -> IntakeRequestId -> UTCTime -> IO (Either ServiceError (Fresh TriagedIntakeRequest))` | `POST` | `/intake-requests/:id/mark-stale` |
-| `closeAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either ServiceError (Fresh IntakeRequest))` | `POST` | `/intake-requests/:id/close` |
+| `markIntakeRequestStale :: ConnectionPool -> IntakeRequestId -> UTCTime -> IO (Either ServiceError (TransitionOutcome TriagedIntakeRequest))` | `POST` | `/intake-requests/:id/mark-stale` |
+| `closeAppointedIntakeRequest :: ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either ServiceError (TransitionOutcome IntakeRequest))` | `POST` | `/intake-requests/:id/close` |
 
 All action-suffixed, per `action-endpoints-not-generic-patch` (`SKILL.md`) — never `PATCH /intake-requests/:id` with a state field.
 
@@ -64,8 +64,9 @@ Per `error-vs-outcome-mapping` (`SKILL.md`), the wire mapping is decided: four H
 - **`400`** — malformed before reaching `Service.hs` at all: bad JSON, a field with the wrong type, a missing required field, an ID that isn't even a valid UUID shape.
 - **`404`** — the route/path itself doesn't resolve to a known resource shape, decided by the router, before any `Service.hs` call.
 - **`200`** — `Service.hs` actually ran and answered. This covers **both** success **and** every `ServiceError`/outcome-type constructor — `PersistenceDecodeError` aside (see `500` below) — discriminated by a field in the response body, never by status code:
-  - `ServiceError`'s `RequestNotFound`, `RequestNotSubmittedAnymore`, `RequestNotAccepted`, `RequestNotYetTriaged`, `RequestNotAppointed`, `RequestAlreadyClosed`.
-  - `MatchOutcome`'s `Matched`, `NoEligibleRequest`, `RequestIneligible`, `SlotAlreadyClaimed`, `RequestAlreadyClaimed`.
+  - `ServiceError`'s `RequestNotFound`, `RequestInWrongState`, `HealthcareServiceNotFound`, `DoctorNotFound`, `PatientNotFound`.
+  - `TransitionOutcome`'s `Transitioned`, `MovedOn` (`requestMovedOn`).
+  - `MatchOutcome`'s `Matched`, `NoEligibleRequest`, `RequestIneligible`, `SlotAlreadyClaimed`, `RequestMovedOn`.
   - `SlotCreationOutcome`'s `SlotCreated`, `SlotConflict`.
 - **`500`** — outside the domain's vocabulary entirely: `PersistenceDecodeError`, a DB connection failure, anything genuinely unexpected.
 

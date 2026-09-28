@@ -18,7 +18,7 @@ Derived from `Domain.hs`'s transitions and the routes in `Api.hs`. If a transiti
 | `Stale` | none — read-only | — | — | |
 | `Closed` | none — read-only | — | — | Show the `CloseReason` and, where present, which party. A closed request never reopens; a patient who needs to be seen again gets a new request. |
 
-Every action above can also come back as `requestChangedSinceRead` (the request changed since the screen loaded) or as a precondition answer such as `requestNotSubmittedAnymore`. Show those; see `SKILL.md`.
+Every action above can also come back as `requestMovedOn` (someone else acted first; the detail is the request as it is now). `requestInWrongState` should never appear if this table is followed. See `SKILL.md`.
 
 ## `AvailableSlot`
 

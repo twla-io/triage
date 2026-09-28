@@ -51,7 +51,7 @@ module Service
     ServiceError (..)
   , MatchOutcome (..)
   , SlotCreationOutcome (..)
-  , Fresh (..)
+  , TransitionOutcome (..)
 
     -- ── Operations ───────────────────────────────────────────────────────
   , createDoctor
@@ -121,6 +121,7 @@ import Domain
   , SlotId (..)
   , SubmittedIntakeRequest (..)
   , TriagedIntakeRequest (..)
+  , WithdrawnIntakeRequest (..)
   , acceptIntakeRequest
   , addAvailableSlot
   , calendarEntryStart
@@ -176,17 +177,20 @@ import Persistence
 -- ERRORS
 -- Reserved for cases indicating a bug, misuse, or genuine infrastructure
 -- failure — never for a legitimate concurrent outcome (that's
--- MatchOutcome/SlotCreationOutcome/Fresh below, not ServiceError).
+-- MatchOutcome/SlotCreationOutcome/TransitionOutcome below, not ServiceError).
+--
+-- RequestInWrongState: the request is in a state that can't come after
+-- the one the operation expects (e.g. closing a request that is still
+-- Accepted), so the caller could never have seen the state it acted on —
+-- a caller mistake. Carries the request as it is, for diagnosis. A state
+-- that *does* come after the expected one is not an error: see MovedOn /
+-- RequestMovedOn below.
 -- ═══════════════════════════════════════════════════════════════════════
 
 data ServiceError
   = PersistenceDecodeError DecodeError
   | RequestNotFound IntakeRequestId
-  | RequestNotSubmittedAnymore IntakeRequestId
-  | RequestNotAccepted IntakeRequestId
-  | RequestNotYetTriaged IntakeRequestId
-  | RequestNotAppointed IntakeRequestId
-  | RequestAlreadyClosed IntakeRequestId
+  | RequestInWrongState IntakeRequest
   | HealthcareServiceNotFound HealthcareServiceId
   | DoctorNotFound DoctorId
   | PatientNotFound PatientId
@@ -194,9 +198,8 @@ data ServiceError
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- OUTCOMES
--- NoEligibleRequest/RequestIneligible/SlotAlreadyClaimed/
--- RequestAlreadyClaimed are normal branches of
--- business logic the caller reacts to, each differently — not errors:
+-- Normal branches of business logic the caller reacts to, each
+-- differently — not errors:
 --   * NoEligibleRequest: no one on the waitlist fits this slot (automatic
 --     scan, matchWaitlistToSlot); the slot stays available, nothing to
 --     react to.
@@ -210,24 +213,29 @@ data ServiceError
 --     matchAcceptedIntakeRequestToSlot reports when its slot fetch finds no
 --     row: under deleted-on-match, "claimed a moment ago" and "never
 --     existed" look identical.
---   * RequestAlreadyClaimed: matchAcceptedIntakeRequestToSlot's own fetch
---     found the request already Appointed — it's scheduled; drop it.
---   * RequestChangedSinceRead / ChangedSinceRead (Fresh, below): the
---     request changed between this operation's fetch and its write — the
---     write's state guard matched no row (state-guard-is-freshness).
---     The only true statement is "it changed since you read it": it may
---     have been matched, closed, or otherwise moved on. The caller decided
---     from what it saw, so it must look again; nothing here retries.
+--   * RequestMovedOn / MovedOn (TransitionOutcome, below): the request is in a
+--     state that comes after the one the operation expects — someone else
+--     acted first. Carries the request as it is now. The same answer
+--     whether the fetch noticed or the write did (its state guard matched
+--     no row, state-guard-is-freshness); after a lost write the request is
+--     read once more, which always finds a later state, since states only
+--     move forward. Nothing retries: the caller looks at what it is now.
 -- SlotAlreadyClaimed is translated from Persistence.MatchPersistOutcome's
 -- SlotAlreadyGone, or produced directly by matchAcceptedIntakeRequestToSlot
--- when fetchSlot returns Nothing; RequestChangedSinceRead from
--- Persistence.MatchPersistOutcome's RequestAlreadyMatched (the
--- state-guarded claimAcceptedIntakeRequest matched zero rows) — via
--- the shared persistMatch helper below, used identically by both
--- matchWaitlistToSlot and matchAcceptedIntakeRequestToSlot.
--- claimAcceptedIntakeRequest also folds a doctor_calendar overlap (23P01)
--- into that result; since matching copies the stored slot's own interval,
--- freed in the same transaction, that case should be unreachable.
+-- when fetchSlot returns Nothing; a lost request claim
+-- (RequestAlreadyMatched) becomes RequestMovedOn — via the shared
+-- persistMatch helper below, used identically by both matchWaitlistToSlot
+-- and matchAcceptedIntakeRequestToSlot. claimAcceptedIntakeRequest also
+-- folds a doctor_calendar overlap (23P01) into that result; since matching
+-- copies the stored slot's own interval, freed in the same transaction,
+-- that case should be unreachable.
+--
+-- Which states come after which is read off Domain.hs's transitions:
+-- every state comes after Submitted; Appointed, Stale,
+-- WithdrawnFromAccepted and Closed come after Accepted; only Closed comes
+-- after Appointed. Each operation below spells its split out
+-- exhaustively, no wildcard over IntakeRequest's cases where the answer
+-- differs between them.
 --
 -- Distinct constructor names throughout, not shared ones — Haskell data
 -- constructors share one namespace per module (unlike record fields under
@@ -240,18 +248,16 @@ data MatchOutcome
   | NoEligibleRequest
   | RequestIneligible
   | SlotAlreadyClaimed
-  | RequestAlreadyClaimed
-  | RequestChangedSinceRead
+  | RequestMovedOn IntakeRequest
   deriving (Show, Eq)
 
--- The result of an operation whose write is guarded by the state its
--- fetch saw: either the write was applied, or the request changed since
--- that fetch (see RequestChangedSinceRead above). An outcome, not a
--- ServiceError — losing a race is never the caller's mistake
--- (error-vs-outcome-types).
-data Fresh a
-  = Applied a
-  | ChangedSinceRead
+-- The result of a state transition: either it was applied, or the request
+-- had already moved on to a later state (see RequestMovedOn above). An
+-- outcome, not a ServiceError — losing a race is never the caller's
+-- mistake (error-vs-outcome-types).
+data TransitionOutcome a
+  = Transitioned a
+  | MovedOn IntakeRequest
   deriving (Show, Eq)
 
 -- SlotConflict translates Persistence.SlotOverlap — a legitimate
@@ -384,11 +390,11 @@ submitIntakeRequest pool patientId narrative createdAt =
 -- verifies-the-precondition convention: Domain.acceptIntakeRequest takes
 -- a bare SubmittedIntakeRequest and has no way to check it actually came
 -- from a real, currently Submitted stored request. This wrapper is
--- defined by that check: fetches by IntakeRequestId, confirms
--- Right (Just (Submitted submitted)), rejects RequestNotSubmittedAnymore
--- otherwise. The write is guarded on state = 'submitted'; if the request
--- changed in between, the result is ChangedSinceRead
--- (guard-every-fetch-then-write-gap).
+-- defined by that check: fetches by IntakeRequestId and confirms
+-- Right (Just (Submitted submitted)). Every other state comes after
+-- Submitted, so any other state is MovedOn, never RequestInWrongState.
+-- The write is guarded on state = 'submitted'; if the request moved on in
+-- between, the result is MovedOn too (guard-every-fetch-then-write-gap).
 acceptSubmittedIntakeRequest
   :: ConnectionPool
   -> IntakeRequestId
@@ -396,7 +402,7 @@ acceptSubmittedIntakeRequest
   -> IntakeRequestPriority
   -> DoctorRequirement   -- decided by triage; matching uses this
   -> UTCTime             -- triagedAt
-  -> IO (Either ServiceError (Fresh TriagedIntakeRequest))
+  -> IO (Either ServiceError (TransitionOutcome TriagedIntakeRequest))
 acceptSubmittedIntakeRequest pool requestId healthcareServiceId priority doctorRequirement triagedAt =
   withResource pool $ \conn -> do
     reqResult <- Persistence.fetchIntakeRequest conn requestId
@@ -410,23 +416,24 @@ acceptSubmittedIntakeRequest pool requestId healthcareServiceId priority doctorR
           Right () -> do
             let triaged = acceptIntakeRequest submitted healthcareServiceId priority doctorRequirement triagedAt
             claim <- persistTriagedIntakeRequest conn triaged
-            pure $ case claim of
-              Claimed        -> Right (Applied triaged)
-              AlreadyClaimed -> Right ChangedSinceRead
-      Right (Just _)                     -> pure (Left (RequestNotSubmittedAnymore requestId))
+            case claim of
+              Claimed        -> pure (Right (Transitioned triaged))
+              AlreadyClaimed -> fmap MovedOn <$> refetchAfterLostWrite conn requestId
+      Right (Just current)               -> pure (Right (MovedOn current))
 
 -- No Domain.hs verb to wrap — rejection is direct construction
 -- (Rejected submitted rejectedAt reason), per the settled design: there
 -- is deliberately no rejectIntakeRequest function in Domain.hs. This
 -- wrapper's whole job is the same precondition check as
 -- acceptSubmittedIntakeRequest's, applied to the reject path instead,
--- including the same state = 'submitted' guard on the write.
+-- including the same state = 'submitted' guard on the write and the same
+-- MovedOn for every other state.
 rejectSubmittedIntakeRequest
   :: ConnectionPool
   -> IntakeRequestId
   -> UTCTime             -- rejectedAt
   -> Text                -- reason
-  -> IO (Either ServiceError (Fresh IntakeRequest))
+  -> IO (Either ServiceError (TransitionOutcome IntakeRequest))
 rejectSubmittedIntakeRequest pool requestId rejectedAt reason =
   withResource pool $ \conn -> do
     reqResult <- Persistence.fetchIntakeRequest conn requestId
@@ -436,10 +443,10 @@ rejectSubmittedIntakeRequest pool requestId rejectedAt reason =
       Right (Just (Submitted submitted)) -> do
         let rejected = Rejected submitted rejectedAt reason
         claim <- persistRejectedIntakeRequest conn submitted rejectedAt reason
-        pure $ case claim of
-          Claimed        -> Right (Applied rejected)
-          AlreadyClaimed -> Right ChangedSinceRead
-      Right (Just _)                     -> pure (Left (RequestNotSubmittedAnymore requestId))
+        case claim of
+          Claimed        -> pure (Right (Transitioned rejected))
+          AlreadyClaimed -> fmap MovedOn <$> refetchAfterLostWrite conn requestId
+      Right (Just current)               -> pure (Right (MovedOn current))
 
 -- Mirrors Domain.checkIntakeWaitlist: a newly available slot scans the
 -- waitlist in priority order; the first eligible request is matched and
@@ -455,7 +462,7 @@ matchWaitlistToSlot pool slot = withResource pool $ \conn -> do
     Right waitlist ->
       case checkIntakeWaitlist slot waitlist of
         Nothing        -> pure (Right NoEligibleRequest)
-        Just appointed -> Right <$> persistMatch conn slot appointed
+        Just appointed -> persistMatch conn slot appointed
 
 -- Mirrors Domain.matchIntakeRequestToSlot called directly, bypassing
 -- checkIntakeWaitlist's scan — Domain.hs's own comment calls this out as a
@@ -469,18 +476,16 @@ matchWaitlistToSlot pool slot = withResource pool $ \conn -> do
 -- no way to check, and doesn't check, that it actually came from a real,
 -- currently Accepted stored request. This wrapper is defined by that check,
 -- mirroring matchWaitlistToSlot's own claim on "waitlist": it fetches by
--- IntakeRequestId, confirms Right (Just (Accepted triaged)), and rejects
+-- IntakeRequestId, confirms Right (Just (Accepted triaged)), and answers
 -- otherwise. Deliberately not "force"/"override" in the name — matches is
 -- never overridable, even by a manager, so a name suggesting force would
 -- overclaim what this bypasses (the scan, not the rules).
 --
--- All seven IntakeRequest cases handled explicitly, no wildcard — so GHC's
+-- Every IntakeRequest case handled explicitly, no wildcard — so GHC's
 -- exhaustiveness check keeps this honest if a future case is ever added.
--- Appointed collapses to RequestAlreadyClaimed (already matched, whether
--- before this call or a moment after its own fetch — see the OUTCOMES
--- comment above); Rejected/Withdrawn/Stale/Closed all collapse to the
--- single RequestNotAccepted ServiceError, a deliberate simplification (the
--- caller can re-fetch if it needs to know which).
+-- Appointed/Stale/WithdrawnFromAccepted/Closed come after Accepted:
+-- RequestMovedOn. Submitted/Rejected/WithdrawnFromSubmitted can't:
+-- RequestInWrongState.
 --
 -- RequestIneligible (matchIntakeRequestToSlot returns Nothing) is a
 -- distinct MatchOutcome constructor from NoEligibleRequest: there was no
@@ -493,10 +498,7 @@ matchWaitlistToSlot pool slot = withResource pool $ \conn -> do
 -- guard (persistMatchedIntakeRequest's slot-side and request-side checks).
 -- They differ only in how the TriagedIntakeRequest is obtained (scan vs.
 -- fetched-and-validated by ID); everything downstream of that is one
--- function. This is also why "already matched" is RequestAlreadyClaimed
--- here, not a new ServiceError: the shared write path can't tell "already
--- matched before this call" from "matched a moment after this call's own
--- fetch" — see the OUTCOMES comment above.
+-- function.
 --
 -- Takes a SlotId, not an AvailableSlot, and matches against the stored
 -- slot: the caller is not authoritative about a slot's doctor/start/
@@ -515,7 +517,6 @@ matchAcceptedIntakeRequestToSlot pool requestId slotId = withResource pool $ \co
   case reqResult of
     Left err                        -> pure (Left (PersistenceDecodeError err))
     Right Nothing                   -> pure (Left (RequestNotFound requestId))
-    Right (Just (Submitted _))      -> pure (Left (RequestNotYetTriaged requestId))
     Right (Just (Accepted triaged)) -> do
       slotResult <- fetchSlot conn slotId
       case slotResult of
@@ -524,25 +525,29 @@ matchAcceptedIntakeRequestToSlot pool requestId slotId = withResource pool $ \co
         Right (Just slot) ->
           case matchIntakeRequestToSlot slot triaged of
             Nothing        -> pure (Right RequestIneligible)
-            Just appointed -> Right <$> persistMatch conn slot appointed
-    Right (Just (Appointed _))      -> pure (Right RequestAlreadyClaimed)
-    Right (Just (Rejected {}))      -> pure (Left (RequestNotAccepted requestId))
-    Right (Just (Withdrawn _))      -> pure (Left (RequestNotAccepted requestId))
-    Right (Just (Stale {}))         -> pure (Left (RequestNotAccepted requestId))
-    Right (Just (Closed {}))        -> pure (Left (RequestNotAccepted requestId))
+            Just appointed -> persistMatch conn slot appointed
+    Right (Just current) -> pure $ case current of
+      Appointed _                            -> Right (RequestMovedOn current)
+      Stale {}                               -> Right (RequestMovedOn current)
+      Withdrawn (WithdrawnFromAccepted {})   -> Right (RequestMovedOn current)
+      Closed {}                              -> Right (RequestMovedOn current)
+      Submitted _                            -> Left (RequestInWrongState current)
+      Rejected {}                            -> Left (RequestInWrongState current)
+      Withdrawn (WithdrawnFromSubmitted {})  -> Left (RequestInWrongState current)
 
 -- Shared tail of matchWaitlistToSlot/matchAcceptedIntakeRequestToSlot:
 -- persists an already-produced AppointedIntakeRequest and translates
 -- Persistence's MatchPersistOutcome into this module's MatchOutcome. Not
 -- exported — an internal helper, not its own use case (function-per-use-case
 -- is about public operations, not every internal step).
-persistMatch :: Connection -> AvailableSlot -> AppointedIntakeRequest -> IO MatchOutcome
+persistMatch :: Connection -> AvailableSlot -> AppointedIntakeRequest -> IO (Either ServiceError MatchOutcome)
 persistMatch conn slot appointed = do
   claim <- persistMatchedIntakeRequest conn slot.id appointed
-  pure $ case claim of
-    MatchPersisted        -> Matched appointed
-    SlotAlreadyGone       -> SlotAlreadyClaimed
-    RequestAlreadyMatched -> RequestChangedSinceRead
+  case claim of
+    MatchPersisted        -> pure (Right (Matched appointed))
+    SlotAlreadyGone       -> pure (Right SlotAlreadyClaimed)
+    RequestAlreadyMatched ->
+      fmap RequestMovedOn <$> refetchAfterLostWrite conn appointed.triaged.submitted.id
 
 -- Closes out an Accepted request that never got matched to a slot or
 -- withdrawn — staff-initiated only (see Domain.hs's own comment on
@@ -552,7 +557,7 @@ persistMatch conn slot appointed = do
 -- construction in Domain.hs (Stale triaged staleAt), same as
 -- Rejected/Withdrawn/Closed's own direct-construction cases — so this
 -- wrapper's whole job is the precondition check: fetch by
--- IntakeRequestId, confirm Right (Just (Accepted triaged)), reject
+-- IntakeRequestId, confirm Right (Just (Accepted triaged)), answer
 -- otherwise.
 --
 -- staleAt is caller-supplied, not generated internally via
@@ -560,18 +565,16 @@ persistMatch conn slot appointed = do
 -- timestamp parameter (createdAt/triagedAt/rejectedAt/etc.); Api.hs's
 -- handler owns calling getCurrentTime and passing the result in.
 --
--- All six non-Accepted IntakeRequest cases handled explicitly, no
--- wildcard, same exhaustiveness discipline as every other mutation
--- wrapper in this module — so a future eighth IntakeRequest case would
--- surface as a compile warning here too, not get silently swallowed.
--- RequestNotAccepted is reused for every one of them. If the request
--- changes between the fetch and the write, the result is
--- ChangedSinceRead instead.
+-- Same split as matchAcceptedIntakeRequestToSlot, every case explicit:
+-- Appointed/Stale/WithdrawnFromAccepted/Closed come after Accepted
+-- (MovedOn); Submitted/Rejected/WithdrawnFromSubmitted can't
+-- (RequestInWrongState). A request that moves on between the fetch and
+-- the write is MovedOn too.
 markIntakeRequestStale
   :: ConnectionPool
   -> IntakeRequestId
   -> UTCTime             -- staleAt
-  -> IO (Either ServiceError (Fresh TriagedIntakeRequest))
+  -> IO (Either ServiceError (TransitionOutcome TriagedIntakeRequest))
 markIntakeRequestStale pool requestId staleAt = withResource pool $ \conn -> do
   reqResult <- Persistence.fetchIntakeRequest conn requestId
   case reqResult of
@@ -579,15 +582,17 @@ markIntakeRequestStale pool requestId staleAt = withResource pool $ \conn -> do
     Right Nothing                   -> pure (Left (RequestNotFound requestId))
     Right (Just (Accepted triaged)) -> do
       claim <- persistStaleIntakeRequest conn requestId staleAt
-      pure $ case claim of
-        Claimed        -> Right (Applied triaged)
-        AlreadyClaimed -> Right ChangedSinceRead
-    Right (Just (Submitted _))      -> pure (Left (RequestNotAccepted requestId))
-    Right (Just (Rejected {}))      -> pure (Left (RequestNotAccepted requestId))
-    Right (Just (Appointed _))      -> pure (Left (RequestNotAccepted requestId))
-    Right (Just (Withdrawn _))      -> pure (Left (RequestNotAccepted requestId))
-    Right (Just (Stale {}))         -> pure (Left (RequestNotAccepted requestId))
-    Right (Just (Closed {}))        -> pure (Left (RequestNotAccepted requestId))
+      case claim of
+        Claimed        -> pure (Right (Transitioned triaged))
+        AlreadyClaimed -> fmap MovedOn <$> refetchAfterLostWrite conn requestId
+    Right (Just current) -> pure $ case current of
+      Appointed _                            -> Right (MovedOn current)
+      Stale {}                               -> Right (MovedOn current)
+      Withdrawn (WithdrawnFromAccepted {})   -> Right (MovedOn current)
+      Closed {}                              -> Right (MovedOn current)
+      Submitted _                            -> Left (RequestInWrongState current)
+      Rejected {}                            -> Left (RequestInWrongState current)
+      Withdrawn (WithdrawnFromSubmitted {})  -> Left (RequestInWrongState current)
 
 -- Closes an appointed request. No Domain.hs verb to collide with here —
 -- IntakeRequest's Closed constructor is open and there is deliberately no
@@ -609,35 +614,48 @@ markIntakeRequestStale pool requestId staleAt = withResource pool $ \conn -> do
 -- Guarded twice: the initial fetch catches the common case (already
 -- closed by the time this is called), and the write is conditioned on
 -- state = 'appointed'. Without that, a concurrent close could silently
--- overwrite which reason it closed for; the result is ChangedSinceRead
--- instead.
+-- overwrite which reason it closed for; the result is MovedOn instead,
+-- carrying the reason the other close recorded.
 --
--- All seven IntakeRequest cases handled explicitly, no wildcard, so GHC's
--- exhaustiveness check covers any future case: Submitted/Rejected/
--- Accepted/Withdrawn/Stale all collapse to RequestNotAppointed; Closed
--- gets its own RequestAlreadyClosed.
+-- Every IntakeRequest case handled explicitly, no wildcard: only Closed
+-- comes after Appointed (MovedOn); Submitted/Rejected/Accepted/Withdrawn/
+-- Stale can't (RequestInWrongState).
 closeAppointedIntakeRequest
   :: ConnectionPool
   -> IntakeRequestId
   -> CloseReason
-  -> IO (Either ServiceError (Fresh IntakeRequest))
+  -> IO (Either ServiceError (TransitionOutcome IntakeRequest))
 closeAppointedIntakeRequest pool requestId reason = withResource pool $ \conn -> do
   reqResult <- Persistence.fetchIntakeRequest conn requestId
   case reqResult of
     Left err                           -> pure (Left (PersistenceDecodeError err))
     Right Nothing                      -> pure (Left (RequestNotFound requestId))
-    Right (Just (Submitted _))         -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Rejected {}))         -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Accepted _))          -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Withdrawn _))         -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Stale {}))            -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Closed {}))           -> pure (Left (RequestAlreadyClosed requestId))
     Right (Just (Appointed appointed)) -> do
       let closed = Closed appointed reason
       claim <- persistClosedIntakeRequestIfAppointed conn appointed reason
-      pure $ case claim of
-        Claimed        -> Right (Applied closed)
-        AlreadyClaimed -> Right ChangedSinceRead
+      case claim of
+        Claimed        -> pure (Right (Transitioned closed))
+        AlreadyClaimed -> fmap MovedOn <$> refetchAfterLostWrite conn requestId
+    Right (Just current) -> pure $ case current of
+      Closed {}     -> Right (MovedOn current)
+      Submitted _   -> Left (RequestInWrongState current)
+      Rejected {}   -> Left (RequestInWrongState current)
+      Accepted _    -> Left (RequestInWrongState current)
+      Withdrawn _   -> Left (RequestInWrongState current)
+      Stale {}      -> Left (RequestInWrongState current)
+
+-- After a transition write matched no row: read the request again to
+-- report where it went. Its state guard failed, and states only move
+-- forward, so what this finds is a later state — MovedOn/RequestMovedOn,
+-- never RequestInWrongState. Requests are never deleted, so Nothing here
+-- would mean a broken database; reported as RequestNotFound.
+refetchAfterLostWrite :: Connection -> IntakeRequestId -> IO (Either ServiceError IntakeRequest)
+refetchAfterLostWrite conn requestId = do
+  reqResult <- Persistence.fetchIntakeRequest conn requestId
+  pure $ case reqResult of
+    Left err             -> Left (PersistenceDecodeError err)
+    Right Nothing        -> Left (RequestNotFound requestId)
+    Right (Just current) -> Right current
 
 -- Unknown references are reported as ServiceErrors (the caller named an id
 -- that doesn't exist), not left to the foreign keys, which would surface as

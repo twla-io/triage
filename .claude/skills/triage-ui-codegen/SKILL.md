@@ -21,7 +21,7 @@ Don't model a request's state in the frontend as independent booleans (`isAccept
 
 ### Show every outcome the server can answer with
 
-Mutations answer `200` with `{"outcome": tag, "detail": …}` for success, errors and outcomes alike (`error-vs-outcome-mapping`). A form that only checks for HTTP errors silently swallows answers like `requestNotSubmittedAnymore` or `requestChangedSinceRead`. Show any outcome other than the expected success tag, with readable text where it helps — `requestChangedSinceRead` means the request changed since the screen loaded, so the user should reload and decide again.
+Mutations answer `200` with `{"outcome": tag, "detail": …}` for success, errors and outcomes alike (`error-vs-outcome-mapping`). A form that only checks for HTTP errors silently swallows answers like `requestMovedOn`. Show any outcome other than the expected success tag, with readable text where it helps. `requestMovedOn` means someone else acted first; its detail is the request as it is now, so say what it became (e.g. "already rejected") and let the user reload. `requestInWrongState` means the action never applied to the request's state — a UI bug to fix, since the state-to-action table should never offer it.
 
 ### `RoutineDue`'s four cases are a mode choice, not two independent date pickers
 

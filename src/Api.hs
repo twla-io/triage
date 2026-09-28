@@ -125,7 +125,7 @@ import Domain
   , SlotId (..)
   )
 import Persistence (ConnectionPool, DecodeError)
-import Service     (Fresh (..), MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..))
+import Service     (MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..), TransitionOutcome (..))
 import Transport
   ( AcceptIntakeRequestRequest (..)
   , AppointedIntakeRequestDTO
@@ -338,36 +338,27 @@ runSlotCreation action = do
     Right SlotConflict       -> pure (envelopeEmpty "slotConflict")
 
 -- IntakeRequestId (Domain.hs) has no ToJSON instance of its own (Domain.hs
--- has no serialization awareness of any kind — see its own Layering
--- section) — every non-decode ServiceError constructor below carries a
--- bare IntakeRequestId (verified against Service.hs directly: all six of
--- RequestNotFound/RequestNotSubmittedAnymore/RequestNotAccepted/
--- RequestNotYetTriaged/RequestNotAppointed/RequestAlreadyClosed), so
--- handleServiceError can't pass one straight to envelope's generic dto
--- parameter. Wrapped in a small anonymous object instead, same
--- UUID.toText convention as every Transport.hs DTO field standing in for
--- a bare id.
+-- has no serialization awareness of any kind), so RequestNotFound's bare
+-- id can't go straight into envelope's generic dto parameter. Wrapped in a
+-- small anonymous object instead, same UUID.toText convention as every
+-- Transport.hs DTO field standing in for a bare id.
 requestIdDetail :: IntakeRequestId -> Value
 requestIdDetail (IntakeRequestId rid) = object ["requestId" .= UUID.toText rid]
 
--- Exhaustive match, no wildcard — six non-decode ServiceError
--- constructors, verified against Service.hs directly, all carrying a bare
--- IntakeRequestId with identical rendering regardless of which mutation
--- produced it (servant-implementation.md section 4's own reasoning for
--- why this is a tag/toDetail-less exhaustive match, not per-call-site
--- onError continuations). PersistenceDecodeError is the one constructor
+-- Exhaustive match, no wildcard — each ServiceError renders the same way
+-- regardless of which mutation produced it (servant-implementation.md
+-- section 4's own reasoning for why this is a tag/toDetail-less
+-- exhaustive match, not per-call-site onError continuations).
+-- RequestInWrongState carries the request as it is, rendered as its
+-- IntakeRequestDTO — the same detail requestMovedOn uses. PersistenceDecodeError is the one constructor
 -- NOT rendered via envelope — a decode failure is outside the domain's
 -- error vocabulary (error-vs-outcome-mapping's own 500 case), same
 -- plain-text-`show` treatment as runRead's Left case above, since
 -- DecodeError has no ToJSON instance either.
 handleServiceError :: ServiceError -> AppM Value
-handleServiceError (PersistenceDecodeError e)       = throwError err500 { errBody = LBS8.pack (show e) }
-handleServiceError (RequestNotFound rid)            = pure (envelope "requestNotFound" (requestIdDetail rid))
-handleServiceError (RequestNotSubmittedAnymore rid) = pure (envelope "requestNotSubmittedAnymore" (requestIdDetail rid))
-handleServiceError (RequestNotAccepted rid)         = pure (envelope "requestNotAccepted" (requestIdDetail rid))
-handleServiceError (RequestNotYetTriaged rid)       = pure (envelope "requestNotYetTriaged" (requestIdDetail rid))
-handleServiceError (RequestNotAppointed rid)        = pure (envelope "requestNotAppointed" (requestIdDetail rid))
-handleServiceError (RequestAlreadyClosed rid)       = pure (envelope "requestAlreadyClosed" (requestIdDetail rid))
+handleServiceError (PersistenceDecodeError e)     = throwError err500 { errBody = LBS8.pack (show e) }
+handleServiceError (RequestNotFound rid)          = pure (envelope "requestNotFound" (requestIdDetail rid))
+handleServiceError (RequestInWrongState current) = pure (envelope "requestInWrongState" (fromDomainIntakeRequest current))
 handleServiceError (HealthcareServiceNotFound (HealthcareServiceId sid)) =
   pure (envelope "healthcareServiceNotFound" (object ["healthcareServiceId" .= UUID.toText sid]))
 handleServiceError (DoctorNotFound (DoctorId did)) =
@@ -376,16 +367,16 @@ handleServiceError (PatientNotFound (PatientId pid)) =
   pure (envelope "patientNotFound" (object ["patientId" .= UUID.toText pid]))
 
 -- For shape (c) proper: Service.hs mutations returning
--- IO (Either ServiceError (Fresh a)). ChangedSinceRead — the request
--- changed between the operation's fetch and its write — is the same
--- "requestChangedSinceRead" outcome for every caller. The success side genuinely varies per call
--- site (the value's own DTO conversion, and the success outcome's tag
--- name) while the error side never does — handleServiceError above
--- already covers all six non-decode constructors identically — so this
+-- IO (Either ServiceError (TransitionOutcome a)). MovedOn — the request had
+-- already moved on to a later state — is the same "requestMovedOn"
+-- outcome for every caller, with the request as it is now as its detail.
+-- The success side genuinely varies per call site (the value's own DTO
+-- conversion, and the success outcome's tag name) while the error side
+-- never does — handleServiceError above covers every constructor — so this
 -- takes a success tag and a toDetail conversion, not onSuccess/onError
 -- continuations (servant-implementation.md section 4's own reasoning).
 -- For a Service.hs operation that can fail but has no race to report
--- (submitIntakeRequest): same envelope as runService, without Fresh.
+-- (submitIntakeRequest): same envelope as runService, without TransitionOutcome.
 runEnveloped :: ToJSON dto => Text -> IO (Either ServiceError a) -> (a -> dto) -> AppM Value
 runEnveloped successTag action toDetail = do
   result <- liftIO action
@@ -393,32 +384,30 @@ runEnveloped successTag action toDetail = do
     Left se -> handleServiceError se
     Right a -> pure (envelope successTag (toDetail a))
 
-runService :: ToJSON dto => Text -> IO (Either ServiceError (Fresh a)) -> (a -> dto) -> AppM Value
+runService :: ToJSON dto => Text -> IO (Either ServiceError (TransitionOutcome a)) -> (a -> dto) -> AppM Value
 runService successTag action toDetail = do
   result <- liftIO action
   case result of
-    Left se                -> handleServiceError se
-    Right (Applied a)      -> pure (envelope successTag (toDetail a))
-    Right ChangedSinceRead -> pure (envelopeEmpty "requestChangedSinceRead")
+    Left se                 -> handleServiceError se
+    Right (Transitioned a)  -> pure (envelope successTag (toDetail a))
+    Right (MovedOn current) -> pure (envelope "requestMovedOn" (fromDomainIntakeRequest current))
 
 -- For matchAcceptedIntakeRequestToSlot's IO (Either ServiceError
 -- MatchOutcome) shape — verified against Service.hs directly: MatchOutcome
 -- is Matched AppointedIntakeRequest | NoEligibleRequest | RequestIneligible
--- | SlotAlreadyClaimed | RequestAlreadyClaimed. Exhaustive match, no
--- wildcard, same discipline as handleServiceError above — only Matched
--- carries a payload (via fromDomainAppointedIntakeRequest), the other four
--- are envelopeEmpty.
+-- | SlotAlreadyClaimed | RequestMovedOn IntakeRequest. Exhaustive match, no
+-- wildcard, same discipline as handleServiceError above — Matched and
+-- RequestMovedOn carry a payload, the other three are envelopeEmpty.
 runMatchOutcome :: IO (Either ServiceError MatchOutcome) -> AppM Value
 runMatchOutcome action = do
   result <- liftIO action
   case result of
-    Left se                       -> handleServiceError se
-    Right (Matched appointed)     -> pure (envelope "matched" (fromDomainAppointedIntakeRequest appointed))
-    Right NoEligibleRequest       -> pure (envelopeEmpty "noEligibleRequest")
-    Right RequestIneligible       -> pure (envelopeEmpty "requestIneligible")
-    Right SlotAlreadyClaimed      -> pure (envelopeEmpty "slotAlreadyClaimed")
-    Right RequestAlreadyClaimed   -> pure (envelopeEmpty "requestAlreadyClaimed")
-    Right RequestChangedSinceRead -> pure (envelopeEmpty "requestChangedSinceRead")
+    Left se                        -> handleServiceError se
+    Right (Matched appointed)      -> pure (envelope "matched" (fromDomainAppointedIntakeRequest appointed))
+    Right NoEligibleRequest        -> pure (envelopeEmpty "noEligibleRequest")
+    Right RequestIneligible        -> pure (envelopeEmpty "requestIneligible")
+    Right SlotAlreadyClaimed       -> pure (envelopeEmpty "slotAlreadyClaimed")
+    Right (RequestMovedOn current) -> pure (envelope "requestMovedOn" (fromDomainIntakeRequest current))
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- DOCTOR

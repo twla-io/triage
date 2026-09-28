@@ -15,7 +15,7 @@ import { DateTimePicker } from '@mantine/dates'
 import dayjs from 'dayjs'
 import { useMemo, useState } from 'react'
 
-import { ApiError } from '../api/client'
+import { ApiError, type Envelope } from '../api/client'
 import { formatDue, PriorityBadge } from '../components/PriorityBadge'
 import { usePatients } from '../api/queries/patients'
 import { useDoctors } from '../api/queries/doctors'
@@ -42,11 +42,20 @@ function errorMessage(error: unknown): string {
 
 // A mutation's non-success outcome, as shown to the user. Outcomes without
 // a friendlier text are shown by their tag.
-function outcomeMessage(outcome: string): string {
-  if (outcome === 'requestChangedSinceRead') {
-    return 'This request changed since you loaded it. Reload and try again.'
+function outcomeMessage(result: Envelope): string {
+  if (result.outcome === 'requestMovedOn') {
+    return `Someone else already acted on this request — it is now ${requestState(result)}. Reload to see it.`
   }
-  return outcome
+  if (result.outcome === 'requestInWrongState') {
+    return `This action doesn't apply to a request that is ${requestState(result)}.`
+  }
+  return result.outcome
+}
+
+// requestMovedOn and requestInWrongState carry the request as it is now;
+// its "type" is its state.
+function requestState(result: Envelope): string {
+  return (result.detail as IntakeRequestDTO | null)?.type ?? 'in another state'
 }
 
 // ── Submit form ──────────────────────────────────────────────────────────
@@ -100,7 +109,7 @@ function SubmitForm() {
         </Group>
         {submit.error && <Alert color="red">{errorMessage(submit.error)}</Alert>}
         {submit.data && submit.data.outcome !== 'submitted' && (
-          <Alert color="yellow">{outcomeMessage(submit.data.outcome)}</Alert>
+          <Alert color="yellow">{outcomeMessage(submit.data)}</Alert>
         )}
       </Stack>
     </form>
@@ -283,7 +292,7 @@ function AcceptForm({ request }: { request: IntakeRequestDTO }) {
         </Group>
         {accept.error && <Alert color="red">{errorMessage(accept.error)}</Alert>}
         {accept.data && accept.data.outcome !== 'accepted' && (
-          <Alert color="yellow">{outcomeMessage(accept.data.outcome)}</Alert>
+          <Alert color="yellow">{outcomeMessage(accept.data)}</Alert>
         )}
       </Stack>
     </Paper>
@@ -315,7 +324,7 @@ function RejectForm({ request }: { request: IntakeRequestDTO }) {
       </Group>
       {reject.error && <Alert color="red">{errorMessage(reject.error)}</Alert>}
       {reject.data && reject.data.outcome !== 'rejected' && (
-        <Alert color="yellow">{outcomeMessage(reject.data.outcome)}</Alert>
+        <Alert color="yellow">{outcomeMessage(reject.data)}</Alert>
       )}
     </Paper>
   )
@@ -404,7 +413,7 @@ function MatchForm({ request }: { request: IntakeRequestDTO }) {
       </Group>
       {match.error && <Alert color="red">{errorMessage(match.error)}</Alert>}
       {match.data && match.data.outcome !== 'matched' && (
-        <Alert color="yellow">{outcomeMessage(match.data.outcome)}</Alert>
+        <Alert color="yellow">{outcomeMessage(match.data)}</Alert>
       )}
     </Paper>
   )
@@ -451,7 +460,7 @@ function WaitlistSection() {
       ))}
       {markStale.error && <Alert color="red">{errorMessage(markStale.error)}</Alert>}
       {markStale.data && markStale.data.outcome !== 'stale' && (
-        <Alert color="yellow">{outcomeMessage(markStale.data.outcome)}</Alert>
+        <Alert color="yellow">{outcomeMessage(markStale.data)}</Alert>
       )}
     </Stack>
   )

@@ -71,8 +71,10 @@ Direct imports between internal modules (no cycles):
   (or construct the Domain case directly), persist. Mints IDs; takes
   timestamps as parameters. Reports caller mistakes/failures as
   `ServiceError` and legitimate concurrent results as outcome types
-  (`MatchOutcome`, `SlotCreationOutcome`). Also exposes read pass-throughs
-  and the `CalendarEntry` view.
+  (`TransitionOutcome`, `MatchOutcome`, `SlotCreationOutcome`). A request found
+  past the state an operation expects is `MovedOn`/`RequestMovedOn`;
+  one in a state that can't follow it is `RequestInWrongState`. Also
+  exposes read pass-throughs and the `CalendarEntry` view.
 - **`src/Transport.hs`** — aeson DTO twin types with hand-written
   `ToJSON`/`FromJSON`/`ToSchema` and JSON-shaped `toDomainX`/`fromDomainX`.
   Domain types carry no JSON instances.

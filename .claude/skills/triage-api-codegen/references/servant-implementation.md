@@ -34,33 +34,30 @@ No wrapper environment record. `AppM` is bare `ReaderT ConnectionPool Handler` �
 
 - **(a) bare `IO a`** — reads with no decode risk (`fetchDoctor`, `fetchDoctors`, etc., over `DoctorRow`/`PatientRow`, which have no invariant to fail against — see `Persistence.hs`). Nothing to translate; the handler just runs it and returns `200` with the value.
 - **(b) `IO (Either DecodeError a)`** — reads that can fail to decode a stored row (`fetchHealthcareService`, `fetchAvailableSlots`, `fetchIntakeRequest`, `fetchCalendarView`, ...). No `ServiceError` is involved at all here — a `DecodeError` is unconditionally `500`, per `error-vs-outcome-mapping`'s own `500` case (`PersistenceDecodeError`/anything outside the domain's vocabulary).
-- **(c) `IO (Either ServiceError a)`** — mutations. Here the split is *not* uniform: only `PersistenceDecodeError` (one constructor of `ServiceError`) is `500`; every other `ServiceError` constructor (`RequestNotFound`, `RequestNotSubmittedAnymore`, ...) is a `200` with a discriminated body, per `error-vs-outcome-mapping`.
+- **(c) `IO (Either ServiceError a)`** — mutations. Here the split is *not* uniform: only `PersistenceDecodeError` (one constructor of `ServiceError`) is `500`; every other `ServiceError` constructor (`RequestNotFound`, `RequestInWrongState`, ...) is a `200` with a discriminated body, per `error-vs-outcome-mapping`.
 
 Four shared `AppM`-returning helpers exist: `runRead` for (b), and `runService`/`runMatchOutcome`/`runSlotCreation` for (c) and its two outcome-typed relatives (see below) — plus `envelope`/`envelopeEmpty` as small shared response builders, not counted as outcome-translation helpers in their own right since neither one, alone, decides what's `500` versus `200`. A single, uniform helper covering every shape doesn't work precisely because they disagree about whether *every* Left is `500` or only one constructor of it is, and (for `MatchOutcome`/`SlotCreationOutcome` below) about how their outcome constructors map to responses.
 
 **Why a naive `Either ServiceError a`-preserving `runService` was rejected:** a version that merely throws a `500` as a side effect when it sees `PersistenceDecodeError`, while still returning `Either ServiceError a` as its type, leaves `PersistenceDecodeError` sitting in the return type as a case that can never actually reach the caller (it was already handled, by throwing, before returning) — a phantom, unreachable branch every caller would still have to pattern-match against to be exhaustive, for a case that can't occur. `runService` instead needs to narrow away that constructor before handing anything back to its caller.
 
-**Settled: `runService` takes a success tag string and a `toDetail` conversion function — not `onSuccess`/`onError` continuations, and not a `NonDecodeServiceError`-narrowed type.** The deciding check was whether the error side genuinely varies per call site, and it doesn't: every non-decode `ServiceError` constructor (`RequestNotFound`, `RequestNotSubmittedAnymore`, `RequestNotAccepted`, `RequestNotYetTriaged`, `RequestNotAppointed`, `RequestAlreadyClosed`) carries the same shape — an `IntakeRequestId` — and needs identical rendering regardless of which mutation handler produced it. Passing a per-call-site `onError` continuation would only invite two handlers rendering the same error differently by accident — exactly the inconsistency centralizing this middleware in the first place was meant to prevent. What *does* genuinely vary per call site is only the success side: the value's own DTO conversion, and the success outcome's tag name. This resolves the phantom-case problem more completely than either original option: both `NonDecodeServiceError`-narrowing and `onError` continuations still leave the *same* six-constructor mapping re-derived — identically — across all ~10 mutation call sites. This shape instead writes that mapping exactly once, exhaustively, with no wildcard, and callers supply only what's actually handler-specific.
+**Settled: `runService` takes a success tag string and a `toDetail` conversion function — not `onSuccess`/`onError` continuations, and not a `NonDecodeServiceError`-narrowed type.** The deciding check was whether the error side genuinely varies per call site, and it doesn't: every non-decode `ServiceError` constructor (`RequestNotFound`, `RequestInWrongState`, and the three not-found errors for unknown ids) needs identical rendering regardless of which mutation handler produced it. Passing a per-call-site `onError` continuation would only invite two handlers rendering the same error differently by accident — exactly the inconsistency centralizing this middleware in the first place was meant to prevent. What *does* genuinely vary per call site is only the success side: the value's own DTO conversion, and the success outcome's tag name. This resolves the phantom-case problem more completely than either original option: both `NonDecodeServiceError`-narrowing and `onError` continuations still leave the *same* mapping re-derived — identically — across all ~10 mutation call sites. This shape instead writes that mapping exactly once, exhaustively, with no wildcard, and callers supply only what's actually handler-specific.
 
-`handleServiceError` is factored out as its own function specifically so `runService` and the two outcome-typed helpers below can share it without duplicating the same seven-way match three times:
+`handleServiceError` is factored out as its own function specifically so `runService` and the two outcome-typed helpers below can share it without duplicating the same match three times:
 
 ```haskell
 handleServiceError :: ServiceError -> AppM Value
-handleServiceError (PersistenceDecodeError e)       = throwError err500 { errBody = encode e }
-handleServiceError (RequestNotFound rid)            = pure (envelope "requestNotFound" rid)
-handleServiceError (RequestNotSubmittedAnymore rid) = pure (envelope "requestNotSubmittedAnymore" rid)
-handleServiceError (RequestNotAccepted rid)         = pure (envelope "requestNotAccepted" rid)
-handleServiceError (RequestNotYetTriaged rid)       = pure (envelope "requestNotYetTriaged" rid)
-handleServiceError (RequestNotAppointed rid)        = pure (envelope "requestNotAppointed" rid)
-handleServiceError (RequestAlreadyClosed rid)       = pure (envelope "requestAlreadyClosed" rid)
+handleServiceError (PersistenceDecodeError e)     = throwError err500 { errBody = encode e }
+handleServiceError (RequestNotFound rid)          = pure (envelope "requestNotFound" rid)
+handleServiceError (RequestInWrongState current) = pure (envelope "requestInWrongState" (fromDomainIntakeRequest current))
+-- … plus the three not-found errors for unknown patient/doctor/service ids
 
-runService :: ToJSON dto => Text -> IO (Either ServiceError (Fresh a)) -> (a -> dto) -> AppM Value
+runService :: ToJSON dto => Text -> IO (Either ServiceError (TransitionOutcome a)) -> (a -> dto) -> AppM Value
 runService successTag action toDetail = do
   result <- liftIO action
   case result of
-    Left se                -> handleServiceError se
-    Right (Applied a)      -> pure (envelope successTag (toDetail a))
-    Right ChangedSinceRead -> pure (envelopeEmpty "requestChangedSinceRead")
+    Left se                 -> handleServiceError se
+    Right (Transitioned a)  -> pure (envelope successTag (toDetail a))
+    Right (MovedOn current) -> pure (envelope "requestMovedOn" (fromDomainIntakeRequest current))
 
 envelope :: ToJSON dto => Text -> dto -> Value
 envelope tag detail = object ["outcome" .= tag, "detail" .= toJSON detail]
@@ -78,12 +75,12 @@ runMatchOutcome :: IO (Either ServiceError MatchOutcome) -> AppM Value
 runMatchOutcome action = do
   result <- liftIO action
   case result of
-    Left se                     -> handleServiceError se
-    Right (Matched appointed)   -> pure (envelope "matched" (fromDomainAppointedIntakeRequest appointed))
-    Right NoEligibleRequest     -> pure (envelopeEmpty "noEligibleRequest")
-    Right RequestIneligible     -> pure (envelopeEmpty "requestIneligible")
-    Right SlotAlreadyClaimed    -> pure (envelopeEmpty "slotAlreadyClaimed")
-    Right RequestAlreadyClaimed -> pure (envelopeEmpty "requestAlreadyClaimed")
+    Left se                        -> handleServiceError se
+    Right (Matched appointed)      -> pure (envelope "matched" (fromDomainAppointedIntakeRequest appointed))
+    Right NoEligibleRequest        -> pure (envelopeEmpty "noEligibleRequest")
+    Right RequestIneligible        -> pure (envelopeEmpty "requestIneligible")
+    Right SlotAlreadyClaimed       -> pure (envelopeEmpty "slotAlreadyClaimed")
+    Right (RequestMovedOn current) -> pure (envelope "requestMovedOn" (fromDomainIntakeRequest current))
 ```
 
 **`runSlotCreation`**, for `createAvailableSlot`'s `IO (Either ServiceError SlotCreationOutcome)` shape (`SlotCreated AvailableSlot | SlotConflict`), sharing `handleServiceError` for the `Left` case like `runMatchOutcome`. The `Left` arises from `PersistenceDecodeError` when the doctor's stored calendar fails to decode (see `docs/decisions.md`'s "Doctor calendar" entry):
@@ -100,7 +97,7 @@ runSlotCreation action = do
 
 **A real design question was raised and settled here: should `POST /slots` (`createAvailableSlot`) also invoke `matchWaitlistToSlot` and combine both results into one response?** `checkwaitlist-not-an-endpoint` (`SKILL.md`) already says the handler that creates a slot is the natural place to also call `matchWaitlistToSlot` — but "the natural place to call it" and "compose its result into the same response" are different questions, and this rejects the second. Composing the two at the API layer would mean `Api.hs` implementing an orchestration decision `Service.hs` itself doesn't make: `createAvailableSlot` and `matchWaitlistToSlot` are two fully independent `Service.hs` functions, and nothing in `Service.hs` composes them into one call. A newly created `AvailableSlot` has two genuinely independent paths to being consumed — a manual claim via `matchAcceptedIntakeRequestToSlot`, or automatic dispatch via `matchWaitlistToSlot` — and neither is a default the other subsumes; composing them into one API response would silently privilege the automatic path over the manual one. **The actual, current answer:** `POST /slots`'s response reflects *only* `createAvailableSlot`'s own `SlotCreationOutcome`, via `runSlotCreation`, full stop. Whether and how a newly created slot gets matched against the waitlist afterward is left open — unaddressed by this endpoint, for later. (`checkwaitlist-not-an-endpoint`'s own text in `SKILL.md` may still read as implying composition; that text hasn't been updated with a cross-reference to this resolution in this pass — flagging that as outstanding rather than silently leaving the two documents in tension.)
 
-**A related idea was also raised and rejected: remodeling `MatchOutcome`/`SlotCreationOutcome` as `Either`-shaped types, to parallel `ServiceError`'s own `Either` shape.** Rejected because `Either`'s `Left` carries a near-universal failure connotation that would misrepresent most of `MatchOutcome`'s non-`Matched` constructors — `NoEligibleRequest`, `SlotAlreadyClaimed`, `RequestAlreadyClaimed`, `RequestIneligible` — none of which are failures, they're outcomes, exactly the blurring `error-vs-outcome-types` (`triage-service-codegen`) already exists to prevent. This is the same underlying lesson as `docs/decisions.md`'s `TriageOutcome` rejection, approached from the opposite direction: that entry rejected a shared wrapper type across two *different* functions' outcomes because each call site already commits to one outcome, leaving a structurally-unreachable branch at every call site — a false signal. Here, the near-miss is reaching for a generic/shared container (`Either`) over a purpose-built type (`MatchOutcome`/`SlotCreationOutcome`) for aesthetic symmetry with `ServiceError`, rather than because `Either`'s own semantics actually fit what these two types represent.
+**A related idea was also raised and rejected: remodeling `MatchOutcome`/`SlotCreationOutcome` as `Either`-shaped types, to parallel `ServiceError`'s own `Either` shape.** Rejected because `Either`'s `Left` carries a near-universal failure connotation that would misrepresent most of `MatchOutcome`'s non-`Matched` constructors — `NoEligibleRequest`, `SlotAlreadyClaimed`, `RequestMovedOn`, `RequestIneligible` — none of which are failures, they're outcomes, exactly the blurring `error-vs-outcome-types` (`triage-service-codegen`) already exists to prevent. This is the same underlying lesson as `docs/decisions.md`'s `TriageOutcome` rejection, approached from the opposite direction: that entry rejected a shared wrapper type across two *different* functions' outcomes because each call site already commits to one outcome, leaving a structurally-unreachable branch at every call site — a false signal. Here, the near-miss is reaching for a generic/shared container (`Either`) over a purpose-built type (`MatchOutcome`/`SlotCreationOutcome`) for aesthetic symmetry with `ServiceError`, rather than because `Either`'s own semantics actually fit what these two types represent.
 
 **Response envelope for mutations:** every mutation endpoint's `200` body is `{"outcome": <string>, "detail": <payload>}` — one generic shape reused across every mutation endpoint, not a bespoke response DTO per endpoint (e.g. not a hand-rolled `AcceptResponseDTO`, `RejectResponseDTO`, ... one per route). This is consistent with `tagged-flat-serialization`'s own governing principle — one parsing rule at every nesting level, not one rule per type — applied here at the level of "how does a client parse any mutation's response" rather than just "how does a client parse any `Domain.hs` sum type." It also keeps the `ServiceError`/outcome-type → wire mapping fully centralized in this middleware, rather than re-derived piecemeal per handler through each one choosing its own field names. Reads have no equivalent envelope — a read's `200` body is just the plain resource payload (a `DoctorDTO`, a list of them, ...), since a successfully-decoded read has no `ServiceError`/outcome-type ambiguity left to discriminate in the body.
 

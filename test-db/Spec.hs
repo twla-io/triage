@@ -36,7 +36,7 @@ import qualified Service    as S
 
 import Domain
 import Persistence (ClaimOutcome (..), ConnectionPool, MatchPersistOutcome (..), SlotOverlap (..))
-import Service     (Fresh (..), MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..))
+import Service     (MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..), TransitionOutcome (..))
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- THROWAWAY DATABASE
@@ -103,7 +103,7 @@ submit pool fx = do
 accept :: ConnectionPool -> Fixture -> DoctorRequirement -> IO TriagedIntakeRequest
 accept pool fx requirement = do
   s <- submit pool fx
-  Right (Applied t) <- S.acceptSubmittedIntakeRequest pool s.id fx.service.id (Routine RoutineAnytime) requirement t0
+  Right (Transitioned t) <- S.acceptSubmittedIntakeRequest pool s.id fx.service.id (Routine RoutineAnytime) requirement t0
   pure t
 
 slotAt :: ConnectionPool -> Fixture -> UTCTime -> IO AvailableSlot
@@ -158,18 +158,24 @@ spec pool = do
       stored pool a.triaged.submitted.id `shouldReturn` Appointed a
 
   describe "accept / reject" $ do
-    it "rejecting an already accepted request is refused, and it stays accepted" $ do
+    it "rejecting an already accepted request reports it moved on, and it stays accepted" $ do
       fx <- fixture pool
       t  <- accept pool fx AnyDoctor
       S.rejectSubmittedIntakeRequest pool t.submitted.id t0 "too late"
-        `shouldReturn` Left (RequestNotSubmittedAnymore t.submitted.id)
+        `shouldReturn` Right (MovedOn (Accepted t))
       stateOf pool t.submitted.id `shouldReturn` "accepted"
+
+    it "accepting twice reports the first accept" $ do
+      fx <- fixture pool
+      t  <- accept pool fx AnyDoctor
+      S.acceptSubmittedIntakeRequest pool t.submitted.id fx.service.id (Routine RoutineAnytime) AnyDoctor t0
+        `shouldReturn` Right (MovedOn (Accepted t))
 
     it "an accept after a concurrent reject writes nothing" $ do
       fx <- fixture pool
       s  <- submit pool fx
       -- Meanwhile: rejected.
-      Right (Applied _) <- S.rejectSubmittedIntakeRequest pool s.id t0 "no"
+      Right (Transitioned _) <- S.rejectSubmittedIntakeRequest pool s.id t0 "no"
       let t = acceptIntakeRequest s fx.service.id (Routine RoutineAnytime) AnyDoctor t0
       withResource pool (\c -> P.persistTriagedIntakeRequest c t) `shouldReturn` AlreadyClaimed
       stateOf pool s.id `shouldReturn` "rejected"
@@ -210,6 +216,13 @@ spec pool = do
       stateOf pool a.triaged.submitted.id `shouldReturn` "appointed"
       withResource pool (\c -> P.fetchSlot c slot.id) `shouldReturn` Right Nothing
 
+    it "matching an already booked request reports the booking" $ do
+      fx        <- fixture pool
+      (_, _, a) <- appoint pool fx t0
+      later     <- slotAt pool fx (minutes 60 t0)
+      S.matchAcceptedIntakeRequestToSlot pool a.triaged.submitted.id later.id
+        `shouldReturn` Right (RequestMovedOn (Appointed a))
+
     it "the same slot can't be matched twice" $ do
       fx           <- fixture pool
       (_, slot, _) <- appoint pool fx t0
@@ -222,7 +235,7 @@ spec pool = do
       t    <- accept pool fx AnyDoctor
       slot <- slotAt pool fx t0
       -- Meanwhile: marked stale.
-      Right (Applied _) <- S.markIntakeRequestStale pool t.submitted.id t0
+      Right (Transitioned _) <- S.markIntakeRequestStale pool t.submitted.id t0
       Just appointed <- pure (matchIntakeRequestToSlot slot t)
       withResource pool (\c -> P.persistMatchedIntakeRequest c slot.id appointed)
         `shouldReturn` RequestAlreadyMatched
@@ -235,24 +248,31 @@ spec pool = do
       (_, _, a) <- appoint pool fx t0
       let rid       = a.triaged.submitted.id
           cancelled = Cancelled ByDoctor t0 Nothing
-      S.closeAppointedIntakeRequest pool rid cancelled `shouldReturn` Right (Applied (Closed a cancelled))
+      S.closeAppointedIntakeRequest pool rid cancelled `shouldReturn` Right (Transitioned (Closed a cancelled))
       stateOf pool rid `shouldReturn` "closed"
       Right (SlotCreated _) <- S.createAvailableSlot pool fx.doctor.id fx.service.id t0
       pure ()
 
-    it "closing twice is refused the second time" $ do
+    it "closing twice: the second close reports the first one's reason" $ do
       fx        <- fixture pool
       (_, _, a) <- appoint pool fx t0
-      let rid = a.triaged.submitted.id
-      S.closeAppointedIntakeRequest pool rid Completed `shouldReturn` Right (Applied (Closed a Completed))
-      S.closeAppointedIntakeRequest pool rid Completed `shouldReturn` Left (RequestAlreadyClosed rid)
+      let rid       = a.triaged.submitted.id
+          cancelled = Cancelled ByPatient t0 Nothing
+      S.closeAppointedIntakeRequest pool rid cancelled `shouldReturn` Right (Transitioned (Closed a cancelled))
+      S.closeAppointedIntakeRequest pool rid Completed `shouldReturn` Right (MovedOn (Closed a cancelled))
 
-    it "mark stale works from accepted, not from submitted" $ do
+    it "closing a request that is still accepted is the wrong state" $ do
       fx <- fixture pool
       t  <- accept pool fx AnyDoctor
-      S.markIntakeRequestStale pool t.submitted.id t0 `shouldReturn` Right (Applied t)
+      S.closeAppointedIntakeRequest pool t.submitted.id Completed
+        `shouldReturn` Left (RequestInWrongState (Accepted t))
+
+    it "mark stale works from accepted; from submitted it is the wrong state" $ do
+      fx <- fixture pool
+      t  <- accept pool fx AnyDoctor
+      S.markIntakeRequestStale pool t.submitted.id t0 `shouldReturn` Right (Transitioned t)
       s  <- submit pool fx
-      S.markIntakeRequestStale pool s.id t0 `shouldReturn` Left (RequestNotAccepted s.id)
+      S.markIntakeRequestStale pool s.id t0 `shouldReturn` Left (RequestInWrongState (Submitted s))
 
   describe "unknown ids" $ do
     it "submitting for an unknown patient is PatientNotFound, and nothing is stored" $ do
