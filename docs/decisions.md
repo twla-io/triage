@@ -714,7 +714,7 @@ hold for stored data.
 
 ## A lost version race is reported as "changed since read" — one outcome, no retry (2026-09-27)
 
-**Still in force, mechanism changed (2026-09-28):** the outcome is unchanged, but a lost race is now detected by the state guard alone, since the row version was removed. See "Row version removed; the state guard also gives freshness" below.
+**Superseded (2026-09-28):** replaced by "Request-state answers follow the lifecycle: moved on, or wrong state" below. (Earlier the same day: the outcome was kept while the row version was removed, detected by the state guard alone.)
 
 **Found:** with the row version in place, a zero-row write can no longer mean "wrong state" (Service confirmed the state at fetch time, and an unchanged version means an unchanged row) — it always means the request changed since it was read. But each operation still reported it with a guess at *how*: close and reclaim said `RequestAlreadyClosed`, mark-stale `RequestNotAccepted`, match `RequestAlreadyClaimed` ("already scheduled, drop it"). Each is wrong when the request was reclaimed and re-matched, or matched and reclaimed back to the waitlist.
 
@@ -778,7 +778,22 @@ hold for stored data.
 
 **Condition to preserve:** both of those. A transition back to an earlier state, or an update that keeps a row in the same state (an in-place edit), breaks the argument — then a row version is the known answer again. `triage-db-codegen`'s `state-guard-is-freshness` rule says to stop and ask in that case.
 
-**Not decided here:** whether the outcomes should become more specific now that the state a request moved to is knowable (e.g. one "moved on" outcome carrying the current request, and a `ServiceError` only for states that can't follow the expected one). A separate decision.
+**Not decided here:** whether the outcomes should become more specific now that the state a request moved to is knowable. Decided separately — see "Request-state answers follow the lifecycle" below.
+
+## Request-state answers follow the lifecycle: moved on, or wrong state (2026-09-28)
+
+**Found:** every operation expects the request in one state, and when it isn't, the answer depended on which operation was called and on timing. The same fact — someone else acted first — was a `ServiceError` when the fetch noticed (`RequestNotSubmittedAnymore`, `RequestAlreadyClosed`, `RequestNotAccepted`) and the outcome `ChangedSinceRead` when the write noticed a moment later. Match answered an Appointed request with the outcome `RequestAlreadyClaimed`; mark stale answered the same state with the error `RequestNotAccepted`. The generic "changed since read" was chosen on 2026-09-27 because, with reclaim's cycle, the state a request had moved to couldn't be named reliably; with a one-way lifecycle it can.
+
+**Decided:** the answer is derived from the lifecycle, by comparing the state an operation expects with the state the request is in:
+
+- **The current state comes after the expected one** — someone else acted first. A legitimate outcome carrying the request as it is now, whether the fetch or the lost write noticed. `Transition a = Transitioned a | MovedOn IntakeRequest` (replaces `Fresh`); in `MatchOutcome`, `RequestMovedOn IntakeRequest` (replaces `RequestAlreadyClaimed` and `RequestChangedSinceRead`). On the wire: `{"outcome": "requestMovedOn", "detail": <the request>}`. After a lost write, Service reads the request once more; the read always finds a later state, since states only move forward.
+- **The current state can't come after the expected one** — the caller could never have seen the state it acted on: a caller mistake. One `ServiceError`, `RequestInWrongState IntakeRequest` (replaces `RequestNotSubmittedAnymore`, `RequestNotAccepted`, `RequestNotYetTriaged`, `RequestNotAppointed`, `RequestAlreadyClosed`), carrying the request for diagnosis; `{"outcome": "requestInWrongState", "detail": <the request>}`.
+
+Per expected state: every state comes after Submitted, so accept/reject only ever answer "moved on". After Accepted come Appointed, Stale, `WithdrawnFromAccepted` and Closed; Submitted, Rejected and `WithdrawnFromSubmitted` can't follow it (the two Withdrawn cases record which state they came from, which makes this decidable). After Appointed comes only Closed. Nothing retries, as before: the caller looks at what the request is now.
+
+**Where "comes after" lives:** in each Service operation's case split, exhaustive with no wildcard, derived from `Domain.hs`'s transition table (the rule is stated in `triage-service-codegen`). Not a function in `Domain.hs`: a stage type plus an ordering would add to the specification only to serve error reporting.
+
+**Rejected:** keeping the current answers (the timing-dependent split stays, and each new operation needs a judgment call); `ChangedSinceRead` everywhere, including fetch-time mismatches (consistent, but discards what is now knowable and still doesn't separate lost races from caller mistakes).
 
 ---
 
