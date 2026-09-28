@@ -1,12 +1,12 @@
 -- triage: initial schema
--- Generated from Domain.hs. See SKILL.md (triage-db-codegen) for the rules
--- this schema follows and the reasoning behind each one. This is the
--- initial schema for the current IntakeRequest-based domain model — no
--- prior schema has ever been deployed against this database.
+-- Derived from src/Domain.hs under the rules in
+-- .claude/skills/triage-db-codegen/SKILL.md (rule names cited below).
+
+CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- DOCTORS / PATIENTS
--- minimal-types-minimal-tables: id/name only, no speculative columns.
+-- minimal-types-minimal-tables: Doctor and Patient are id + name only.
 -- ═══════════════════════════════════════════════════════════════════════
 
 CREATE TABLE doctors (
@@ -21,8 +21,7 @@ CREATE TABLE patients (
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- HEALTHCARE SERVICES
--- Duration stored as minutes; decoded/encoded via decodeDuration/
--- encodeDuration in Persistence.hs (fail-loudly-on-decode).
+-- Duration is stored in minutes: QuarterOfAnHour | HalfAnHour | OneHour.
 -- ═══════════════════════════════════════════════════════════════════════
 
 CREATE TABLE healthcare_services (
@@ -33,181 +32,214 @@ CREATE TABLE healthcare_services (
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- SLOTS
--- deleted-on-match: AvailableSlot is the only slot type. A row here means
--- exactly one thing — "available, not yet matched" — nothing else. No
--- state column, no appointment reference: once matchIntakeRequestToSlot
--- matches a row, it is DELETED in the same
--- transaction that updates the intake_requests row
--- (atomic-multi-table-write), not flagged or transitioned. There is no
--- schema-level record of a slot's existence after it's matched — that
--- fact lives only inside the intake_requests row it became, with no
--- back-reference.
---
--- Recreating a vacated time after an appointment is closed (a cancelled or
--- rescheduled one included) is NOT automatic — that's a separate, explicit
--- call to insert a new row here, by deliberate choice (mirrors Domain.hs's
--- own refusal to decide this).
+-- deleted-on-match: AvailableSlot is the only slot type, so a row means
+-- "available, not yet matched". No state column and no request reference;
+-- matching deletes the row in the same transaction that appoints the
+-- request (atomic-multi-table-write).
 -- ═══════════════════════════════════════════════════════════════════════
 
 CREATE TABLE slots (
-  id                     UUID NOT NULL PRIMARY KEY,
-  doctor_id              UUID NOT NULL REFERENCES doctors(id),
-  healthcare_service_id  UUID NOT NULL REFERENCES healthcare_services(id),
-  start_time             TIMESTAMPTZ NOT NULL,
-  duration_minutes       SMALLINT NOT NULL CHECK (duration_minutes IN (15, 30, 60))
+  id                    UUID NOT NULL PRIMARY KEY,
+  doctor_id             UUID NOT NULL REFERENCES doctors(id),
+  healthcare_service_id UUID NOT NULL REFERENCES healthcare_services(id),
+  start_time            TIMESTAMPTZ NOT NULL,
+  duration_minutes      SMALLINT NOT NULL CHECK (duration_minutes IN (15, 30, 60))
 );
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- INTAKE REQUESTS
--- discriminator-column-tables: one table, one state column, seven values
--- (submitted/rejected/accepted/appointed/withdrawn/stale/closed) —
--- mirroring Domain.hs's IntakeRequest sum type exactly, one identity
--- (IntakeRequestId) throughout. IntakeRequest folds what would otherwise
--- be a separate Appointment aggregate into itself, since the two are
--- permanently 1:1.
+-- discriminator-column-tables: IntakeRequest's seven cases in one table,
+-- discriminated by state; each stage's columns are nullable. Rows are
+-- never deleted (no-delete-on-consumption).
 --
--- No FK to slots at all (deleted-on-match) — appointed_doctor_id/
--- start_time/duration_minutes are hard-copied directly at matching time,
--- mirroring exactly what AppointedIntakeRequest itself hard-copies rather
--- than referencing a slot by id.
+-- Column groups, by the Domain type that contributes them:
+--   base       SubmittedIntakeRequest: id, patient_id, narrative, created_at
+--   rejection  Rejected _ UTCTime Text: rejected_at, rejection_reason
+--   triage     TriagedIntakeRequest: healthcare_service_id, tier,
+--              due_not_before, due_not_after, triaged_at, required_doctor_id
+--   appointment AppointedIntakeRequest: appointed_doctor_id, start_time,
+--              duration_minutes
+--   withdrawal WithdrawnFrom* _ UTCTime (Maybe Text): withdrawn_at,
+--              withdrawal_note
+--   stale      Stale _ UTCTime: stale_at
+--   close      Closed _ CloseReason: close_reason, closed_by_party,
+--              cancelled_at, cancellation_note
 --
--- healthcare_service_id doubles as the discriminator between
--- WithdrawnFromSubmitted (NULL — withdrawn before triage) and
--- WithdrawnFromAccepted (NOT NULL — withdrawn after triage) within
--- state = 'withdrawn'. Deliberate, not an oversight: no separate
--- sub-state column, reusing the same nullability-as-discriminator
--- convention already used elsewhere in this schema (required_doctor_id,
--- due_not_before/due_not_after).
---
--- state = 'stale' shares WithdrawnFromAccepted's structural precondition
--- (reachable only from 'accepted' — a due date doesn't exist before
--- triage) but is a distinct, staff-initiated terminal state, never an
--- automatic/timer-driven transition — no trigger or scheduled job in this
--- schema ever writes state = 'stale'. It reuses the same
--- healthcare_service_id/tier/triaged_at columns 'accepted' already
--- populates (Stale embeds a full TriagedIntakeRequest, same as
--- 'accepted'), plus its own stale_at column.
---
--- cancellation_note (nullability-as-discriminator): populated only
--- optionally alongside close_reason = 'cancelled', mirroring
--- CloseReason's Cancelled AppointmentParty UTCTime (Maybe Text) — an
--- optional free-text note, independent of whether closed_by_party/
--- cancelled_at are set.
+-- One CHECK per constructor shape, written as "state = X implies shape",
+-- because Postgres requires every CHECK on a table to hold. Each shape
+-- names every column outside the base group: required (IS NOT NULL),
+-- absent (IS NULL), or optional. Optional columns are listed in the
+-- constraint's comment and are pinned by a nested-type CHECK further
+-- down (priority, close reason) or are a Maybe field.
 -- ═══════════════════════════════════════════════════════════════════════
 
 CREATE TABLE intake_requests (
-  id                     UUID NOT NULL PRIMARY KEY,
-  patient_id             UUID NOT NULL REFERENCES patients(id),
-  narrative              TEXT NOT NULL,
-  created_at             TIMESTAMPTZ NOT NULL,
+  id                    UUID NOT NULL PRIMARY KEY,
+  patient_id            UUID NOT NULL REFERENCES patients(id),
+  narrative             TEXT NOT NULL,
+  created_at            TIMESTAMPTZ NOT NULL,
 
-  state                  TEXT NOT NULL CHECK (state IN
+  state                 TEXT NOT NULL CHECK (state IN
     ('submitted', 'rejected', 'accepted', 'appointed', 'withdrawn', 'stale', 'closed')),
 
-  rejected_at            TIMESTAMPTZ NULL,
-  rejection_reason       TEXT NULL,
+  rejected_at           TIMESTAMPTZ NULL,
+  rejection_reason      TEXT NULL,
 
-  healthcare_service_id  UUID NULL REFERENCES healthcare_services(id),
-  tier                   TEXT NULL CHECK (tier IN ('emergency', 'urgent', 'routine')),
-  due_not_before         TIMESTAMPTZ NULL,
-  due_not_after          TIMESTAMPTZ NULL,
-  triaged_at             TIMESTAMPTZ NULL,
-  -- decided at triage; NULL = AnyDoctor once triaged, always NULL before
-  -- triage (CHECK below).
-  required_doctor_id     UUID NULL REFERENCES doctors(id),
+  healthcare_service_id UUID NULL REFERENCES healthcare_services(id),
+  tier                  TEXT NULL CHECK (tier IN ('emergency', 'urgent', 'routine')),
+  due_not_before        TIMESTAMPTZ NULL,
+  due_not_after         TIMESTAMPTZ NULL,
+  triaged_at            TIMESTAMPTZ NULL,
+  -- DoctorRequirement (nullability-as-discriminator): NULL = AnyDoctor.
+  required_doctor_id    UUID NULL REFERENCES doctors(id),
 
-  appointed_doctor_id    UUID NULL REFERENCES doctors(id),
-  start_time             TIMESTAMPTZ NULL,
-  duration_minutes       SMALLINT NULL CHECK (duration_minutes IN (15, 30, 60)),
+  appointed_doctor_id   UUID NULL REFERENCES doctors(id),
+  start_time            TIMESTAMPTZ NULL,
+  duration_minutes      SMALLINT NULL CHECK (duration_minutes IN (15, 30, 60)),
 
-  withdrawn_at           TIMESTAMPTZ NULL,
-  withdrawal_note        TEXT NULL,
+  withdrawn_at          TIMESTAMPTZ NULL,
+  withdrawal_note       TEXT NULL,
 
-  stale_at               TIMESTAMPTZ NULL,
+  stale_at              TIMESTAMPTZ NULL,
 
-  close_reason           TEXT NULL CHECK (close_reason IN ('completed', 'cancelled', 'no_show')),
-  closed_by_party        TEXT NULL CHECK (closed_by_party IN ('doctor', 'patient')),
-  cancelled_at           TIMESTAMPTZ NULL,
-  cancellation_note      TEXT NULL,
+  close_reason          TEXT NULL CHECK (close_reason IN ('completed', 'cancelled', 'no_show')),
+  closed_by_party       TEXT NULL CHECK (closed_by_party IN ('doctor', 'patient')),
+  cancelled_at          TIMESTAMPTZ NULL,
+  cancellation_note     TEXT NULL,
 
-  CHECK (
-    (state = 'submitted' AND
-       rejected_at IS NULL AND healthcare_service_id IS NULL AND
-       appointed_doctor_id IS NULL AND withdrawn_at IS NULL AND stale_at IS NULL AND
-       close_reason IS NULL)
-    OR
-    (state = 'rejected' AND
-       rejected_at IS NOT NULL AND rejection_reason IS NOT NULL AND
-       healthcare_service_id IS NULL AND appointed_doctor_id IS NULL AND
-       withdrawn_at IS NULL AND stale_at IS NULL AND close_reason IS NULL)
-    OR
-    (state = 'accepted' AND
-       healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
-       rejected_at IS NULL AND appointed_doctor_id IS NULL AND
-       withdrawn_at IS NULL AND stale_at IS NULL AND close_reason IS NULL)
-    OR
-    (state = 'appointed' AND
-       healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
-       appointed_doctor_id IS NOT NULL AND start_time IS NOT NULL AND duration_minutes IS NOT NULL AND
-       rejected_at IS NULL AND withdrawn_at IS NULL AND stale_at IS NULL AND close_reason IS NULL)
-    OR
-    (state = 'withdrawn' AND
-       withdrawn_at IS NOT NULL AND
-       rejected_at IS NULL AND appointed_doctor_id IS NULL AND stale_at IS NULL AND close_reason IS NULL)
-    OR
-    (state = 'stale' AND
-       healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
-       stale_at IS NOT NULL AND
-       rejected_at IS NULL AND appointed_doctor_id IS NULL AND withdrawn_at IS NULL AND
-       close_reason IS NULL)
-    OR
-    (state = 'closed' AND
-       healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL AND
-       appointed_doctor_id IS NOT NULL AND start_time IS NOT NULL AND duration_minutes IS NOT NULL AND
-       close_reason IS NOT NULL AND
-       rejected_at IS NULL AND withdrawn_at IS NULL AND stale_at IS NULL)
-  ),
+  -- Submitted SubmittedIntakeRequest
+  CONSTRAINT intake_requests_submitted_shape CHECK (state <> 'submitted' OR (
+        rejected_at IS NULL AND rejection_reason IS NULL
+    AND healthcare_service_id IS NULL AND tier IS NULL
+    AND due_not_before IS NULL AND due_not_after IS NULL
+    AND triaged_at IS NULL AND required_doctor_id IS NULL
+    AND appointed_doctor_id IS NULL AND start_time IS NULL AND duration_minutes IS NULL
+    AND withdrawn_at IS NULL AND withdrawal_note IS NULL
+    AND stale_at IS NULL
+    AND close_reason IS NULL AND closed_by_party IS NULL
+    AND cancelled_at IS NULL AND cancellation_note IS NULL)),
 
-  -- The decided doctor requirement exists only once triage has happened
-  -- (healthcare_service_id is set exactly in the triaged states).
-  CHECK (healthcare_service_id IS NOT NULL OR required_doctor_id IS NULL),
+  -- Rejected SubmittedIntakeRequest UTCTime Text
+  CONSTRAINT intake_requests_rejected_shape CHECK (state <> 'rejected' OR (
+        rejected_at IS NOT NULL AND rejection_reason IS NOT NULL
+    AND healthcare_service_id IS NULL AND tier IS NULL
+    AND due_not_before IS NULL AND due_not_after IS NULL
+    AND triaged_at IS NULL AND required_doctor_id IS NULL
+    AND appointed_doctor_id IS NULL AND start_time IS NULL AND duration_minutes IS NULL
+    AND withdrawn_at IS NULL AND withdrawal_note IS NULL
+    AND stale_at IS NULL
+    AND close_reason IS NULL AND closed_by_party IS NULL
+    AND cancelled_at IS NULL AND cancellation_note IS NULL)),
 
-  -- Emergency/Urgent: exactly one deadline (due_not_after), never a window.
-  CHECK (
-    tier IS NULL OR tier = 'routine' OR
-    (due_not_before IS NULL AND due_not_after IS NOT NULL)
-  ),
+  -- Accepted TriagedIntakeRequest
+  -- optional: due_not_before, due_not_after (priority), required_doctor_id
+  CONSTRAINT intake_requests_accepted_shape CHECK (state <> 'accepted' OR (
+        rejected_at IS NULL AND rejection_reason IS NULL
+    AND healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL
+    AND appointed_doctor_id IS NULL AND start_time IS NULL AND duration_minutes IS NULL
+    AND withdrawn_at IS NULL AND withdrawal_note IS NULL
+    AND stale_at IS NULL
+    AND close_reason IS NULL AND closed_by_party IS NULL
+    AND cancelled_at IS NULL AND cancellation_note IS NULL)),
 
-  -- Routine window: RoutineWithin's from <= to (mkRoutineWithin).
-  CHECK (due_not_before IS NULL OR due_not_after IS NULL OR due_not_before <= due_not_after),
+  -- Appointed AppointedIntakeRequest
+  -- optional: due_not_before, due_not_after (priority), required_doctor_id
+  CONSTRAINT intake_requests_appointed_shape CHECK (state <> 'appointed' OR (
+        rejected_at IS NULL AND rejection_reason IS NULL
+    AND healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL
+    AND appointed_doctor_id IS NOT NULL AND start_time IS NOT NULL AND duration_minutes IS NOT NULL
+    AND withdrawn_at IS NULL AND withdrawal_note IS NULL
+    AND stale_at IS NULL
+    AND close_reason IS NULL AND closed_by_party IS NULL
+    AND cancelled_at IS NULL AND cancellation_note IS NULL)),
 
-  CHECK (
-    close_reason IS NULL OR
-    (close_reason = 'completed' AND closed_by_party IS NULL AND cancelled_at IS NULL) OR
-    (close_reason = 'cancelled' AND closed_by_party IS NOT NULL AND cancelled_at IS NOT NULL) OR
-    (close_reason = 'no_show'   AND closed_by_party IS NOT NULL AND cancelled_at IS NULL)
-  )
+  -- Withdrawn (WithdrawnFromSubmitted SubmittedIntakeRequest UTCTime (Maybe Text))
+  -- Within 'withdrawn', healthcare_service_id IS NULL selects this case
+  -- (nullability-as-discriminator).
+  -- optional: withdrawal_note
+  CONSTRAINT intake_requests_withdrawn_from_submitted_shape CHECK (
+    state <> 'withdrawn' OR healthcare_service_id IS NOT NULL OR (
+        rejected_at IS NULL AND rejection_reason IS NULL
+    AND tier IS NULL
+    AND due_not_before IS NULL AND due_not_after IS NULL
+    AND triaged_at IS NULL AND required_doctor_id IS NULL
+    AND appointed_doctor_id IS NULL AND start_time IS NULL AND duration_minutes IS NULL
+    AND withdrawn_at IS NOT NULL
+    AND stale_at IS NULL
+    AND close_reason IS NULL AND closed_by_party IS NULL
+    AND cancelled_at IS NULL AND cancellation_note IS NULL)),
+
+  -- Withdrawn (WithdrawnFromAccepted TriagedIntakeRequest UTCTime (Maybe Text))
+  -- Within 'withdrawn', healthcare_service_id IS NOT NULL selects this case.
+  -- optional: due_not_before, due_not_after (priority), required_doctor_id,
+  --           withdrawal_note
+  CONSTRAINT intake_requests_withdrawn_from_accepted_shape CHECK (
+    state <> 'withdrawn' OR healthcare_service_id IS NULL OR (
+        rejected_at IS NULL AND rejection_reason IS NULL
+    AND tier IS NOT NULL AND triaged_at IS NOT NULL
+    AND appointed_doctor_id IS NULL AND start_time IS NULL AND duration_minutes IS NULL
+    AND withdrawn_at IS NOT NULL
+    AND stale_at IS NULL
+    AND close_reason IS NULL AND closed_by_party IS NULL
+    AND cancelled_at IS NULL AND cancellation_note IS NULL)),
+
+  -- Stale TriagedIntakeRequest UTCTime
+  -- optional: due_not_before, due_not_after (priority), required_doctor_id
+  CONSTRAINT intake_requests_stale_shape CHECK (state <> 'stale' OR (
+        rejected_at IS NULL AND rejection_reason IS NULL
+    AND healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL
+    AND appointed_doctor_id IS NULL AND start_time IS NULL AND duration_minutes IS NULL
+    AND withdrawn_at IS NULL AND withdrawal_note IS NULL
+    AND stale_at IS NOT NULL
+    AND close_reason IS NULL AND closed_by_party IS NULL
+    AND cancelled_at IS NULL AND cancellation_note IS NULL)),
+
+  -- Closed AppointedIntakeRequest CloseReason
+  -- optional: due_not_before, due_not_after (priority), required_doctor_id,
+  --           closed_by_party, cancelled_at, cancellation_note (close reason)
+  CONSTRAINT intake_requests_closed_shape CHECK (state <> 'closed' OR (
+        rejected_at IS NULL AND rejection_reason IS NULL
+    AND healthcare_service_id IS NOT NULL AND tier IS NOT NULL AND triaged_at IS NOT NULL
+    AND appointed_doctor_id IS NOT NULL AND start_time IS NOT NULL AND duration_minutes IS NOT NULL
+    AND withdrawn_at IS NULL AND withdrawal_note IS NULL
+    AND stale_at IS NULL
+    AND close_reason IS NOT NULL)),
+
+  -- IntakeRequestPriority (nullability-as-discriminator). Emergency and
+  -- Urgent carry one deadline, in due_not_after. Routine's RoutineDue is
+  -- the 2x2 over due_not_before/due_not_after. No tier, no due.
+  CONSTRAINT intake_requests_priority_shape CHECK (
+       (tier IS NULL AND due_not_before IS NULL AND due_not_after IS NULL)
+    OR (tier IN ('emergency', 'urgent') AND due_not_before IS NULL AND due_not_after IS NOT NULL)
+    OR  tier = 'routine'),
+
+  -- RoutineWithin's from <= to (mkRoutineWithin).
+  CONSTRAINT intake_requests_routine_within_order CHECK (
+    due_not_before IS NULL OR due_not_after IS NULL OR due_not_before <= due_not_after),
+
+  -- CloseReason: Completed | Cancelled AppointmentParty UTCTime (Maybe Text)
+  --            | NoShow AppointmentParty. Only Cancelled has a time and a
+  -- note; no close reason means none of its payload.
+  CONSTRAINT intake_requests_close_reason_shape CHECK (
+       (close_reason IS NULL
+          AND closed_by_party IS NULL AND cancelled_at IS NULL AND cancellation_note IS NULL)
+    OR (close_reason = 'completed'
+          AND closed_by_party IS NULL AND cancelled_at IS NULL AND cancellation_note IS NULL)
+    OR (close_reason = 'cancelled'
+          AND closed_by_party IS NOT NULL AND cancelled_at IS NOT NULL)
+    OR (close_reason = 'no_show'
+          AND closed_by_party IS NOT NULL AND cancelled_at IS NULL AND cancellation_note IS NULL))
 );
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- DOCTOR CALENDAR
--- See docs/decisions.md's overlap-prevention entry for the full reasoning
--- and rejected alternatives.
+-- cross-table-invariants-need-a-shadow-table: DoctorCalendar's invariant
+-- (a doctor's entries never overlap) spans slots and appointed
+-- intake_requests, so both are mirrored here under one EXCLUDE constraint.
+-- Intervals are half-open, [start, start + duration), matching
+-- Domain.hs; tstzrange's default bounds are [).
 -- ═══════════════════════════════════════════════════════════════════════
 
-CREATE EXTENSION IF NOT EXISTS btree_gist;
-
--- doctor_calendar: shadow table enforcing "no two intervals overlap for
--- the same doctor" across BOTH slots and intake_requests(state =
--- 'appointed'), which a single-table EXCLUDE constraint cannot express
--- on its own. Trigger-maintained from both source tables (see below).
--- Deliberately has NO primary key: nothing references a row here by its
--- own identity — slot_id/intake_request_id (both UNIQUE, mutually
--- exclusive per the CHECK) are the natural keys every trigger actually
--- acts on, and no query or join needs a synthetic id. If logical
--- replication is ever introduced, REPLICA IDENTITY FULL will need
--- setting explicitly on this table — irrelevant at current scope, noted
--- for later.
 CREATE TABLE doctor_calendar (
   doctor_id         UUID NOT NULL,
   during            TSTZRANGE NOT NULL,
@@ -221,14 +253,14 @@ CREATE TABLE doctor_calendar (
   EXCLUDE USING gist (doctor_id WITH =, during WITH &&)
 );
 
--- Trigger 1: slots -> doctor_calendar. INSERT only — DELETE is handled
--- automatically by slot_id's ON DELETE CASCADE above, so no separate
--- delete trigger is needed (would be a redundant second mechanism doing
--- the same thing).
-CREATE OR REPLACE FUNCTION sync_slot_to_doctor_calendar() RETURNS TRIGGER AS $$
+-- Inserting a slot adds its interval. Deleting one removes it through
+-- slot_id's ON DELETE CASCADE.
+CREATE FUNCTION sync_slot_to_doctor_calendar() RETURNS TRIGGER AS $$
 BEGIN
   INSERT INTO doctor_calendar (doctor_id, during, source, slot_id)
-  VALUES (NEW.doctor_id, tstzrange(NEW.start_time, NEW.start_time + make_interval(mins => NEW.duration_minutes)), 'slot', NEW.id);
+  VALUES (NEW.doctor_id,
+          tstzrange(NEW.start_time, NEW.start_time + make_interval(mins => NEW.duration_minutes)),
+          'slot', NEW.id);
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -237,30 +269,18 @@ CREATE TRIGGER slots_sync_doctor_calendar
   AFTER INSERT ON slots
   FOR EACH ROW EXECUTE FUNCTION sync_slot_to_doctor_calendar();
 
--- Trigger 2: intake_requests -> doctor_calendar. Fires on INSERT and on
--- ANY UPDATE (deliberately no "OF column" restriction — comparing
--- OLD/NEW inside the function body instead means this can't silently
--- miss a future appointed-relevant column addition the way an OF-list
--- would). Three cases: entering 'appointed' (from INSERT or from any
--- other state) inserts/replaces the row; the appointed interval itself
--- changing while state stays 'appointed' (start_time/duration_minutes/
--- appointed_doctor_id — no current operation does this, since rescheduling
--- is a close and a new request, but it's handled) replaces the row; leaving
--- 'appointed' deletes it.
-CREATE OR REPLACE FUNCTION sync_intake_request_to_doctor_calendar() RETURNS TRIGGER AS $$
+-- A request's interval exists exactly while it is 'appointed': every insert
+-- or update drops the row's interval and re-adds it if the row is appointed.
+-- No column list on the trigger, so a change to what "appointed" stores
+-- can't be missed.
+CREATE FUNCTION sync_intake_request_to_doctor_calendar() RETURNS TRIGGER AS $$
 BEGIN
-  IF NEW.state = 'appointed' AND (
-       TG_OP = 'INSERT'
-       OR OLD.state IS DISTINCT FROM 'appointed'
-       OR OLD.start_time IS DISTINCT FROM NEW.start_time
-       OR OLD.duration_minutes IS DISTINCT FROM NEW.duration_minutes
-       OR OLD.appointed_doctor_id IS DISTINCT FROM NEW.appointed_doctor_id
-     ) THEN
-    DELETE FROM doctor_calendar WHERE intake_request_id = NEW.id;
+  DELETE FROM doctor_calendar WHERE intake_request_id = NEW.id;
+  IF NEW.state = 'appointed' THEN
     INSERT INTO doctor_calendar (doctor_id, during, source, intake_request_id)
-    VALUES (NEW.appointed_doctor_id, tstzrange(NEW.start_time, NEW.start_time + make_interval(mins => NEW.duration_minutes)), 'appointment', NEW.id);
-  ELSIF TG_OP = 'UPDATE' AND OLD.state = 'appointed' AND NEW.state != 'appointed' THEN
-    DELETE FROM doctor_calendar WHERE intake_request_id = NEW.id;
+    VALUES (NEW.appointed_doctor_id,
+            tstzrange(NEW.start_time, NEW.start_time + make_interval(mins => NEW.duration_minutes)),
+            'appointment', NEW.id);
   END IF;
   RETURN NEW;
 END;

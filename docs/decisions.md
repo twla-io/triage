@@ -809,6 +809,14 @@ Per expected state: every state comes after Submitted, so accept/reject only eve
 
 **Rejected:** `matchHighestPriorityToSlot` (pairs with `matchIntakeRequestToSlot`, but long) and names built on "most corresponding" or "best" (every eligible request fits equally; priority is what decides). `triage-api-codegen`'s rule `checkwaitlist-not-an-endpoint` becomes `match-by-priority-not-an-endpoint`.
 
+## intake_requests: each state's CHECK names every column (2026-09-28)
+
+**Found:** the per-state CHECK tested only one key column per stage (e.g. `healthcare_service_id` for triage), so a row could carry values its state doesn't have: a `'submitted'` row with a tier, a deadline and an appointment time was accepted, and decoding silently dropped them. The complete check existed before the Appointment fold (the old `submitted` branch listed every triage column); the fold's rewrite (`7b6b360`) reduced it to key columns, and later additions (`Stale`, the cancellation note) copied that shape.
+
+**Decided:** one named constraint per constructor, `state <> 'x' OR (…)`, naming every column as required or NULL; columns of a nested sum type are pinned by that type's own CHECK. `WithdrawnIntakeRequest` gets one constraint per case. The close-reason CHECK allows a note only on `cancelled` and no close details without a close reason; the priority CHECK requires no due dates without a tier. The separate `required_doctor_id` CHECK is dropped, since the per-state constraints imply it.
+
+**Still open:** a DB test that fails when a state's CHECK misses a column. Deferred until the schema's columns are renamed after `Domain.hs`'s named values, so it's written once, against the final names.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
