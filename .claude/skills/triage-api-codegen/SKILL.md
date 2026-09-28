@@ -9,12 +9,12 @@ description: Conventions for generating a REST, GraphQL, or RPC API from triage'
 
 **The API layer exists:** `src/Transport.hs` (aeson DTO twin types with hand-written `ToJSON`/`FromJSON`/`ToSchema`) and `src/Api.hs` (Servant routes, handlers, Swagger). The rules below describe it and govern changes to it. Several were first settled in design conversations before any code existed; where a rule's text and the code disagree, trust the code and flag the disagreement rather than silently following either.
 
-**Rules are identified by name, not number.** Always cross-reference by name (e.g. `checkwaitlist-not-an-endpoint`), never by position in the table below.
+**Rules are identified by name, not number.** Always cross-reference by name (e.g. `match-by-priority-not-an-endpoint`), never by position in the table below.
 
 | Name | One-line summary |
 |---|---|
 | `commands-vs-queries-naming` | Settled — reads are `fetch`-prefixed, name-identical to their `Persistence.hs` counterparts; every `Persistence.hs` read now has a `Service.hs` wrapper, no exceptions remaining |
-| `checkwaitlist-not-an-endpoint` | `checkIntakeWaitlist` never gets its own route — it's the body of whatever handler responds to a slot becoming available |
+| `match-by-priority-not-an-endpoint` | `matchByPriority` never gets its own route — it's the body of whatever handler responds to a slot becoming available |
 | `opaque-uuid-ids` | IDs are plain UUID strings on the wire, never wrapped |
 | `tagged-flat-serialization` | Every discriminated `Domain.hs` type serializes as one flat JSON object per case with a uniform `"type"` field — never a nested `contents` wrapper, never a case-specific discriminator name |
 | `verb-minimalism` | `GET`/`POST` only — no `PUT`, `PATCH`, `DELETE`, or `HEAD`; both excluded verbs are structurally absent from the domain, not just unused |
@@ -47,9 +47,9 @@ An earlier version of this rule claimed the Command/Query split was mechanically
 
 **The one remaining gap flagged in the previous version of this rule is now closed.** `fetchIntakeRequest` and `fetchIntakeWaitlist` — previously imported unqualified into `Service.hs` and used only internally by `acceptSubmittedIntakeRequest`, `rejectSubmittedIntakeRequest`, `matchAcceptedIntakeRequestToSlot`, `markIntakeRequestStale`, `closeAppointedIntakeRequest` (`fetchIntakeRequest`), and `matchWaitlistToSlot` (`fetchIntakeWaitlist`) — now both have their own `Service.hs`-level wrappers in the READS section, same thin `fetch`-prefixed pass-through shape as the other nine. **Every `Persistence.hs` read now has a `Service.hs` wrapper, no exceptions remaining.** An API layer generated today can build a `GET /intake-requests/:id` and a waitlist-listing route against `Service.fetchIntakeRequest`/`Service.fetchIntakeWaitlist` directly, without reaching past `Service.hs` into `Persistence.hs` — the situation this rule originally warned about no longer exists for any current read.
 
-## `checkwaitlist-not-an-endpoint` — `checkIntakeWaitlist` is a protocol decision, not an endpoint
+## `match-by-priority-not-an-endpoint` — `matchByPriority` is a protocol decision, not an endpoint
 
-`checkIntakeWaitlist :: AvailableSlot -> [TriagedIntakeRequest] -> Maybe AppointedIntakeRequest` belongs inside the handler for "a slot just became available" — never exposed as a public endpoint on its own. In the current codebase, its real caller is `Service.matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)`, which fetches the waitlist, runs `checkIntakeWaitlist`, and persists the result atomically. Whatever handler creates a new `AvailableSlot` (i.e. whatever calls `Service.createAvailableSlot`) is the natural place to also call `matchWaitlistToSlot` — expose the event ("a slot was created"), not the scan itself.
+`matchByPriority :: AvailableSlot -> [TriagedIntakeRequest] -> Maybe AppointedIntakeRequest` belongs inside the handler for "a slot just became available" — never exposed as a public endpoint on its own. In the current codebase, its real caller is `Service.matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)`, which fetches the waitlist, runs `matchByPriority` over it, and persists the result atomically. Whatever handler creates a new `AvailableSlot` (i.e. whatever calls `Service.createAvailableSlot`) is the natural place to also call `matchWaitlistToSlot` — expose the event ("a slot was created"), not the scan itself.
 
 **This is a statement about which handler is responsible for triggering the scan at all, not about response routing.** "The natural place to also *call* `matchWaitlistToSlot`" is a separate question from "whether to *combine* both calls' results into one HTTP response" — the latter was considered and rejected; see `references/servant-implementation.md`'s section 4 for the full reasoning (`POST /slots`'s response reflects only `createAvailableSlot`'s own `SlotCreationOutcome`, full stop).
 

@@ -18,13 +18,14 @@
 -- separate reason the wrapper needs *some* different name regardless.
 --
 -- Checked against the one remaining existing wrapper:
---   * checkIntakeWaitlist / matchWaitlistToSlot: Domain.checkIntakeWaitlist
---     takes a bare `[TriagedIntakeRequest]` — it has no way to check, and
+--   * matchByPriority / matchWaitlistToSlot: Domain.matchByPriority takes
+--     a bare `[TriagedIntakeRequest]` — it has no way to check, and
 --     doesn't check, that the list it's given is actually "the waitlist"
---     (state = 'accepted'). matchWaitlistToSlot is what performs that real
---     fetch (Persistence.fetchIntakeWaitlist) before scanning it, so it's
---     the one entitled to the name "waitlist" in its own name.
--- Needed no renaming under this test; already named correctly.
+--     (state = 'accepted'), so its name doesn't claim it. matchWaitlistToSlot
+--     is what performs that real fetch (Persistence.fetchIntakeWaitlist)
+--     before scanning it, so it's the one entitled to "waitlist" in its
+--     own name. (The Domain function was once called checkIntakeWaitlist,
+--     which claimed exactly what this test says it can't.)
 --
 -- A second worked example used to live here — reassignSlot /
 -- reassignAppointmentSlot — illustrating a "precision-of-meaning" case:
@@ -125,8 +126,8 @@ import Domain
   , acceptIntakeRequest
   , addAvailableSlot
   , calendarEntryStart
-  , checkIntakeWaitlist
   , durationToNominalDiffTime
+  , matchByPriority
   , matchIntakeRequestToSlot
   )
 -- Qualified alongside the unqualified import below because thirteen of
@@ -448,7 +449,7 @@ rejectSubmittedIntakeRequest pool requestId rejectedAt reason =
           AlreadyClaimed -> fmap MovedOn <$> refetchAfterLostWrite conn requestId
       Right (Just current)               -> pure (Right (MovedOn current))
 
--- Mirrors Domain.checkIntakeWaitlist: a newly available slot scans the
+-- Mirrors Domain.matchByPriority: a newly available slot scans the
 -- waitlist in priority order; the first eligible request is matched and
 -- committed. Unlike the old checkWaitlist, no AppointmentId needs minting
 -- before the scan — IntakeRequestId already exists on the request itself
@@ -460,12 +461,12 @@ matchWaitlistToSlot pool slot = withResource pool $ \conn -> do
   case waitlistResult of
     Left err -> pure (Left (PersistenceDecodeError err))
     Right waitlist ->
-      case checkIntakeWaitlist slot waitlist of
+      case matchByPriority slot waitlist of
         Nothing        -> pure (Right NoEligibleRequest)
         Just appointed -> persistMatch conn slot appointed
 
 -- Mirrors Domain.matchIntakeRequestToSlot called directly, bypassing
--- checkIntakeWaitlist's scan — Domain.hs's own comment calls this out as a
+-- matchByPriority's scan — Domain.hs's own comment calls this out as a
 -- valid, separate entry point for a manager to force-match one specific
 -- request to one specific slot, still subject to the same structural
 -- eligibility (matches) as the automatic scan, never overridable.

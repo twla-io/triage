@@ -801,6 +801,14 @@ Per expected state: every state comes after Submitted, so accept/reject only eve
 
 **Decided:** `intake_requests` gets `CHECK (due_not_before IS NULL OR due_not_after IS NULL OR due_not_before <= due_not_after)`. Decoding still goes through `mkRoutineWithin` (`sealed-type-replay`, `InvalidWithin`), now a second line of defense rather than the only one; Transport's check is unchanged. The skill names this as the live case of its single-value → `CHECK` rule.
 
+## checkIntakeWaitlist renamed matchByPriority (2026-09-28)
+
+**Decided:** `Domain.checkIntakeWaitlist :: AvailableSlot -> [TriagedIntakeRequest] -> Maybe AppointedIntakeRequest` is renamed `matchByPriority`. No behavior change.
+
+**Why:** both halves of the old name claimed something the function doesn't do. "check" suggests a predicate or a validation; the function decides — it sorts the requests by priority and matches the first one that fits the slot, the many-request counterpart of `matchIntakeRequestToSlot`. "Waitlist" claims the list is the waitlist, which a function taking any `[TriagedIntakeRequest]` can't know — the very argument `Service.hs`'s naming rule (`verifies-the-precondition`) uses to give "waitlist" to `Service.matchWaitlistToSlot`, which fetches the real waitlist. The new name states what decides between eligible requests: priority.
+
+**Rejected:** `matchHighestPriorityToSlot` (pairs with `matchIntakeRequestToSlot`, but long) and names built on "most corresponding" or "best" (every eligible request fits equally; priority is what decides). `triage-api-codegen`'s rule `checkwaitlist-not-an-endpoint` becomes `match-by-priority-not-an-endpoint`.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)

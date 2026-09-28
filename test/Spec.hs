@@ -452,7 +452,7 @@ main = hspec $ do
           .&&. appointed.duration === slot.duration
         Nothing -> property True
 
-  describe "checkIntakeWaitlist" $ do
+  describe "matchByPriority" $ do
     prop "chooses Emergency over Urgent and Routine" $ do
       sid         <- arbitrary
       did         <- arbitrary
@@ -465,7 +465,7 @@ main = hspec $ do
           emergency  = mkReq (Emergency (EmergencyDue deadline))
           urgent     = mkReq (Urgent    (UrgentDue    deadline))
           routine    = mkReq (Routine   RoutineAnytime)
-      pure $ case checkIntakeWaitlist slot [routine, urgent, emergency] of
+      pure $ case matchByPriority slot [routine, urgent, emergency] of
         Just appointed -> appointed.triaged.priority === Emergency (EmergencyDue deadline)
         Nothing        -> property False
 
@@ -475,7 +475,7 @@ main = hspec $ do
       did  <- arbitrary
       slot <- genAvailableSlotFor sid1 did
       req  <- genTriagedRequestFor sid2
-      pure $ checkIntakeWaitlist slot [req] === Nothing
+      pure $ matchByPriority slot [req] === Nothing
 
     prop "on equal-deadline windows, chooses the narrower one even when listed second" $ do
       sid         <- arbitrary
@@ -489,7 +489,7 @@ main = hspec $ do
           mkReq due  = acceptIntakeRequest baseRequest sid (Routine due) AnyDoctor now
           wide       = mkReq wideDue
           narrow     = mkReq narrowDue
-      pure $ case checkIntakeWaitlist slot [wide, narrow] of
+      pure $ case matchByPriority slot [wide, narrow] of
         Just appointed ->
               property (matches slot wide)
           .&&. property (matches slot narrow)

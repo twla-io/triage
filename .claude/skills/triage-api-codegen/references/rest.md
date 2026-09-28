@@ -22,7 +22,7 @@
 
 All action-suffixed, per `action-endpoints-not-generic-patch` (`SKILL.md`) — never `PATCH /intake-requests/:id` with a state field.
 
-Per `checkwaitlist-not-an-endpoint` (`SKILL.md`), `matchWaitlistToSlot` does **not** get its own route — it runs inside whatever handler creates a new slot:
+Per `match-by-priority-not-an-endpoint` (`SKILL.md`), `matchWaitlistToSlot` does **not** get its own route — it runs inside whatever handler creates a new slot:
 
 ```
 POST /slots → createAvailableSlot → matchWaitlistToSlot → response reflects the resulting

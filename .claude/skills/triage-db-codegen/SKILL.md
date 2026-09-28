@@ -86,7 +86,7 @@ When a new nullable field is proposed, check first whether it's actually encodin
 
 ## `ord-ranking-check` (Rule 3) — Check `Ord`-bearing types against their derived ranking only if something actually sorts by it at the SQL level
 
-`IntakeRequestPriority` and `RoutineDue` both derive `Ord` with non-trivial rankings, but **ordering happens exclusively in `Domain.hs`** — `checkIntakeWaitlist`'s `sortOn priority` runs in memory over already-decoded values, fetched via a plain (unordered) query. No integer tier-rank column exists in this schema, and none should be added, unless a future query genuinely needs `ORDER BY` on priority at the SQL level.
+`IntakeRequestPriority` and `RoutineDue` both derive `Ord` with non-trivial rankings, but **ordering happens exclusively in `Domain.hs`** — `matchByPriority`'s `sortOn priority` runs in memory over already-decoded values, fetched via a plain (unordered) query. No integer tier-rank column exists in this schema, and none should be added, unless a future query genuinely needs `ORDER BY` on priority at the SQL level.
 
 ## `join-tables-not-arrays` (Rule 4) — Multi-valued fields become join tables, never array columns
 

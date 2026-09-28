@@ -98,7 +98,7 @@ or protects against races. Enforcement is split:
   with its service's duration. Types do *not* prove a value matches
   what is currently stored.
 - **Pure functions (Domain):** `matches` / `matchIntakeRequestToSlot` check
-  service, doctor requirement, and time window; `checkIntakeWaitlist` picks
+  service, doctor requirement, and time window; `matchByPriority` picks
   the highest-priority eligible request. Reject, stale, withdraw and close
   are direct construction, with no Domain function. Every lifecycle path is
   one-way; displacing or rescheduling a patient is a close plus a new

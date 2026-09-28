@@ -114,11 +114,11 @@ matches
 matchIntakeRequestToSlot
   :: AvailableSlot -> TriagedIntakeRequest -> Maybe AppointedIntakeRequest
 
-checkIntakeWaitlist
+matchByPriority
   :: AvailableSlot -> [TriagedIntakeRequest] -> Maybe AppointedIntakeRequest
 ```
 
-`checkIntakeWaitlist` sorts the waitlist by priority and tries
+`matchByPriority` sorts the requests it is given by priority and tries
 `matchIntakeRequestToSlot` against each in order, taking the first success —
 no separate offer/accept step. `matchIntakeRequestToSlot` returns the
 `AppointedIntakeRequest` alone: the matched slot's doctor/time/duration facts

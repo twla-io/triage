@@ -291,7 +291,7 @@ corsPolicy req = case lookup "Origin" (requestHeaders req) of
 -- five carries a payload), so this is its own exhaustive match, sharing
 -- handleServiceError for the Left case exactly like runService does.
 -- matchWaitlistToSlot is the one other function with this same shape,
--- per checkwaitlist-not-an-endpoint it never gets its own route, so
+-- per match-by-priority-not-an-endpoint it never gets its own route, so
 -- runMatchOutcome's only caller so far is
 -- matchAcceptedIntakeRequestToSlotHandler.
 --
@@ -554,7 +554,7 @@ healthcareServiceServer =
 -- through; an unknown service comes back as HealthcareServiceNotFound via
 -- handleServiceError. The response is the {"outcome", "detail"} envelope via
 -- runSlotCreation, not a bare AvailableSlotDTO — and per
--- checkwaitlist-not-an-endpoint's already-settled resolution, this does
+-- match-by-priority-not-an-endpoint's already-settled resolution, this does
 -- NOT also call matchWaitlistToSlot; the response reflects only this
 -- call's own SlotCreationOutcome.
 --

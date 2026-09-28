@@ -62,7 +62,7 @@ module Domain
   -- ── Protocol ─────────────────────────────────────────────────────────────
   , matches
   , matchIntakeRequestToSlot
-  , checkIntakeWaitlist
+  , matchByPriority
   ) where
 
 import Control.Monad   (foldM)
@@ -472,9 +472,9 @@ matchIntakeRequestToSlot slot triaged
         }
   | otherwise = Nothing
 
-checkIntakeWaitlist
+matchByPriority
   :: AvailableSlot
   -> [TriagedIntakeRequest]
   -> Maybe AppointedIntakeRequest
-checkIntakeWaitlist slot =
+matchByPriority slot =
   listToMaybe . mapMaybe (matchIntakeRequestToSlot slot) . sortOn priority

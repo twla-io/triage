@@ -282,16 +282,16 @@ request's priority-carried deadline (or window, for `Routine`).
 matchIntakeRequestToSlot
   :: AvailableSlot -> TriagedIntakeRequest -> Maybe AppointedIntakeRequest
 
-checkIntakeWaitlist
+matchByPriority
   :: AvailableSlot -> [TriagedIntakeRequest] -> Maybe AppointedIntakeRequest
-checkIntakeWaitlist slot =
+matchByPriority slot =
   listToMaybe . mapMaybe (matchIntakeRequestToSlot slot) . sortOn priority
 ```
 
 `matchIntakeRequestToSlot` is the direct one-to-one check: does this
 specific triaged request fit this specific slot, and if so, produce the
-`AppointedIntakeRequest` that results. `checkIntakeWaitlist` is the
-automatic path a newly available slot takes: sort the waitlist by priority
+`AppointedIntakeRequest` that results. `matchByPriority` is the
+automatic path a newly available slot takes: sort the requests by priority
 (using `IntakeRequestPriority`'s own `Ord` instance), try to satisfy each in
 order via `matchIntakeRequestToSlot`, take the first success. The pipeline
 shape *is* the spec — no separate prose description should be needed to
