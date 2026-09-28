@@ -237,8 +237,8 @@ data CalendarEntry
 
 mkDoctorCalendar :: [CalendarEntry] -> Maybe DoctorCalendar
 addAvailableSlot
-  :: SlotId -> DoctorId -> HealthcareService -> UTCTime
-  -> DoctorCalendar -> Maybe (AvailableSlot, DoctorCalendar)
+  :: DoctorCalendar -> SlotId -> DoctorId -> HealthcareService -> UTCTime
+  -> Maybe (AvailableSlot, DoctorCalendar)
 ```
 
 A doctor's time is occupied by available slots and appointed requests. No

@@ -404,15 +404,15 @@ newtype DoctorCalendar =
   deriving (Show, Eq)
 
 mkDoctorCalendar :: [CalendarEntry] -> Maybe DoctorCalendar
-mkDoctorCalendar = foldM (flip addCalendarEntry) (DoctorCalendar Map.empty)
+mkDoctorCalendar = foldM addCalendarEntry (DoctorCalendar Map.empty)
 
 -- A new slot for this doctor at this time, lasting as long as its service.
 -- Nothing if it would overlap one of the doctor's entries.
 addAvailableSlot
-  :: SlotId -> DoctorId -> HealthcareService -> UTCTime
-  -> DoctorCalendar -> Maybe (AvailableSlot, DoctorCalendar)
-addAvailableSlot slotId doctorId service start calendar =
-  (\grown -> (slot, grown)) <$> addCalendarEntry (Slot slot) calendar
+  :: DoctorCalendar -> SlotId -> DoctorId -> HealthcareService -> UTCTime
+  -> Maybe (AvailableSlot, DoctorCalendar)
+addAvailableSlot calendar slotId doctorId service start =
+  (\grown -> (slot, grown)) <$> addCalendarEntry calendar (Slot slot)
   where
     slot = AvailableSlot
       { id = slotId, doctorId, healthcareServiceId = service.id, start, duration = service.duration }
@@ -420,8 +420,8 @@ addAvailableSlot slotId doctorId service start calendar =
 -- Only the nearest neighbour on each side needs checking: the existing
 -- entries already don't overlap, so the one starting just before ends
 -- latest among all earlier ones.
-addCalendarEntry :: CalendarEntry -> DoctorCalendar -> Maybe DoctorCalendar
-addCalendarEntry entry (DoctorCalendar calendar)
+addCalendarEntry :: DoctorCalendar -> CalendarEntry -> Maybe DoctorCalendar
+addCalendarEntry (DoctorCalendar calendar) entry
   | clashesWithPrevious || clashesWithNext = Nothing
   | otherwise = Just . DoctorCalendar $
       Map.insert doctor (Map.insert start entry own) calendar

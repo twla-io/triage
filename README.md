@@ -78,7 +78,7 @@ AppointedIntakeRequest`: everything that occupies a doctor's time.
 doctor overlap; entries occupy half-open intervals `[start, end)`, so
 touching is not overlapping. `mkDoctorCalendar :: [CalendarEntry] -> Maybe
 DoctorCalendar` builds one from existing entries; `addAvailableSlot ::
-SlotId -> DoctorId -> HealthcareService -> UTCTime -> DoctorCalendar ->
+DoctorCalendar -> SlotId -> DoctorId -> HealthcareService -> UTCTime ->
 Maybe (AvailableSlot, DoctorCalendar)` creates a new slot, lasting as long
 as its service, and grows the calendar with it — a slot is the only thing
 ever added; appointments arrive by matching, which takes

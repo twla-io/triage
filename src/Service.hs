@@ -315,7 +315,7 @@ createAvailableSlot pool doctorId healthcareServiceId start = withResource pool 
       calendarResult <- fetchDoctorCalendar conn doctorId start end
       case calendarResult of
         Left err -> pure (Left (PersistenceDecodeError err))
-        Right calendar -> case addAvailableSlot slotId doctorId service start calendar of
+        Right calendar -> case addAvailableSlot calendar slotId doctorId service start of
           Nothing        -> pure (Right SlotConflict)
           Just (slot, _) -> do
             result <- insertAvailableSlot conn slot

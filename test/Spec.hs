@@ -516,7 +516,7 @@ main = hspec $ do
             , start = moment, duration = service.duration }
       pure $ case mkDoctorCalendar entries of
         Just calendar ->
-          isJust (addAvailableSlot newId did service moment calendar)
+          isJust (addAvailableSlot calendar newId did service moment)
             === isJust (mkDoctorCalendar (entries ++ [Slot slot]))
         Nothing -> property Discard
 
@@ -525,7 +525,7 @@ main = hspec $ do
       moment  <- genMoment
       service <- genService
       newId   <- arbitrary
-      pure $ case mkDoctorCalendar [] >>= addAvailableSlot newId did service moment of
+      pure $ case mkDoctorCalendar [] >>= \c -> addAvailableSlot c newId did service moment of
         Just (slot, _) ->
           slot === AvailableSlot
             { id = newId, doctorId = did, healthcareServiceId = service.id
@@ -537,7 +537,7 @@ main = hspec $ do
       entry   <- genCalendarEntryFor did
       service <- genService
       newId   <- arbitrary
-      pure $ isJust (mkDoctorCalendar [entry] >>= addAvailableSlot newId did service (calendarEntryEndOf entry))
+      pure $ isJust (mkDoctorCalendar [entry] >>= \c -> addAvailableSlot c newId did service (calendarEntryEndOf entry))
 
     prop "never rejects a slot because of another doctor's entry" $ do
       did1    <- arbitrary
@@ -545,7 +545,7 @@ main = hspec $ do
       entry   <- genCalendarEntryFor did1
       service <- genService
       newId   <- arbitrary
-      pure $ isJust (mkDoctorCalendar [entry] >>= addAvailableSlot newId did2 service (calendarEntryStart entry))
+      pure $ isJust (mkDoctorCalendar [entry] >>= \c -> addAvailableSlot c newId did2 service (calendarEntryStart entry))
 
   -- Route-level, not type-level, unlike the property tests above —
   -- validateEveryToJSON (servant-swagger) generates its own per-type
