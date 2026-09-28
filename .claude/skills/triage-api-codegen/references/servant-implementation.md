@@ -121,7 +121,6 @@ The settled request-DTO shape per mutation:
 | `acceptSubmittedIntakeRequest` | `{healthcareServiceId, priority: IntakeRequestPriorityDTO, doctorRequirement: DoctorRequirementDTO}` |
 | `rejectSubmittedIntakeRequest` | `{rejectionReason}` |
 | `matchAcceptedIntakeRequestToSlot` | `{slotId}` (`MatchIntakeRequestRequest`) |
-| `reclaimAppointedIntakeRequest` | no body |
 | `closeAppointedIntakeRequest` | `{closeReason: CloseReasonRequestDTO}` |
 
 **`CloseReasonRequestDTO`** is a new, separate type — not `CloseReasonDTO` reused. It mirrors `CloseReasonDTO`'s three cases (`Completed`/`Cancelled`/`NoShow`) minus `Cancelled`'s timestamp field, since that timestamp is exactly the kind of server-supplied fact excluded above. A `closeReasonFromRequest :: CloseReasonRequestDTO -> UTCTime -> CloseReason` function converts one into a real `CloseReason` once the handler has called `getCurrentTime` and has a timestamp to supply for the `Cancelled` case.

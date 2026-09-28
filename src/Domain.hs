@@ -48,7 +48,6 @@ module Domain
   , CloseReason (..)
   , IntakeRequest (..)           -- constructor open — no invariant to protect
   , acceptIntakeRequest
-  , reclaimIntakeRequest
 
   -- ── Slot ─────────────────────────────────────────────────────────────────
   , AvailableSlot (..)
@@ -257,8 +256,6 @@ data TriagedIntakeRequest = TriagedIntakeRequest
 
 data AppointedIntakeRequest = AppointedIntakeRequest
   { triaged  :: TriagedIntakeRequest
-    -- ^ The request this appointment came from, unchanged — what
-    -- reclaimIntakeRequest returns.
   , doctorId :: DoctorId
   , start    :: UTCTime
   , duration :: Duration
@@ -303,8 +300,8 @@ data CloseReason
 -- All of Rejected/Withdrawn/Stale/Closed are permanently terminal — no
 -- transitions out of any of them. Do not add one. A patient who needs to be
 -- seen again after a terminal case gets a brand new IntakeRequest (new
--- IntakeRequestId). A patient displaced from an appointment is not in a
--- terminal case: reclaimIntakeRequest returns the same request to Accepted.
+-- IntakeRequestId). That includes a patient displaced or rescheduled from
+-- an appointment: it is Closed (Cancelled ...), then a new request follows.
 --
 -- Stale is reachable only from Accepted: staff manually recognizing that an
 -- accepted request never got matched to a slot and never got withdrawn, and
@@ -337,11 +334,6 @@ acceptIntakeRequest
   -> TriagedIntakeRequest
 acceptIntakeRequest submitted healthcareServiceId priority doctorRequirement triagedAt =
   TriagedIntakeRequest { submitted, healthcareServiceId, priority, doctorRequirement, triagedAt }
-
--- Appointed -> Accepted. The request goes back to the waitlist exactly as
--- it was triaged: same IntakeRequestId, priority and triagedAt.
-reclaimIntakeRequest :: AppointedIntakeRequest -> TriagedIntakeRequest
-reclaimIntakeRequest appointed = appointed.triaged
 
 -- No rejectIntakeRequest function. Rejection is direct construction —
 -- Rejected submitted rejectedAt reason — same precedent as

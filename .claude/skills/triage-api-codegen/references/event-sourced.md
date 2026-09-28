@@ -19,7 +19,6 @@ Each mutating `Service.hs` operation would correspond to one application-layer c
 | `createAvailableSlot` → `matchWaitlistToSlot`'s `Matched` outcome | (internal to the `SlotCreated`-triggering handler) | `SlotCreated`, then `IntakeRequestMatched` — **emitted together, same transaction** (mirrors `Persistence.persistMatchedIntakeRequest`'s existing atomicity requirement, expressed as an event-log invariant instead of a transactional one) |
 | `createAvailableSlot` → `matchWaitlistToSlot`'s `NoEligibleRequest` outcome | (internal) | `SlotCreated` only |
 | `matchAcceptedIntakeRequestToSlot`'s `Matched` outcome | `MatchAcceptedIntakeRequestToSlot IntakeRequestId AvailableSlot` | `IntakeRequestMatched` |
-| `reclaimAppointedIntakeRequest` | `ReclaimAppointedIntakeRequest IntakeRequestId` | `IntakeRequestReclaimed` |
 | `closeAppointedIntakeRequest` | `CloseAppointedIntakeRequest IntakeRequestId CloseReason` | `IntakeRequestClosed` |
 
 ## Read side

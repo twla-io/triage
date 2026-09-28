@@ -251,12 +251,14 @@ spec pool = do
       withResource pool (\c -> P.fetchSlot c slot.id) `shouldReturn` Right (Just slot)
       stateOf pool t.submitted.id `shouldReturn` "accepted"
 
-  describe "reclaim / close / stale" $ do
-    it "reclaim returns the same triaged request and frees the time" $ do
+  describe "close / stale" $ do
+    it "cancelling an appointment frees its time" $ do
       fx        <- fixture pool
-      (t, _, a) <- appoint pool fx t0
-      S.reclaimAppointedIntakeRequest pool a.triaged.submitted.id `shouldReturn` Right (Applied t)
-      stateOf pool t.submitted.id `shouldReturn` "accepted"
+      (_, _, a) <- appoint pool fx t0
+      let rid       = a.triaged.submitted.id
+          cancelled = Cancelled ByDoctor t0 Nothing
+      S.closeAppointedIntakeRequest pool rid cancelled `shouldReturn` Right (Applied (Closed a cancelled))
+      stateOf pool rid `shouldReturn` "closed"
       Right (SlotCreated _) <- S.createAvailableSlot pool fx.doctor.id fx.service.id t0
       pure ()
 
@@ -266,19 +268,6 @@ spec pool = do
       let rid = a.triaged.submitted.id
       S.closeAppointedIntakeRequest pool rid Completed `shouldReturn` Right (Applied (Closed a Completed))
       S.closeAppointedIntakeRequest pool rid Completed `shouldReturn` Left (RequestAlreadyClosed rid)
-
-    it "a close can't land on an appointment its caller never saw" $ do
-      fx        <- fixture pool
-      (_, _, a) <- appoint pool fx t0
-      let rid = a.triaged.submitted.id
-      seen  <- versionOf pool rid
-      -- Meanwhile: reclaimed and re-matched to a later slot.
-      Right (Applied _) <- S.reclaimAppointedIntakeRequest pool rid
-      later <- slotAt pool fx (minutes 60 t0)
-      Right (Matched _) <- S.matchAcceptedIntakeRequestToSlot pool rid later.id
-      withResource pool (\c -> P.persistClosedIntakeRequestIfAppointed c seen a Completed)
-        `shouldReturn` AlreadyClaimed
-      stateOf pool rid `shouldReturn` "appointed"
 
     it "mark stale works from accepted, not from submitted" $ do
       fx <- fixture pool

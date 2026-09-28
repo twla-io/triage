@@ -97,18 +97,19 @@ or protects against races. Enforcement is split:
   what is currently stored.
 - **Pure functions (Domain):** `matches` / `matchIntakeRequestToSlot` check
   service, doctor requirement, and time window; `checkIntakeWaitlist` picks
-  the highest-priority eligible request. Reject, stale, withdraw, close and
-  reclaim (`appointed.triaged`) are direct construction, with no Domain
-  function.
+  the highest-priority eligible request. Reject, stale, withdraw and close
+  are direct construction, with no Domain function. Every lifecycle path is
+  one-way; displacing or rescheduling a patient is a close plus a new
+  request.
 - **Service:** verifies the stored state before each transition (e.g.
   accept/reject require `Submitted`, match/stale require `Accepted`,
-  reclaim/close require `Appointed`; slot creation checks
+  close requires `Appointed`; slot creation checks
   `addAvailableSlot` against the doctor's stored calendar), and checks that
   every patient, doctor and service id it's given exists (`PatientNotFound`,
   `DoctorNotFound`, `HealthcareServiceNotFound`). These checks are separate
   reads, not held in a transaction with the write.
 - **Persistence writes:** every lifecycle transition (accept, reject,
-  match, reclaim, mark-stale, close) uses an `UPDATE` conditioned on the
+  match, mark-stale, close) uses an `UPDATE` conditioned on the
   expected current state (legality) and on the row version the caller read
   (freshness, `intake_requests.version`, bumped by a trigger), with an
   affected-rows check (`ClaimOutcome`), so a concurrent change surfaces as

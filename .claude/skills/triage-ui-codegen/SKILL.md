@@ -11,7 +11,7 @@ description: Conventions for generating a frontend UI or UX flow from triage's D
 
 ### Available actions must mirror exactly which transitions are defined for the current state
 
-This is the most important rule in this skill, and the one most likely to be silently violated. An `IntakeRequest`'s valid actions are exactly the transitions `Domain.hs` defines out of its current case — nothing more. A `Submitted` request can be accepted or rejected, never matched to a slot (there's no triage yet). An `Appointed` request can be closed or reclaimed, never accepted again. `Rejected`, `Withdrawn`, `Stale` and `Closed` are terminal: show them read-only, with no action controls at all.
+This is the most important rule in this skill, and the one most likely to be silently violated. An `IntakeRequest`'s valid actions are exactly the transitions `Domain.hs` defines out of its current case — nothing more. A `Submitted` request can be accepted or rejected, never matched to a slot (there's no triage yet). An `Appointed` request can only be closed, never accepted or sent back to the waitlist. `Rejected`, `Withdrawn`, `Stale` and `Closed` are terminal: show them read-only, with no action controls at all.
 
 Concretely: **build the set of enabled controls from the current state, not from a general-purpose "what can a request do" menu with conditions sprinkled on top.** A `switch` over the request's `type` should produce the exact list of valid actions; if a new case is added to `IntakeRequest` later, the UI should fail to type-check (with the generated API types) or at minimum visibly need updating, not silently render a stale action list. See `references/state-to-affordance-mapping.md` for the table.
 

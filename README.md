@@ -46,9 +46,7 @@ separate `Appointment` type. One linear embedding chain: `SubmittedIntakeRequest
 "Details" type) → `TriagedIntakeRequest` (embeds `submitted` and adds
 `healthcareServiceId`, `priority`, `doctorRequirement`, `triagedAt`) →
 `AppointedIntakeRequest` (embeds `triaged` and adds `doctorId`, `start`,
-`duration`; `reclaimIntakeRequest :: AppointedIntakeRequest ->
-TriagedIntakeRequest` returns `triaged` unchanged, taking an `Appointed`
-request back to `Accepted`). `WithdrawnIntakeRequest = WithdrawnFromSubmitted
+`duration`). `WithdrawnIntakeRequest = WithdrawnFromSubmitted
 SubmittedIntakeRequest UTCTime (Maybe Text) | WithdrawnFromAccepted
 TriagedIntakeRequest UTCTime (Maybe Text)` — only two cases; ending an
 `Appointed` request is always `Closed` instead. `AppointmentParty = ByDoctor
@@ -62,7 +60,9 @@ Rejected SubmittedIntakeRequest UTCTime Text | Accepted TriagedIntakeRequest
 TriagedIntakeRequest UTCTime | Closed AppointedIntakeRequest CloseReason` —
 one sum type, one identity (`IntakeRequestId`) throughout;
 `Rejected`/`Withdrawn`/`Stale`/`Closed` are all permanently terminal, no
-transitions back out of any of them. `Stale` is reachable only from
+transitions back out of any of them; a patient who needs to be seen again —
+including one displaced or rescheduled from an appointment, which is
+`Closed (Cancelled ...)` — gets a brand new `IntakeRequest`. `Stale` is reachable only from
 `Accepted` — staff manually closing out an accepted request that never got
 matched to a slot or withdrawn by the patient; always an explicit,
 staff-initiated action, never automatic or timer-driven.
@@ -123,11 +123,9 @@ checkIntakeWaitlist
 no separate offer/accept step. `matchIntakeRequestToSlot` returns the
 `AppointedIntakeRequest` alone: the matched slot's doctor/time/duration facts
 are copied once into the request at the moment of matching, and the original
-slot ceases to be referenced or exist thereafter. There is no dedicated
-reassignment function: an `Appointed` request is reclaimed back to `Accepted`
-with `reclaimIntakeRequest` (the embedded `triaged` value, unchanged), then
-re-matched like any other waitlisted request — the caller composes
-these two existing operations rather than a third one existing for this.
+slot ceases to be referenced or exist thereafter. There is no
+reassignment or reclaim function: rescheduling closes the appointment and
+matches a new request like any other waitlisted one.
 There is no `rejectIntakeRequest` function either — rejection is direct
 construction (`Rejected submitted rejectedAt reason`), no dedicated function.
 

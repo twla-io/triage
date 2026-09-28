@@ -29,12 +29,10 @@
 -- A second worked example used to live here — reassignSlot /
 -- reassignAppointmentSlot — illustrating a "precision-of-meaning" case:
 -- the extra noun ("Appointment") disambiguated *what* was being acted on,
--- not a literal fetched precondition. Both functions are gone — the
--- reassignment mechanism they implemented had a real bug and was replaced
--- entirely by a simpler design; see docs/decisions.md's "Reassignment and
--- displacement both compose from reclaimAppointedIntakeRequest, not a
--- dedicated transition" entry. Deliberately not replaced with a new
--- pairing here: neither matchAcceptedIntakeRequestToSlot nor
+-- not a literal fetched precondition. Both functions are gone; rescheduling
+-- is now a close followed by a new request (see docs/decisions.md's
+-- "Reclaim removed; displacing a patient is Closed + a new IntakeRequest"
+-- entry). Deliberately not replaced with a new pairing here: neither matchAcceptedIntakeRequestToSlot nor
 -- closeAppointedIntakeRequest makes the same point.
 -- matchAcceptedIntakeRequestToSlot's "Accepted" is a literal fetched
 -- precondition (the same shape as acceptSubmittedIntakeRequest below, not
@@ -46,8 +44,7 @@
 -- acceptIntakeRequest / acceptSubmittedIntakeRequest is the
 -- clearer worked example, since there "Submitted" is a precondition in the
 -- literal sense (a stored state, fetched and checked) rather than a
--- structural-precision distinction. reclaimIntakeRequest /
--- reclaimAppointedIntakeRequest is the same shape, with "Appointed".
+-- structural-precision distinction.
 
 module Service
   ( -- ── Errors / outcomes ────────────────────────────────────────────────
@@ -66,7 +63,6 @@ module Service
   , rejectSubmittedIntakeRequest
   , matchWaitlistToSlot
   , matchAcceptedIntakeRequestToSlot
-  , reclaimAppointedIntakeRequest
   , markIntakeRequestStale
   , closeAppointedIntakeRequest
 
@@ -132,7 +128,6 @@ import Domain
   , checkIntakeWaitlist
   , durationToNominalDiffTime
   , matchIntakeRequestToSlot
-  , reclaimIntakeRequest
   )
 -- Qualified alongside the unqualified import below because thirteen of
 -- this module's own top-level names (fetchDoctor, fetchPatient,
@@ -150,7 +145,7 @@ import Domain
 -- now goes through Persistence.fetchIntakeRequest/
 -- Persistence.fetchIntakeWaitlist instead (see acceptSubmittedIntakeRequest,
 -- rejectSubmittedIntakeRequest, matchWaitlistToSlot,
--- matchAcceptedIntakeRequestToSlot, reclaimAppointedIntakeRequest,
+-- matchAcceptedIntakeRequestToSlot, markIntakeRequestStale,
 -- closeAppointedIntakeRequest below). fetchSubmittedIntakeRequests/
 -- fetchClosedIntakeRequests were never in the unqualified list to begin
 -- with — each one's own Service.hs wrapper was added at the same time as
@@ -175,7 +170,6 @@ import Persistence
   , insertSubmittedIntakeRequest
   , persistClosedIntakeRequestIfAppointed
   , persistMatchedIntakeRequest
-  , persistReclaimedIntakeRequest
   , persistRejectedIntakeRequest
   , persistStaleIntakeRequest
   , persistTriagedIntakeRequest
@@ -225,9 +219,8 @@ data ServiceError
 --     request changed between this operation's fetch and its write — the
 --     write's row version no longer matched (row-version-for-freshness).
 --     The only true statement is "it changed since you read it": it may
---     have been matched, closed, or reclaimed and re-matched to another
---     slot. The caller decided from what it saw, so it must look again;
---     nothing here retries.
+--     have been matched, closed, or otherwise moved on. The caller decided
+--     from what it saw, so it must look again; nothing here retries.
 -- SlotAlreadyClaimed is translated from Persistence.MatchPersistOutcome's
 -- SlotAlreadyGone, or produced directly by matchAcceptedIntakeRequestToSlot
 -- when fetchSlot returns Nothing; RequestChangedSinceRead from
@@ -561,48 +554,10 @@ persistMatch conn slot requestVersion appointed = do
     SlotAlreadyGone       -> SlotAlreadyClaimed
     RequestAlreadyMatched -> RequestChangedSinceRead
 
--- Reclaims an Appointed request back to Accepted. Mirrors
--- Domain.reclaimIntakeRequest, which takes a bare AppointedIntakeRequest
--- and can't check it came from a currently Appointed stored request —
--- per verifies-the-precondition, this wrapper is defined by that check
--- (fetch by IntakeRequestId, confirm Right (Just (Appointed appointed)),
--- reject otherwise), so it carries "Appointed" in its name.
---
--- Reassignment and displacement are no longer separate operations —
--- both compose from this plus matchAcceptedIntakeRequestToSlot (see
--- docs/decisions.md). Whether the vacated original time becomes
--- bookable again is the caller's separate, explicit createAvailableSlot
--- call, not automatic here.
---
--- All seven IntakeRequest cases handled explicitly, no wildcard, same
--- collapsing as closeAppointedIntakeRequest: Submitted/Rejected/
--- Accepted/Withdrawn/Stale all collapse to RequestNotAppointed; Closed
--- gets its own RequestAlreadyClosed.
-reclaimAppointedIntakeRequest
-  :: ConnectionPool
-  -> IntakeRequestId
-  -> IO (Either ServiceError (Fresh TriagedIntakeRequest))
-reclaimAppointedIntakeRequest pool requestId = withResource pool $ \conn -> do
-  reqResult <- Persistence.fetchIntakeRequest conn requestId
-  case reqResult of
-    Left err                                         -> pure (Left (PersistenceDecodeError err))
-    Right Nothing                                    -> pure (Left (RequestNotFound requestId))
-    Right (Just (Versioned _ (Submitted _)))         -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Versioned _ (Rejected {})))         -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Versioned _ (Accepted _)))          -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Versioned _ (Withdrawn _)))         -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Versioned _ (Stale {})))            -> pure (Left (RequestNotAppointed requestId))
-    Right (Just (Versioned _ (Closed {})))           -> pure (Left (RequestAlreadyClosed requestId))
-    Right (Just (Versioned v (Appointed appointed))) -> do
-      claim <- persistReclaimedIntakeRequest conn v requestId
-      pure $ case claim of
-        Claimed        -> Right (Applied (reclaimIntakeRequest appointed))
-        AlreadyClaimed -> Right ChangedSinceRead
-
 -- Closes out an Accepted request that never got matched to a slot or
 -- withdrawn — staff-initiated only (see Domain.hs's own comment on
--- Stale). Mirrors reclaimAppointedIntakeRequest's shape exactly, one
--- precondition swapped: requires Accepted instead of Appointed. No
+-- Stale). Mirrors closeAppointedIntakeRequest's shape, one precondition
+-- swapped: requires Accepted instead of Appointed. No
 -- Domain-level "mark stale" function to wrap — Stale is direct
 -- construction in Domain.hs (Stale triaged staleAt), same as
 -- Rejected/Withdrawn/Closed's own direct-construction cases — so this
@@ -664,14 +619,13 @@ markIntakeRequestStale pool requestId staleAt = withResource pool $ \conn -> do
 -- Guarded twice: the initial fetch catches the common case (already
 -- closed by the time this is called), and the write is conditioned on
 -- state = 'appointed' and the fetched row version. Without that, a
--- concurrent close could silently overwrite which reason it closed for,
--- and a reclaim-then-re-match in between could get a different
--- appointment closed than the one the caller saw. Either way the result
--- is ChangedSinceRead. reclaimAppointedIntakeRequest is guarded the same
--- way.
+-- concurrent close could silently overwrite which reason it closed for;
+-- the result is ChangedSinceRead instead.
 --
--- All seven IntakeRequest cases handled explicitly, no wildcard, same
--- reasoning as reclaimAppointedIntakeRequest above.
+-- All seven IntakeRequest cases handled explicitly, no wildcard, so GHC's
+-- exhaustiveness check covers any future case: Submitted/Rejected/
+-- Accepted/Withdrawn/Stale all collapse to RequestNotAppointed; Closed
+-- gets its own RequestAlreadyClosed.
 closeAppointedIntakeRequest
   :: ConnectionPool
   -> IntakeRequestId
@@ -779,7 +733,7 @@ fetchClosedIntakeRequests pool rangeStart rangeEnd mDoctorId =
 
 -- These two specifically were already in use internally — by
 -- acceptSubmittedIntakeRequest, rejectSubmittedIntakeRequest,
--- matchAcceptedIntakeRequestToSlot, reclaimAppointedIntakeRequest, and
+-- matchAcceptedIntakeRequestToSlot, markIntakeRequestStale, and
 -- closeAppointedIntakeRequest (fetchIntakeRequest), and by
 -- matchWaitlistToSlot (fetchIntakeWaitlist) — as an internal
 -- fetch-then-check step inside those mutation wrappers' own

@@ -43,11 +43,11 @@ The seven constructors trace out the paths a request can actually take:
   reachable only from `Accepted`" below).
 
 `Rejected`, `Withdrawn`, `Stale`, and `Closed` are all permanently terminal —
-nothing transitions back out of any of them. A brand new `IntakeRequest`
-(new `IntakeRequestId`) is created only when a patient submits again after
-one of those terminal outcomes — not as a mechanism for displacement from a
-slot, which reuses the same `IntakeRequestId` instead (see "Reassignment and
-displacement live in `Service.hs`, not here" below).
+nothing transitions back out of any of them, and no transition leads back
+to an earlier stage. A patient who needs to be seen again after one of those
+terminal outcomes gets a brand new `IntakeRequest` (new `IntakeRequestId`) —
+including a patient displaced or rescheduled from an appointment (see
+"Displacement and rescheduling: close, then a new request" below).
 
 ### Each stage embeds the one before it
 
@@ -68,8 +68,6 @@ data TriagedIntakeRequest = TriagedIntakeRequest
 
 data AppointedIntakeRequest = AppointedIntakeRequest
   { triaged  :: TriagedIntakeRequest
-    -- ^ The request this appointment came from, unchanged — what
-    -- reclaimIntakeRequest returns.
   , doctorId :: DoctorId
   , start    :: UTCTime
   , duration :: Duration
@@ -224,10 +222,10 @@ a guard against fabrication — an external caller could already trivially
 construct a `TriagedIntakeRequest` that passes `matches` against any slot,
 so a sealed wrapper would add no real protection.
 
-One consequence worth calling out: if a cancelled or reassigned request's
-original time should become bookable again, that is an explicit new
-`AvailableSlot` created by the caller — not an automatic transition
-triggered by the cancellation or reassignment itself.
+One consequence worth calling out: if a cancelled or rescheduled
+appointment's original time should become bookable again, that is an
+explicit new `AvailableSlot` created by the caller — not an automatic
+transition triggered by the cancellation itself.
 
 ## Doctor calendar
 
@@ -298,49 +296,27 @@ order via `matchIntakeRequestToSlot`, take the first success. The pipeline
 shape *is* the spec — no separate prose description should be needed to
 understand what this does.
 
-### Reassignment and displacement live in `Service.hs`, not here
+### Displacement and rescheduling: close, then a new request
 
-`Domain.hs` has no reassignment function — there is no
-`reassignIntakeRequestSlot` or equivalent. Moving an already-appointed
-request to a different slot, and displacing a request from its slot
-altogether, are both `Service.hs`-level compositions, one layer up from
-this module, consistent with `CLAUDE.md`'s "Layering" section (`Domain.hs`
-stays pure; `Service.hs` orchestrates it with `Persistence.hs`):
+`Domain.hs` has no reassignment or reclaim function. Moving an appointed
+patient to a different time, or displacing them from their slot, ends the
+appointment and starts a new intake:
 
-```haskell
-reclaimAppointedIntakeRequest
-  :: ConnectionPool -> IntakeRequestId -> IO (Either ServiceError TriagedIntakeRequest)
-```
+- `Closed appointed (Cancelled party cancelledAt note)` — the cancelled
+  appointment stays on record, with who cancelled it and when.
+- A new `SubmittedIntakeRequest`, accepted by the doctor, then matched like
+  any other waitlisted request.
 
-This works because `AppointedIntakeRequest` already embeds the
-`TriagedIntakeRequest` it came from, unchanged, as its `triaged` field (see
-"Each stage embeds the one before it" above) — reclaiming an `Appointed`
-request back to `Accepted` is free: `reclaimIntakeRequest ::
-AppointedIntakeRequest -> TriagedIntakeRequest` returns that embedded value,
-no re-triage, no new information produced, the same
-`IntakeRequestId`/`triagedAt`/priority carried through exactly. It is a named
-function, not bare field access, so that every lifecycle transition in this
-module is a signature (see `docs/decisions.md`, 2026-09-27).
+No link between the two requests is modeled: an `IntakeRequest` covers one
+intake, not a patient's whole care history, and `patientId` already groups a
+patient's requests. Context goes into the new request's narrative; whether
+the patient should rank higher is the doctor's triage decision when
+accepting it, taking the previous priority into account. This keeps every
+lifecycle path one-way (see `docs/decisions.md`, "Reclaim removed;
+displacing a patient is Closed + a new IntakeRequest").
 
-- **Reassignment** = `reclaimAppointedIntakeRequest`, then
-  `matchAcceptedIntakeRequestToSlot` against a different slot, back-to-back.
-- **Displacement** = `reclaimAppointedIntakeRequest` alone — the request
-  falls back into the ordinary waitlist (`Accepted`), no new
-  `IntakeRequest`, no lost history.
-
-Whether the vacated original time becomes bookable again is still not
-automatic either way — that's a separate, explicit `createAvailableSlot`
-call by the caller.
-
-A dedicated `reassignIntakeRequestSlot :: AppointedIntakeRequest ->
-AvailableSlot -> Maybe AppointedIntakeRequest` used to live in this module.
-It re-checked the same structural eligibility (`matches`) against the
-proposed slot and, on success, carried the same `TriagedIntakeRequest`
-through unchanged. It was removed, not patched, after its
-`Persistence.hs` counterpart turned out to have a real bug (it never freed
-the slot it replaced) — see `docs/decisions.md`'s "Reassignment and
-displacement both compose from reclaimAppointedIntakeRequest, not a
-dedicated transition" entry for the full history.
+Whether the vacated original time becomes bookable again is not automatic —
+that's a separate, explicit `createAvailableSlot` call by the caller.
 
 ## What's deliberately not modeled yet
 

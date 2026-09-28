@@ -75,7 +75,6 @@ module Persistence
   , insertSubmittedIntakeRequest
   , persistTriagedIntakeRequest
   , persistRejectedIntakeRequest
-  , persistReclaimedIntakeRequest
   , persistStaleIntakeRequest
   , persistClosedIntakeRequestIfAppointed
   , MatchPersistOutcome (..)
@@ -1008,37 +1007,13 @@ persistRejectedIntakeRequest conn (RowVersion v) submitted rejectedAt reason = d
     (row.rejectedAt, row.rejectionReason, row.id, v)
   pure (if n > 0 then Claimed else AlreadyClaimed)
 
--- Reclaims an Appointed request back to Accepted — a single-table
--- UPDATE, no slots interaction at all (the original slot that produced
--- this appointment was already deleted when it was first matched; there
--- is no slot row to touch here). Guarded on state = 'appointed', same
--- affected-rows pattern as every other conditional write in this
--- module. Nulls appointed_doctor_id/start_time/duration_minutes for row
--- hygiene, not because the CHECK constraint demands it — the 'accepted'
--- branch of the seven-way CHECK only requires appointed_doctor_id NULL, not
--- the other two. An 'accepted' row still shouldn't carry stale
--- appointment-shaped data left over from before it was reclaimed, so all
--- three are nulled anyway. doctor_calendar's own trigger already handles
--- the 'appointed' -> non-'appointed' transition (deletes the
--- corresponding row) via its existing OLD.state = 'appointed' AND
--- NEW.state != 'appointed' branch — no trigger changes needed for this.
-persistReclaimedIntakeRequest :: Connection -> RowVersion -> IntakeRequestId -> IO ClaimOutcome
-persistReclaimedIntakeRequest conn (RowVersion v) (IntakeRequestId rid) = do
-  n <- execute conn
-    "UPDATE intake_requests \
-    \SET state = 'accepted', appointed_doctor_id = NULL, start_time = NULL, duration_minutes = NULL \
-    \WHERE id = ? AND state = 'appointed' AND version = ?"
-    (rid, v)
-  pure (if n > 0 then Claimed else AlreadyClaimed)
-
 -- Closes out an Accepted request that never got matched or withdrawn —
--- staff-initiated only, mirroring persistReclaimedIntakeRequest's shape
--- exactly: single-table UPDATE, guarded on state = 'accepted' (Stale is
--- reachable only from Accepted — see Domain.hs), affected-rows check
--- (uniqueness-races-are-outcomes) rather than a caught SqlError. No
--- doctor_calendar interaction — an 'accepted' row was never in
--- doctor_calendar (only 'appointed' rows and slots are), so no trigger
--- changes needed for this either.
+-- staff-initiated only: single-table UPDATE, guarded on state =
+-- 'accepted' (Stale is reachable only from Accepted — see Domain.hs),
+-- affected-rows check (uniqueness-races-are-outcomes) rather than a
+-- caught SqlError. No doctor_calendar interaction — an 'accepted' row
+-- was never in doctor_calendar (only 'appointed' rows and slots are), so
+-- no trigger changes needed for this either.
 persistStaleIntakeRequest :: Connection -> RowVersion -> IntakeRequestId -> UTCTime -> IO ClaimOutcome
 persistStaleIntakeRequest conn (RowVersion v) (IntakeRequestId rid) staleAt = do
   n <- execute conn
@@ -1119,7 +1094,8 @@ claimAcceptedIntakeRequest conn (RowVersion v) (IntakeRequestId rid) appointed =
 -- failure produces, so by the time the result reaches here there is no
 -- surviving information to build a distinct case from — doing so would
 -- require ClaimOutcome to grow a third constructor that every other
--- ClaimOutcome consumer (persistReclaimedIntakeRequest,
+-- ClaimOutcome consumer (persistTriagedIntakeRequest,
+-- persistRejectedIntakeRequest, persistStaleIntakeRequest,
 -- persistClosedIntakeRequestIfAppointed) would then have to pattern-match
 -- on too, for a distinction none of them act on differently. The
 -- accepted tradeoff: RequestAlreadyMatched's caller-facing meaning

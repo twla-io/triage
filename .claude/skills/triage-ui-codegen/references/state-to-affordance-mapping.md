@@ -12,8 +12,7 @@ Derived from `Domain.hs`'s transitions and the routes in `Api.hs`. If a transiti
 | `Accepted` | Match to a slot | `matchIntakeRequestToSlot` | `POST /intake-requests/:id/match` with `{slotId}` | Send only the slot's id; the server matches against the stored slot. Offer only slots the request can match (service, doctor requirement, deadline) — the server rejects the rest as `requestIneligible`. |
 | | Mark stale | `Stale` (direct construction) | `POST /intake-requests/:id/mark-stale` | Staff-initiated only; never automatic. |
 | | Withdraw | `WithdrawnFromAccepted` | **no route yet** | As above. |
-| `Appointed` | Close: completed / cancelled / no-show | `Closed` with a `CloseReason` | `POST /intake-requests/:id/close` | Cancelled and no-show also record which party (doctor/patient); cancelled takes an optional note. The server supplies timestamps. |
-| | Reclaim (back to the waitlist) | `reclaimIntakeRequest` | `POST /intake-requests/:id/reclaim` | Keeps the same request, priority and triage time. Reassignment = reclaim, then match to another slot. The vacated time does **not** become a slot again unless someone creates one. |
+| `Appointed` | Close: completed / cancelled / no-show | `Closed` with a `CloseReason` | `POST /intake-requests/:id/close` | Cancelled and no-show also record which party (doctor/patient); cancelled takes an optional note. The server supplies timestamps. Displacing or rescheduling a patient is a cancel followed by a new request (submit, accept, match); there is no "back to the waitlist" action. The vacated time does **not** become a slot again unless someone creates one. |
 | `Rejected` | none — read-only | — | — | Show the reason and time. |
 | `Withdrawn` | none — read-only | — | — | Show when, and the note if any. |
 | `Stale` | none — read-only | — | — | |

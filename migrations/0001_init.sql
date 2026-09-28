@@ -43,10 +43,10 @@ CREATE TABLE healthcare_services (
 -- fact lives only inside the intake_requests row it became, with no
 -- back-reference.
 --
--- Recreating a vacated time after a reclaim (reassignment is reclaim, then
--- match again) is NOT automatic — that's a separate, explicit call to insert
--- a new row here, by deliberate choice (mirrors Domain.hs's own refusal to
--- decide this).
+-- Recreating a vacated time after an appointment is closed (a cancelled or
+-- rescheduled one included) is NOT automatic — that's a separate, explicit
+-- call to insert a new row here, by deliberate choice (mirrors Domain.hs's
+-- own refusal to decide this).
 -- ═══════════════════════════════════════════════════════════════════════
 
 CREATE TABLE slots (
@@ -246,8 +246,8 @@ CREATE TRIGGER slots_sync_doctor_calendar
 -- would). Three cases: entering 'appointed' (from INSERT or from any
 -- other state) inserts/replaces the row; the appointed interval itself
 -- changing while state stays 'appointed' (start_time/duration_minutes/
--- appointed_doctor_id — no current operation does this, since reassignment
--- is reclaim then match, but it's handled) replaces the row; leaving
+-- appointed_doctor_id — no current operation does this, since rescheduling
+-- is a close and a new request, but it's handled) replaces the row; leaving
 -- 'appointed' deletes it.
 CREATE OR REPLACE FUNCTION sync_intake_request_to_doctor_calendar() RETURNS TRIGGER AS $$
 BEGIN
