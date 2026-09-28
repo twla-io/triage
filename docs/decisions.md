@@ -324,6 +324,8 @@ exact bug this entry documents.
 
 **Superseded in part (2026-07-13):** displacement no longer creates a new `IntakeRequest` — it reclaims the same request back to `Accepted` (see "Reassignment and displacement both compose from reclaimAppointedIntakeRequest..." below). A new request is still needed after a terminal case.
 
+**Restored (2026-09-28):** reclaim was removed; displacement creates a new `IntakeRequest` again, as this entry originally decided. See "Reclaim removed; displacing a patient is Closed + a new IntakeRequest" below.
+
 **Decided:** `HealthcareRequest` was over-scoped — renamed to
 `IntakeRequest` to name its actual, narrower scope (the intake artifact: the
 front-door path from a patient's raw ask to a single appointment, not a
@@ -419,6 +421,8 @@ adding `rejectedAt` brings it in line with the others.
 ## All terminal states (Rejected/Withdrawn/Closed) confirmed permanently terminal, no reopening (2026-07-11)
 
 **Superseded in part (2026-07-13):** displacement no longer creates a new `IntakeRequest` — it reclaims the same request back to `Accepted` (see "Reassignment and displacement both compose from reclaimAppointedIntakeRequest..." below). A new request is still needed after a terminal case.
+
+**Restored (2026-09-28):** reclaim was removed; displacement creates a new `IntakeRequest` again, as this entry originally decided. See "Reclaim removed; displacing a patient is Closed + a new IntakeRequest" below.
 
 **Decided:** `Rejected`, `Withdrawn`, and `Closed` are all permanently
 terminal — no transitions out of any of them, confirmed against
@@ -517,7 +521,7 @@ churns often enough to make this a recurring source of missed updates.
 
 ## Reassignment and displacement both compose from reclaimAppointedIntakeRequest, not a dedicated transition (2026-07-13)
 
-**Superseded in part (2026-09-27):** the "No new `Domain.hs` function is needed" point — reclaim now has a signature, `reclaimIntakeRequest`. See "Reclaim gets a signature in Domain.hs" below.
+**Superseded (2026-09-28):** reclaim was removed; reassignment and displacement are now a close plus a new `IntakeRequest`. See "Reclaim removed; displacing a patient is Closed + a new IntakeRequest" below. (Earlier, in part (2026-09-27): the "No new `Domain.hs` function is needed" point — reclaim got a signature, `reclaimIntakeRequest`. See "Reclaim gets a signature in Domain.hs" below.)
 
 **Found:** `persistReassignedIntakeRequest` had a real bug — it updated
 `intake_requests`' `appointed_doctor_id`/`start_time`/`duration_minutes`
@@ -688,6 +692,8 @@ hold for stored data.
 
 ## Reclaim gets a signature in Domain.hs (2026-09-27)
 
+**Superseded (2026-09-28):** reclaim was removed. See "Reclaim removed; displacing a patient is Closed + a new IntakeRequest" below.
+
 **Found:** a clean-room generation from `Domain.hs` and `triage-db-codegen` alone derived every lifecycle transition's source case from its input type — except reclaim, which existed only as field access (`Accepted appointed.triaged`) described in a comment. `Accepted`'s constructor takes `TriagedIntakeRequest`, Accepted's own payload, so the Appointed source was invisible in the types. The 2026-07-13 entry had called this the same precedent as `Rejected`/`Closed`, but those are constructors that take the source stage (`Rejected SubmittedIntakeRequest …`, `Closed AppointedIntakeRequest …`), so their source case is derivable; reclaim's wasn't.
 
 **Decided:** `reclaimIntakeRequest :: AppointedIntakeRequest -> TriagedIntakeRequest` in `Domain.hs`. It is still just the embedded value — no re-triage, same `IntakeRequestId`/priority/`triagedAt` — but now every transition is a function or constructor signature, so `updates-follow-domain-transitions` derives the whole transition set from types with no hand-kept row. `Service.reclaimAppointedIntakeRequest` calls it, pairing the way `acceptIntakeRequest`/`acceptSubmittedIntakeRequest` do. A property test checks that reclaiming undoes a match exactly.
@@ -744,6 +750,20 @@ hold for stored data.
 
 **Rejected:** catching the foreign-key violation (SQL state 23503) in Persistence — against the affected-rows-not-exceptions convention, and it would have to work out which id was wrong from the constraint name.
 
+## Reclaim removed; displacing a patient is Closed + a new IntakeRequest (2026-09-28)
+
+**Decided:** displacing or rescheduling an appointed patient is `Closed (Cancelled ByDoctor t note)` followed by submitting and accepting a new `IntakeRequest`. `reclaimIntakeRequest` goes away, and every lifecycle transition is one-way again, as the 2026-07-11 entries originally decided.
+
+**Why:** reclaim was the only cycle in the lifecycle (Appointed → Accepted → Appointed → …). It erased the displaced appointment — doctor, time and duration were set to NULL, leaving no record the patient was ever booked — while what it preserved, `triagedAt`, plays no part in waitlist order (`checkIntakeWaitlist` sorts on priority only). Closing keeps the cancelled appointment as a record.
+
+**Rejected:** linking the new request to the one it replaces. An `IntakeRequest` covers one intake — one ask to one appointment — not a patient's whole care history, and `patientId` already groups a patient's requests.
+
+**Left to the doctor, not the model:** any context goes into the new request's narrative, and any compensating priority is a triage judgment — the doctor takes the previous priority into account when accepting the new request. This closes the open questions about a displaced patient's lost wait time and a priority bump for displaced patients; no rule is added for either.
+
+**Cost accepted:** rescheduling takes close + submit + accept + match instead of reclaim + match, and the request gets a new id.
+
+**Consequence:** with no cycle, a row enters each state at most once and no update keeps a row in the same state, so the state guard also establishes freshness. The row version ("Row version for freshness; state guard kept for legality" above) is no longer needed; removing it is a separate decision. If an update that keeps the state (an in-place edit) is ever added, the need for a version returns.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
@@ -758,15 +778,6 @@ hold for stored data.
 - Explicit command types (`BookSlot`, `CancelBooking`, ...) vs. direct
   function calls on Domain values — not yet decided whether commands earn
   their keep at this scale.
-- **Narrowed (2026-07-13):** the record-loss half of this question is now
-  resolved by design, not doctor habit — see "Reassignment and
-  displacement both compose from reclaimAppointedIntakeRequest..." above;
-  a displaced patient's `IntakeRequestId`/`triagedAt`/priority survive
-  `reclaimAppointedIntakeRequest` exactly, no narrative-writing habit
-  needed. What remains open: should a displaced patient's priority be
-  *bumped* as a compensating policy (e.g. moved up a tier, or given an
-  earlier deadline, for having been displaced)? Not yet validated with
-  the domain expert.
 - OPEN, NOT YET RESOLVED: whether Patient needs a `name` field at all,
   vs. an opaque per-patient reference (e.g. phone number or an existing
   informal chart number), vs. eventually referencing an external patient
