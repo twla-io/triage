@@ -736,6 +736,14 @@ hold for stored data.
 
 **Considered and rejected: sealing `AvailableSlot`.** Tried as a `newtype` around an open `SlotDetails`, produced only by `addAvailableSlot` and `mkDoctorCalendar` (every read rebuilding the doctor's calendar). It was implemented and then dropped before commit, because it can't deliver what it seemed to: `mkDoctorCalendar` is exported and `SlotDetails` is open, so `calendarSlots <$> mkDoctorCalendar [anyDetails] []` still makes a slot from arbitrary data — a single slot always fits an empty calendar. A pure module can't prove a value came from storage; only a type Persistence alone could produce would, which inverts the dependency direction. So the seal would have cost an extra query per slot read and `slotDetails` everywhere, for friction rather than a guarantee. Earlier variants (`restoreAvailableSlot`; read-only fields via `HasField` plus a parallel `StoredSlot` type) were rejected for the same reason or for their ceremony. Revisit only if slot fabrication causes a real bug — and then look at provenance, not sealing.
 
+## Unknown ids are ServiceErrors, checked in Service (2026-09-28)
+
+**Found:** a patient, doctor or service id that doesn't exist reached the database and failed a foreign key; the `SqlError` surfaced as a 500. No bad data could get in, but the caller got no usable answer. Affected: submit (patient), accept (service, and the doctor in a `SpecificDoctor` requirement), create slot (doctor).
+
+**Decided:** Service checks each referenced id before writing and reports `PatientNotFound`, `DoctorNotFound` or `HealthcareServiceNotFound` — the pattern `createAvailableSlot` already used for services. Doctors, patients and services are never deleted, so the check can't race the write. `submitIntakeRequest` now returns `Either ServiceError …`, so its route answers with the `{"outcome", "detail"}` envelope like the other mutations (`"submitted"` on success).
+
+**Rejected:** catching the foreign-key violation (SQL state 23503) in Persistence — against the affected-rows-not-exceptions convention, and it would have to work out which id was wrong from the constraint name.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)

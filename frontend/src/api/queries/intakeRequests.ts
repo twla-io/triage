@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { get, post, postEnveloped, toQuery, type Schemas } from '../client'
+import { get, postEnveloped, toQuery, type Schemas } from '../client'
 
 export type IntakeRequestDTO = Schemas['IntakeRequestDTO']
 export type DoctorRequirementDTO = Schemas['DoctorRequirementDTO']
@@ -63,7 +63,7 @@ function invalidateIntakeQueries(queryClient: ReturnType<typeof useQueryClient>)
 export function useSubmitIntakeRequest() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (input: SubmitIntakeRequestInput) => post<IntakeRequestDTO>('/intake-requests', input),
+    mutationFn: (input: SubmitIntakeRequestInput) => postEnveloped<IntakeRequestDTO>('/intake-requests', input),
     onSuccess: () => invalidateIntakeQueries(queryClient),
   })
 }

@@ -23,8 +23,8 @@
 -- the first section to actually need the runRead helper (see the
 -- MIDDLEWARE section below). SlotAPI's create is shape (c)'s
 -- SlotCreationOutcome relative (IO (Either ServiceError
--- SlotCreationOutcome) — see MIDDLEWARE's own runSlotCreation). IntakeRequestAPI's submit is shape
--- (a) again (submitIntakeRequest is bare IO — verified, not assumed);
+-- SlotCreationOutcome) — see MIDDLEWARE's own runSlotCreation). IntakeRequestAPI's submit is
+-- IO (Either ServiceError a) with no race to report, via runEnveloped;
 -- accept/reject/reclaim/mark-stale/close are shape (c) proper (IO (Either
 -- ServiceError a)), via runService/handleServiceError; match is
 -- MatchOutcome-shaped (IO (Either ServiceError MatchOutcome)), via the
@@ -370,6 +370,10 @@ handleServiceError (RequestNotAppointed rid)        = pure (envelope "requestNot
 handleServiceError (RequestAlreadyClosed rid)       = pure (envelope "requestAlreadyClosed" (requestIdDetail rid))
 handleServiceError (HealthcareServiceNotFound (HealthcareServiceId sid)) =
   pure (envelope "healthcareServiceNotFound" (object ["healthcareServiceId" .= UUID.toText sid]))
+handleServiceError (DoctorNotFound (DoctorId did)) =
+  pure (envelope "doctorNotFound" (object ["doctorId" .= UUID.toText did]))
+handleServiceError (PatientNotFound (PatientId pid)) =
+  pure (envelope "patientNotFound" (object ["patientId" .= UUID.toText pid]))
 
 -- For shape (c) proper: Service.hs mutations returning
 -- IO (Either ServiceError (Fresh a)). ChangedSinceRead — the request
@@ -380,6 +384,15 @@ handleServiceError (HealthcareServiceNotFound (HealthcareServiceId sid)) =
 -- already covers all six non-decode constructors identically — so this
 -- takes a success tag and a toDetail conversion, not onSuccess/onError
 -- continuations (servant-implementation.md section 4's own reasoning).
+-- For a Service.hs operation that can fail but has no race to report
+-- (submitIntakeRequest): same envelope as runService, without Fresh.
+runEnveloped :: ToJSON dto => Text -> IO (Either ServiceError a) -> (a -> dto) -> AppM Value
+runEnveloped successTag action toDetail = do
+  result <- liftIO action
+  case result of
+    Left se -> handleServiceError se
+    Right a -> pure (envelope successTag (toDetail a))
+
 runService :: ToJSON dto => Text -> IO (Either ServiceError (Fresh a)) -> (a -> dto) -> AppM Value
 runService successTag action toDetail = do
   result <- liftIO action
@@ -692,19 +705,18 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 -- directly with no wrapping workaround needed (same reason
 -- fetchAppointedIntakeRequestsHandler above needs none).
 --
--- submitIntakeRequestHandler is shape (a) — verified against Service.hs
--- directly: submitIntakeRequest :: ConnectionPool -> PatientId -> Text ->
--- DoctorRequirement -> UTCTime -> IO SubmittedIntakeRequest, bare IO, no
--- Either (this prompt's own premise that it might be Either-wrapped
--- doesn't hold). No standalone SubmittedIntakeRequestDTO exists in
+-- submitIntakeRequestHandler — verified against Service.hs directly:
+-- submitIntakeRequest :: ConnectionPool -> PatientId -> Text -> UTCTime ->
+-- IO (Either ServiceError SubmittedIntakeRequest): an unknown patient is
+-- PatientNotFound, so the route answers with the {"outcome", "detail"}
+-- envelope ("submitted" on success) via runEnveloped. There is no race to
+-- report (nothing guards a fresh insert). No standalone SubmittedIntakeRequestDTO exists in
 -- Transport.hs — SubmittedIntakeRequest is only ever one case
 -- ("submitted") of the seven-tag IntakeRequestDTO sum, reached by
 -- wrapping the Domain value in the IntakeRequest sum's own Submitted
 -- constructor and going through fromDomainIntakeRequest, the only
 -- exported conversion (the internal submittedFields/toDomainSubmitted
--- helper pair Transport.hs uses for this isn't exported). Bare
--- IntakeRequestDTO as the 200 body, no envelope — shape (a) has nothing
--- to discriminate, same as every other create* handler with no Either.
+-- helper pair Transport.hs uses for this isn't exported).
 --
 -- acceptSubmittedIntakeRequestHandler/rejectSubmittedIntakeRequestHandler
 -- are shape (c) proper — verified against Service.hs directly:
@@ -791,7 +803,7 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 -- ═══════════════════════════════════════════════════════════════════════
 
 type IntakeRequestAPI =
-       ReqBody '[JSON] SubmitIntakeRequestRequest :> Post '[JSON] IntakeRequestDTO
+       ReqBody '[JSON] SubmitIntakeRequestRequest :> Post '[JSON] Value
   :<|> "waitlist" :> Get '[JSON] [IntakeRequestDTO]
   :<|> "submitted" :> Get '[JSON] [IntakeRequestDTO]
   :<|> "appointed"
@@ -812,13 +824,13 @@ type IntakeRequestAPI =
   :<|> Capture "id" UUID :> "close" :> ReqBody '[JSON] CloseReasonRequestDTO :> Post '[JSON] Value
   :<|> Capture "id" UUID :> Get '[JSON] IntakeRequestDTO
 
-submitIntakeRequestHandler :: SubmitIntakeRequestRequest -> AppM IntakeRequestDTO
+submitIntakeRequestHandler :: SubmitIntakeRequestRequest -> AppM Value
 submitIntakeRequestHandler req = do
   pool      <- ask
   createdAt <- liftIO getCurrentTime
-  submitted <- liftIO
+  runEnveloped "submitted"
     (Service.submitIntakeRequest pool (PatientId req.patientId) req.narrative createdAt)
-  pure (fromDomainIntakeRequest (Submitted submitted))
+    (fromDomainIntakeRequest . Submitted)
 
 fetchIntakeWaitlistHandler :: AppM [IntakeRequestDTO]
 fetchIntakeWaitlistHandler = do

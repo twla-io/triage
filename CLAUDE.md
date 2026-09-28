@@ -32,7 +32,7 @@ Run successfully when this file was last updated (2026-09-28):
     a real PostgreSQL (`test-db/Spec.hs`): creates a throwaway database,
     applies `migrations/0001_init.sql`, drops it afterwards. Needs a local
     server the current user can create databases on; extra libpq keywords
-    via `TRIAGE_TEST_PG`. Run 2026-09-28: 18 examples, 0 failures.
+    via `TRIAGE_TEST_PG`. Run 2026-09-28: 22 examples, 0 failures.
 - `cd frontend && npm run build` (`tsc -b && vite build`)
 
 Inferred from configuration, not run:
@@ -103,8 +103,10 @@ or protects against races. Enforcement is split:
 - **Service:** verifies the stored state before each transition (e.g.
   accept/reject require `Submitted`, match/stale require `Accepted`,
   reclaim/close require `Appointed`; slot creation checks
-  `addAvailableSlot` against the doctor's stored calendar). This check is a
-  separate read, not held in a transaction with the write.
+  `addAvailableSlot` against the doctor's stored calendar), and checks that
+  every patient, doctor and service id it's given exists (`PatientNotFound`,
+  `DoctorNotFound`, `HealthcareServiceNotFound`). These checks are separate
+  reads, not held in a transaction with the write.
 - **Persistence writes:** every lifecycle transition (accept, reject,
   match, reclaim, mark-stale, close) uses an `UPDATE` conditioned on the
   expected current state (legality) and on the row version the caller read

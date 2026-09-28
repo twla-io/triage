@@ -288,7 +288,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["IntakeRequestDTO"];
+                        "application/json;charset=utf-8": components["schemas"]["Value"];
                     };
                 };
                 /** @description Invalid `body` */

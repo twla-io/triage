@@ -65,9 +65,11 @@ function SubmitForm() {
     submit.mutate(
       { patientId, narrative: narrative.trim() },
       {
-        onSuccess: () => {
-          setNarrative('')
-          setPatientId(null)
+        onSuccess: (result) => {
+          if (result.outcome === 'submitted') {
+            setNarrative('')
+            setPatientId(null)
+          }
         },
       },
     )
@@ -97,6 +99,9 @@ function SubmitForm() {
           </Button>
         </Group>
         {submit.error && <Alert color="red">{errorMessage(submit.error)}</Alert>}
+        {submit.data && submit.data.outcome !== 'submitted' && (
+          <Alert color="yellow">{outcomeMessage(submit.data.outcome)}</Alert>
+        )}
       </Stack>
     </form>
   )

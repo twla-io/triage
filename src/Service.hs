@@ -114,7 +114,7 @@ import Domain
   , CloseReason
   , Doctor (..)
   , DoctorId (..)
-  , DoctorRequirement
+  , DoctorRequirement (..)
   , Duration
   , HealthcareService (..)
   , HealthcareServiceId (..)
@@ -197,6 +197,8 @@ data ServiceError
   | RequestNotAppointed IntakeRequestId
   | RequestAlreadyClosed IntakeRequestId
   | HealthcareServiceNotFound HealthcareServiceId
+  | DoctorNotFound DoctorId
+  | PatientNotFound PatientId
   deriving (Show, Eq)
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -305,11 +307,13 @@ createAvailableSlot
   -> UTCTime             -- start
   -> IO (Either ServiceError SlotCreationOutcome)
 createAvailableSlot pool doctorId healthcareServiceId start = withResource pool $ \conn -> do
+  doctor        <- Persistence.fetchDoctor conn doctorId
   serviceResult <- Persistence.fetchHealthcareService conn healthcareServiceId
-  case serviceResult of
-    Left err            -> pure (Left (PersistenceDecodeError err))
-    Right Nothing       -> pure (Left (HealthcareServiceNotFound healthcareServiceId))
-    Right (Just service) -> do
+  case (doctor, serviceResult) of
+    (Nothing, _)             -> pure (Left (DoctorNotFound doctorId))
+    (_, Left err)            -> pure (Left (PersistenceDecodeError err))
+    (_, Right Nothing)       -> pure (Left (HealthcareServiceNotFound healthcareServiceId))
+    (_, Right (Just service)) -> do
       slotId <- newSlotId
       let end = addUTCTime (durationToNominalDiffTime service.duration) start
       calendarResult <- fetchDoctorCalendar conn doctorId start end
@@ -374,13 +378,17 @@ submitIntakeRequest
   -> PatientId
   -> Text                -- narrative
   -> UTCTime             -- createdAt
-  -> IO SubmittedIntakeRequest
+  -> IO (Either ServiceError SubmittedIntakeRequest)
 submitIntakeRequest pool patientId narrative createdAt =
   withResource pool $ \conn -> do
-    reqId <- newIntakeRequestId
-    let submitted = SubmittedIntakeRequest { id = reqId, patientId, narrative, createdAt }
-    insertSubmittedIntakeRequest conn submitted
-    pure submitted
+    patient <- Persistence.fetchPatient conn patientId
+    case patient of
+      Nothing -> pure (Left (PatientNotFound patientId))
+      Just _  -> do
+        reqId <- newIntakeRequestId
+        let submitted = SubmittedIntakeRequest { id = reqId, patientId, narrative, createdAt }
+        insertSubmittedIntakeRequest conn submitted
+        pure (Right submitted)
 
 -- Mirrors Domain.acceptIntakeRequest. Named acceptSubmittedIntakeRequest,
 -- not acceptIntakeRequest or acceptRequest — per this module's
@@ -407,11 +415,15 @@ acceptSubmittedIntakeRequest pool requestId healthcareServiceId priority doctorR
       Left err                                         -> pure (Left (PersistenceDecodeError err))
       Right Nothing                                    -> pure (Left (RequestNotFound requestId))
       Right (Just (Versioned v (Submitted submitted))) -> do
-        let triaged = acceptIntakeRequest submitted healthcareServiceId priority doctorRequirement triagedAt
-        claim <- persistTriagedIntakeRequest conn v triaged
-        pure $ case claim of
-          Claimed        -> Right (Applied triaged)
-          AlreadyClaimed -> Right ChangedSinceRead
+        references <- checkTriageReferences conn healthcareServiceId doctorRequirement
+        case references of
+          Left err -> pure (Left err)
+          Right () -> do
+            let triaged = acceptIntakeRequest submitted healthcareServiceId priority doctorRequirement triagedAt
+            claim <- persistTriagedIntakeRequest conn v triaged
+            pure $ case claim of
+              Claimed        -> Right (Applied triaged)
+              AlreadyClaimed -> Right ChangedSinceRead
       Right (Just _)                                   -> pure (Left (RequestNotSubmittedAnymore requestId))
 
 -- No Domain.hs verb to wrap — rejection is direct construction
@@ -685,6 +697,21 @@ closeAppointedIntakeRequest pool requestId reason = withResource pool $ \conn ->
       pure $ case claim of
         Claimed        -> Right (Applied closed)
         AlreadyClaimed -> Right ChangedSinceRead
+
+-- Unknown references are reported as ServiceErrors (the caller named an id
+-- that doesn't exist), not left to the foreign keys, which would surface as
+-- an unhandled SqlError. Doctors, patients and services are never deleted,
+-- so an id that exists when checked still exists at the write that follows
+-- — no guard is needed for that gap.
+checkTriageReferences :: Connection -> HealthcareServiceId -> DoctorRequirement -> IO (Either ServiceError ())
+checkTriageReferences conn healthcareServiceId requirement = do
+  serviceResult <- Persistence.fetchHealthcareService conn healthcareServiceId
+  case serviceResult of
+    Left err       -> pure (Left (PersistenceDecodeError err))
+    Right Nothing  -> pure (Left (HealthcareServiceNotFound healthcareServiceId))
+    Right (Just _) -> case requirement of
+      AnyDoctor          -> pure (Right ())
+      SpecificDoctor did -> maybe (Left (DoctorNotFound did)) (const (Right ())) <$> Persistence.fetchDoctor conn did
 
 -- ═══════════════════════════════════════════════════════════════════════
 -- READS

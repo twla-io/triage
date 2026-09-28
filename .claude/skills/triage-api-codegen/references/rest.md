@@ -12,7 +12,7 @@
 | `createPatient :: ConnectionPool -> Text -> IO Patient` | `POST` | `/patients` |
 | `createHealthcareService :: ConnectionPool -> Text -> Duration -> IO HealthcareService` | `POST` | `/healthcare-services` |
 | `createAvailableSlot :: ConnectionPool -> DoctorId -> HealthcareServiceId -> UTCTime -> IO (Either ServiceError SlotCreationOutcome)` | `POST` | `/slots` |
-| `submitIntakeRequest :: ConnectionPool -> PatientId -> Text -> DoctorRequirement -> UTCTime -> IO SubmittedIntakeRequest` | `POST` | `/intake-requests` |
+| `submitIntakeRequest :: ConnectionPool -> PatientId -> Text -> UTCTime -> IO (Either ServiceError SubmittedIntakeRequest)` | `POST` | `/intake-requests` |
 | `acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority -> DoctorRequirement -> UTCTime -> IO (Either ServiceError (Fresh TriagedIntakeRequest))` | `POST` | `/intake-requests/:id/accept` |
 | `rejectSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either ServiceError (Fresh IntakeRequest))` | `POST` | `/intake-requests/:id/reject` |
 | `matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)` | (internal — not its own route, see below) | — |

@@ -97,7 +97,9 @@ minutes :: Integer -> UTCTime -> UTCTime
 minutes m = addUTCTime (fromIntegral (m * 60))
 
 submit :: ConnectionPool -> Fixture -> IO SubmittedIntakeRequest
-submit pool fx = S.submitIntakeRequest pool fx.patient.id "needs care" t0
+submit pool fx = do
+  Right s <- S.submitIntakeRequest pool fx.patient.id "needs care" t0
+  pure s
 
 accept :: ConnectionPool -> Fixture -> DoctorRequirement -> IO TriagedIntakeRequest
 accept pool fx requirement = do
@@ -284,6 +286,33 @@ spec pool = do
       S.markIntakeRequestStale pool t.submitted.id t0 `shouldReturn` Right (Applied t)
       s  <- submit pool fx
       S.markIntakeRequestStale pool s.id t0 `shouldReturn` Left (RequestNotAccepted s.id)
+
+  describe "unknown ids" $ do
+    it "submitting for an unknown patient is PatientNotFound, and nothing is stored" $ do
+      unknown <- PatientId <$> nextRandom
+      S.submitIntakeRequest pool unknown "needs care" t0 `shouldReturn` Left (PatientNotFound unknown)
+      S.fetchSubmittedIntakeRequests pool `shouldReturn` Right []
+
+    it "accepting with an unknown service is HealthcareServiceNotFound, and it stays submitted" $ do
+      fx      <- fixture pool
+      s       <- submit pool fx
+      unknown <- HealthcareServiceId <$> nextRandom
+      S.acceptSubmittedIntakeRequest pool s.id unknown (Routine RoutineAnytime) AnyDoctor t0
+        `shouldReturn` Left (HealthcareServiceNotFound unknown)
+      stateOf pool s.id `shouldReturn` "submitted"
+
+    it "accepting with an unknown required doctor is DoctorNotFound, and it stays submitted" $ do
+      fx      <- fixture pool
+      s       <- submit pool fx
+      unknown <- DoctorId <$> nextRandom
+      S.acceptSubmittedIntakeRequest pool s.id fx.service.id (Routine RoutineAnytime) (SpecificDoctor unknown) t0
+        `shouldReturn` Left (DoctorNotFound unknown)
+      stateOf pool s.id `shouldReturn` "submitted"
+
+    it "creating a slot for an unknown doctor is DoctorNotFound" $ do
+      fx      <- fixture pool
+      unknown <- DoctorId <$> nextRandom
+      S.createAvailableSlot pool unknown fx.service.id t0 `shouldReturn` Left (DoctorNotFound unknown)
 
   describe "constraints" $
     it "a submitted request can't carry a decided doctor requirement" $ do
