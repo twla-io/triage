@@ -355,7 +355,9 @@ reclaimIntakeRequest appointed = appointed.triaged
 -- slot state, no freeing, and no sealed "proof" wrapper — matches is business
 -- logic for trusted callers, not a guard against fabrication (an external
 -- caller could already trivially construct a passing TriagedIntakeRequest,
--- so a sealed wrapper added no real protection).
+-- so a sealed wrapper added no real protection). A new slot is created with
+-- addAvailableSlot (DOCTOR CALENDAR, below), which checks it against the
+-- doctor's calendar and takes its duration from its service.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data AvailableSlot = AvailableSlot
@@ -412,8 +414,16 @@ newtype DoctorCalendar =
 mkDoctorCalendar :: [CalendarEntry] -> Maybe DoctorCalendar
 mkDoctorCalendar = foldM (flip addCalendarEntry) (DoctorCalendar Map.empty)
 
-addAvailableSlot :: AvailableSlot -> DoctorCalendar -> Maybe DoctorCalendar
-addAvailableSlot = addCalendarEntry . Slot
+-- A new slot for this doctor at this time, lasting as long as its service.
+-- Nothing if it would overlap one of the doctor's entries.
+addAvailableSlot
+  :: SlotId -> DoctorId -> HealthcareService -> UTCTime
+  -> DoctorCalendar -> Maybe (AvailableSlot, DoctorCalendar)
+addAvailableSlot slotId doctorId service start calendar =
+  (\grown -> (slot, grown)) <$> addCalendarEntry (Slot slot) calendar
+  where
+    slot = AvailableSlot
+      { id = slotId, doctorId, healthcareServiceId = service.id, start, duration = service.duration }
 
 -- Only the nearest neighbour on each side needs checking: the existing
 -- entries already don't overlap, so the one starting just before ends

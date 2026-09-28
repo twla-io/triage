@@ -136,6 +136,11 @@ genTriagedRequestFor sid = do
   prio        <- genPriority
   acceptIntakeRequest baseRequest sid prio AnyDoctor <$> genMoment
 
+genService :: Gen HealthcareService
+genService = do
+  sid <- arbitrary
+  HealthcareService sid "a service" <$> arbitrary
+
 -- Built from explicit parts rather than record updates: start/doctorId/
 -- duration are shared field names across AvailableSlot and
 -- AppointedIntakeRequest, so an update on them would be ambiguous.
@@ -514,25 +519,43 @@ main = hspec $ do
       entries <- genCalendarEntries
       did     <- elements (map calendarEntryDoctorOf entries ++ [DoctorId UUID.nil])
       moment  <- genGridMoment
-      slot    <- genAvailableSlotAt did moment =<< arbitrary
+      service <- genService
+      newId   <- arbitrary
+      let slot = AvailableSlot
+            { id = newId, doctorId = did, healthcareServiceId = service.id
+            , start = moment, duration = service.duration }
       pure $ case mkDoctorCalendar entries of
         Just calendar ->
-          isJust (addAvailableSlot slot calendar)
+          isJust (addAvailableSlot newId did service moment calendar)
             === isJust (mkDoctorCalendar (entries ++ [Slot slot]))
         Nothing -> property Discard
 
+    prop "gives the new slot its service's duration" $ do
+      did     <- arbitrary
+      moment  <- genMoment
+      service <- genService
+      newId   <- arbitrary
+      pure $ case mkDoctorCalendar [] >>= addAvailableSlot newId did service moment of
+        Just (slot, _) ->
+          slot === AvailableSlot
+            { id = newId, doctorId = did, healthcareServiceId = service.id
+            , start = moment, duration = service.duration }
+        Nothing -> counterexample "an empty calendar rejected a slot" False
+
     prop "accepts a slot starting exactly where another entry ends" $ do
-      did   <- arbitrary
-      entry <- genCalendarEntryFor did
-      slot  <- genAvailableSlotAt did (calendarEntryEndOf entry) =<< arbitrary
-      pure $ isJust (mkDoctorCalendar [entry] >>= addAvailableSlot slot)
+      did     <- arbitrary
+      entry   <- genCalendarEntryFor did
+      service <- genService
+      newId   <- arbitrary
+      pure $ isJust (mkDoctorCalendar [entry] >>= addAvailableSlot newId did service (calendarEntryEndOf entry))
 
     prop "never rejects a slot because of another doctor's entry" $ do
-      did1  <- arbitrary
-      did2  <- arbitrary `suchThat` (/= did1)
-      entry <- genCalendarEntryFor did1
-      slot  <- genAvailableSlotAt did2 (calendarEntryStart entry) =<< arbitrary
-      pure $ isJust (mkDoctorCalendar [entry] >>= addAvailableSlot slot)
+      did1    <- arbitrary
+      did2    <- arbitrary `suchThat` (/= did1)
+      entry   <- genCalendarEntryFor did1
+      service <- genService
+      newId   <- arbitrary
+      pure $ isJust (mkDoctorCalendar [entry] >>= addAvailableSlot newId did2 service (calendarEntryStart entry))
 
   -- Route-level, not type-level, unlike the property tests above —
   -- validateEveryToJSON (servant-swagger) generates its own per-type

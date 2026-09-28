@@ -237,7 +237,9 @@ data CalendarEntry
   | Appointment AppointedIntakeRequest
 
 mkDoctorCalendar :: [CalendarEntry] -> Maybe DoctorCalendar
-addAvailableSlot :: AvailableSlot -> DoctorCalendar -> Maybe DoctorCalendar
+addAvailableSlot
+  :: SlotId -> DoctorId -> HealthcareService -> UTCTime
+  -> DoctorCalendar -> Maybe (AvailableSlot, DoctorCalendar)
 ```
 
 A doctor's time is occupied by available slots and appointed requests. No
@@ -248,7 +250,9 @@ does not overlap it.
 `DoctorCalendar` covers the whole practice and is sealed: the only ways to
 get one are `mkDoctorCalendar` (from existing entries) and
 `addAvailableSlot`, and both return `Nothing` rather than a calendar with
-an overlap. A slot is the only thing ever *added* to a calendar.
+an overlap. A slot is the only thing ever *added* to a calendar, and
+`addAvailableSlot` is how a new slot is created: it takes the service, so
+the slot's duration is always the service's.
 Appointments arrive by matching, which takes over the slot's exact
 interval, so matching cannot create an overlap and
 `matchIntakeRequestToSlot` takes no calendar.

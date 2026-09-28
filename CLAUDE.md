@@ -86,7 +86,8 @@ or protects against races. Enforcement is split:
   predecessor whole, so an `AppointedIntakeRequest` can't be built without
   a `TriagedIntakeRequest`. `mkRoutineWithin` enforces `from <= to`.
   `mkDoctorCalendar`/`addAvailableSlot` enforce no overlap per doctor
-  within a `DoctorCalendar` value. Types do *not* prove a value matches
+  within a `DoctorCalendar` value; `addAvailableSlot` creates a new slot
+  with its service's duration. Types do *not* prove a value matches
   what is currently stored.
 - **Pure functions (Domain):** `matches` / `matchIntakeRequestToSlot` check
   service, doctor requirement, and time window; `checkIntakeWaitlist` picks

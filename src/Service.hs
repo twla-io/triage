@@ -311,14 +311,13 @@ createAvailableSlot pool doctorId healthcareServiceId start = withResource pool 
     Right Nothing       -> pure (Left (HealthcareServiceNotFound healthcareServiceId))
     Right (Just service) -> do
       slotId <- newSlotId
-      let slot = AvailableSlot { id = slotId, doctorId, healthcareServiceId, start, duration = service.duration }
-          end  = addUTCTime (durationToNominalDiffTime slot.duration) slot.start
+      let end = addUTCTime (durationToNominalDiffTime service.duration) start
       calendarResult <- fetchDoctorCalendar conn doctorId start end
       case calendarResult of
         Left err -> pure (Left (PersistenceDecodeError err))
-        Right calendar -> case addAvailableSlot slot calendar of
-          Nothing -> pure (Right SlotConflict)
-          Just _  -> do
+        Right calendar -> case addAvailableSlot slotId doctorId service start calendar of
+          Nothing        -> pure (Right SlotConflict)
+          Just (slot, _) -> do
             result <- insertAvailableSlot conn slot
             pure . Right $ case result of
               Right () -> SlotCreated slot

@@ -78,8 +78,10 @@ AppointedIntakeRequest`: everything that occupies a doctor's time.
 doctor overlap; entries occupy half-open intervals `[start, end)`, so
 touching is not overlapping. `mkDoctorCalendar :: [CalendarEntry] -> Maybe
 DoctorCalendar` builds one from existing entries; `addAvailableSlot ::
-AvailableSlot -> DoctorCalendar -> Maybe DoctorCalendar` grows it — a slot
-is the only thing ever added; appointments arrive by matching, which takes
+SlotId -> DoctorId -> HealthcareService -> UTCTime -> DoctorCalendar ->
+Maybe (AvailableSlot, DoctorCalendar)` creates a new slot, lasting as long
+as its service, and grows the calendar with it — a slot is the only thing
+ever added; appointments arrive by matching, which takes
 over the slot's exact interval. A value cannot prove it matches what is
 currently stored, so stored data needs the same invariant enforced where it
 lives.

@@ -63,7 +63,6 @@ module Transport
 
     -- ── Slot ─────────────────────────────────────────────────────────────
   , AvailableSlotDTO (..)
-  , toDomainAvailableSlot
   , fromDomainAvailableSlot
 
     -- ── Slot Create Request ──────────────────────────────────────────────
@@ -116,7 +115,6 @@ module Transport
 
     -- ── Calendar Entry ───────────────────────────────────────────────────
   , CalendarEntryDTO (..)
-  , toDomainCalendarEntry
   , fromDomainCalendarEntry
   ) where
 
@@ -569,16 +567,8 @@ instance ToSchema AvailableSlotDTO where
       ]
       ["id", "doctorId", "healthcareServiceId", "start", "duration"]
 
-toDomainAvailableSlot :: AvailableSlotDTO -> AvailableSlot
-toDomainAvailableSlot dto =
-  AvailableSlot
-    { id                  = SlotId dto.id
-    , doctorId            = DoctorId dto.doctorId
-    , healthcareServiceId = HealthcareServiceId dto.healthcareServiceId
-    , start               = dto.start
-    , duration            = toDomainDuration dto.duration
-    }
-
+-- Response-only: no request carries a slot — matching takes a slot's id
+-- (stored-facts-by-reference), and slots are created by addAvailableSlot.
 fromDomainAvailableSlot :: AvailableSlot -> AvailableSlotDTO
 fromDomainAvailableSlot s =
   let SlotId sid              = s.id
@@ -1730,10 +1720,6 @@ instance ToSchema CalendarEntryDTO where
       , ("priority", prioRef), ("doctorRequirement", reqRef), ("triagedAt", utcRef)
       ]
       ["id", "doctorId", "healthcareServiceId", "start", "duration"]
-
-toDomainCalendarEntry :: CalendarEntryDTO -> Either TransportError CalendarEntry
-toDomainCalendarEntry (SlotEntryDTO slot)        = Right (Slot (toDomainAvailableSlot slot))
-toDomainCalendarEntry (AppointmentEntryDTO appt) = Appointment <$> toDomainAppointedIntakeRequest appt
 
 fromDomainCalendarEntry :: CalendarEntry -> CalendarEntryDTO
 fromDomainCalendarEntry (Slot s)        = SlotEntryDTO (fromDomainAvailableSlot s)
