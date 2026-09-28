@@ -63,6 +63,7 @@ data TriagedIntakeRequest = TriagedIntakeRequest
   { submitted           :: SubmittedIntakeRequest
   , healthcareServiceId :: HealthcareServiceId
   , priority             :: IntakeRequestPriority
+  , doctorRequirement    :: DoctorRequirement
   , triagedAt            :: UTCTime
   }
 
