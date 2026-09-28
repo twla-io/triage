@@ -75,7 +75,7 @@ CREATE TABLE slots (
 -- WithdrawnFromAccepted (NOT NULL — withdrawn after triage) within
 -- state = 'withdrawn'. Deliberate, not an oversight: no separate
 -- sub-state column, reusing the same nullability-as-discriminator
--- convention already used elsewhere in this schema (requested_doctor_id,
+-- convention already used elsewhere in this schema (required_doctor_id,
 -- due_not_before/due_not_after).
 --
 -- state = 'stale' shares WithdrawnFromAccepted's structural precondition
@@ -98,7 +98,6 @@ CREATE TABLE intake_requests (
   id                     UUID NOT NULL PRIMARY KEY,
   patient_id             UUID NOT NULL REFERENCES patients(id),
   narrative              TEXT NOT NULL,
-  requested_doctor_id    UUID NULL REFERENCES doctors(id),  -- what was asked for; NULL = AnyDoctor
   created_at             TIMESTAMPTZ NOT NULL,
 
   state                  TEXT NOT NULL CHECK (state IN
@@ -112,8 +111,8 @@ CREATE TABLE intake_requests (
   due_not_before         TIMESTAMPTZ NULL,
   due_not_after          TIMESTAMPTZ NULL,
   triaged_at             TIMESTAMPTZ NULL,
-  -- what triage decided; matching uses this, not requested_doctor_id.
-  -- NULL = AnyDoctor once triaged; always NULL before triage (CHECK below).
+  -- decided at triage; NULL = AnyDoctor once triaged, always NULL before
+  -- triage (CHECK below).
   required_doctor_id     UUID NULL REFERENCES doctors(id),
 
   appointed_doctor_id    UUID NULL REFERENCES doctors(id),

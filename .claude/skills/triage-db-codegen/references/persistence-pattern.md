@@ -148,7 +148,7 @@ deleteSlot conn (SlotId sid) = do
 ```haskell
 data IntakeRequestRow = IntakeRequestRow
   { id :: UUID, patientId :: UUID, narrative :: Text
-  , requestedDoctorId :: Maybe UUID, createdAt :: UTCTime, state :: Text
+  , createdAt :: UTCTime, state :: Text
   , rejectedAt :: Maybe UTCTime, rejectionReason :: Maybe Text
   , healthcareServiceId :: Maybe UUID, tier :: Maybe Text
   , dueNotBefore :: Maybe UTCTime, dueNotAfter :: Maybe UTCTime, triagedAt :: Maybe UTCTime, requiredDoctorId :: Maybe UUID
@@ -163,9 +163,8 @@ data IntakeRequestRow = IntakeRequestRow
 Three nullability bijections (`nullability-as-discriminator`), each with no redundant discriminator column:
 
 ```haskell
--- requested_doctor_id (asked for) and required_doctor_id (decided at
--- triage, what matching uses): NULL = AnyDoctor. required_doctor_id is
--- always NULL before triage (a CHECK enforces it).
+-- required_doctor_id (decided at triage, what matching uses): NULL =
+-- AnyDoctor; always NULL before triage (a CHECK enforces it).
 decodeDoctorRequirement :: Maybe UUID -> DoctorRequirement
 decodeDoctorRequirement Nothing  = AnyDoctor
 decodeDoctorRequirement (Just u) = SpecificDoctor (DoctorId u)

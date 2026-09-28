@@ -981,7 +981,6 @@ export interface components {
             narrative: string;
             patientId: components["schemas"]["UUID"];
             priority: components["schemas"]["IntakeRequestPriorityDTO"];
-            requestedDoctor: components["schemas"]["DoctorRequirementDTO"];
             start: components["schemas"]["UTCTime"];
             triagedAt: components["schemas"]["UTCTime"];
         };
@@ -1006,7 +1005,6 @@ export interface components {
             narrative?: string;
             patientId?: components["schemas"]["UUID"];
             priority?: components["schemas"]["IntakeRequestPriorityDTO"];
-            requestedDoctor?: components["schemas"]["DoctorRequirementDTO"];
             start: components["schemas"]["UTCTime"];
             triagedAt?: components["schemas"]["UTCTime"];
             /** @enum {string} */
@@ -1071,7 +1069,6 @@ export interface components {
             priority?: components["schemas"]["IntakeRequestPriorityDTO"];
             rejectedAt?: components["schemas"]["UTCTime"];
             rejectionReason?: string;
-            requestedDoctor: components["schemas"]["DoctorRequirementDTO"];
             staleAt?: components["schemas"]["UTCTime"];
             start?: components["schemas"]["UTCTime"];
             triagedAt?: components["schemas"]["UTCTime"];
@@ -1100,7 +1097,6 @@ export interface components {
         SubmitIntakeRequestRequest: {
             narrative: string;
             patientId: components["schemas"]["UUID"];
-            requestedDoctor: components["schemas"]["DoctorRequirementDTO"];
         };
         /**
          * Format: yyyy-mm-ddThh:MM:ssZ

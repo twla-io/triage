@@ -714,6 +714,8 @@ hold for stored data.
 
 ## Triage decides the doctor requirement, for any priority (2026-09-28)
 
+**Superseded in part (same day):** `requestedDoctor` was then removed — see "The doctor requirement is only a triage decision" below.
+
 **Found:** `Domain.hs`'s comment said Emergency/Urgent requests can't require a specific doctor ("no time slack to spend waiting"), but `doctorRequirement` sat on `SubmittedIntakeRequest`, set before triage, and `matches` enforced it at every priority. Demonstrated against the real module: an Emergency that asked for Dr A was refused Dr B's slot ten minutes out, and the waitlist gave that slot to a Routine request. The comment and the types had disagreed since `4db1a10` introduced both; triage had no way to drop the requirement.
 
 **Decided:** two facts, two fields. `SubmittedIntakeRequest.requestedDoctor` is what was asked for; `TriagedIntakeRequest.doctorRequirement` is what triage decided, and the only one matching uses. `acceptIntakeRequest` takes it, for any priority — an Emergency or Urgent request waits for a specific doctor only if triage explicitly keeps one (continuity of care), and the triage form warns when it does. Storage: `requested_doctor_id` and `required_doctor_id`, the latter `NULL` before triage (`CHECK`).
@@ -721,6 +723,12 @@ hold for stored data.
 **Rejected:** a `considerDoctorRequirement :: Bool` on the triaged request (allows meaningless `True` + `AnyDoctor`, and can't say "a different doctor than requested"); `Routine RoutineDue DoctorRequirement` so only Routine can carry one (structural, but rules out continuity of care for urgent patients, and needs a tie-break policy in `Ord IntakeRequestPriority`).
 
 **Also:** `generate-types` was broken (the backend serves Swagger 2.0; openapi-typescript v6 and v7 read only OpenAPI 3). It now converts the spec with `swagger2openapi` first and keeps openapi-typescript v7, so `types.ts` keeps its format. Serving OpenAPI 3 from the backend (`servant-openapi3`) remains the long-term option.
+
+## The doctor requirement is only a triage decision; no requested doctor (2026-09-28)
+
+**Decided:** `SubmittedIntakeRequest.requestedDoctor` (and `requested_doctor_id`) removed. The person submitting a request often can't name a doctor precisely, and a preference ("Dr Smith again, if possible") says more as narrative text than as an id. Nothing enforced the requested field — matching already used only triage's decision — so it existed only to pre-fill the triage form. Now `TriagedIntakeRequest.doctorRequirement` is the one typed doctor requirement; the triage form defaults to any doctor, and the submit form's narrative prompt invites a preference.
+
+**Why this is safe to remove:** the structured request field was never a validated requirement either; adding it back later is cheap if triagers find the narrative insufficient.
 
 ---
 

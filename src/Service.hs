@@ -374,13 +374,12 @@ submitIntakeRequest
   :: ConnectionPool
   -> PatientId
   -> Text                -- narrative
-  -> DoctorRequirement   -- requestedDoctor
   -> UTCTime             -- createdAt
   -> IO SubmittedIntakeRequest
-submitIntakeRequest pool patientId narrative requestedDoctor createdAt =
+submitIntakeRequest pool patientId narrative createdAt =
   withResource pool $ \conn -> do
     reqId <- newIntakeRequestId
-    let submitted = SubmittedIntakeRequest { id = reqId, patientId, narrative, requestedDoctor, createdAt }
+    let submitted = SubmittedIntakeRequest { id = reqId, patientId, narrative, createdAt }
     insertSubmittedIntakeRequest conn submitted
     pure submitted
 

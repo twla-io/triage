@@ -134,11 +134,10 @@ data HealthcareService = HealthcareService
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DOCTOR REQUIREMENT
--- Recorded twice, as two different facts: what the request asked for
--- (SubmittedIntakeRequest.requestedDoctor) and what triage decided
--- (TriagedIntakeRequest.doctorRequirement). Matching uses only the decided
--- one. Triage decides for any priority; an Emergency or Urgent request
--- waits for a specific doctor only if triage explicitly kept one.
+-- Decided at triage (TriagedIntakeRequest.doctorRequirement), for any
+-- priority; a patient's preference is part of the narrative, not a typed
+-- field. An Emergency or Urgent request waits for a specific doctor only if
+-- triage sets one.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data DoctorRequirement
@@ -243,7 +242,6 @@ data SubmittedIntakeRequest = SubmittedIntakeRequest
   { id                :: IntakeRequestId
   , patientId         :: PatientId
   , narrative         :: Text
-  , requestedDoctor   :: DoctorRequirement
   , createdAt         :: UTCTime
   }
   deriving (Show, Eq)

@@ -54,7 +54,6 @@ export function useClosedIntakeRequests(range: ClosedRange) {
 export interface SubmitIntakeRequestInput {
   patientId: string
   narrative: string
-  requestedDoctor: DoctorRequirementDTO
 }
 
 function invalidateIntakeQueries(queryClient: ReturnType<typeof useQueryClient>) {

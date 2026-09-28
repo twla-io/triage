@@ -964,7 +964,7 @@ fromDomainDoctorRequirement (SpecificDoctor did) =
 -- Service.fetchAppointedIntakeRequests and needed standalone below by
 -- CalendarEntryDTO. Flat record, the exact field set IntakeRequestDTO's
 -- "appointed" tag already flattens (id, patientId, narrative,
--- requestedDoctor, createdAt, healthcareServiceId, priority,
+-- createdAt, healthcareServiceId, priority, doctorRequirement,
 -- triagedAt, doctorId, start, duration), but with NO discriminator tag
 -- of its own at the top level — unlike IntakeRequest's six/seven cases,
 -- there is only one shape here.
@@ -993,32 +993,32 @@ fromDomainDoctorRequirement (SpecificDoctor did) =
 -- (same as everything else on this side).
 -- ═══════════════════════════════════════════════════════════════════════
 
-submittedFields :: SubmittedIntakeRequest -> (UUID, UUID, Text, DoctorRequirementDTO, UTCTime)
+submittedFields :: SubmittedIntakeRequest -> (UUID, UUID, Text, UTCTime)
 submittedFields s =
   let IntakeRequestId rid = s.id
       PatientId pid       = s.patientId
-  in (rid, pid, s.narrative, fromDomainDoctorRequirement s.requestedDoctor, s.createdAt)
+  in (rid, pid, s.narrative, s.createdAt)
 
 triagedFields
   :: TriagedIntakeRequest
-  -> (UUID, UUID, Text, DoctorRequirementDTO, UTCTime, UUID, IntakeRequestPriorityDTO, DoctorRequirementDTO, UTCTime)
+  -> (UUID, UUID, Text, UTCTime, UUID, IntakeRequestPriorityDTO, DoctorRequirementDTO, UTCTime)
 triagedFields t =
-  let (rid, pid, narr, req, created) = submittedFields t.submitted
+  let (rid, pid, narr, created) = submittedFields t.submitted
       HealthcareServiceId svcId      = t.healthcareServiceId
-  in ( rid, pid, narr, req, created, svcId, fromDomainIntakeRequestPriority t.priority
+  in ( rid, pid, narr, created, svcId, fromDomainIntakeRequestPriority t.priority
      , fromDomainDoctorRequirement t.doctorRequirement, t.triagedAt )
 
-toDomainSubmitted :: UUID -> UUID -> Text -> DoctorRequirementDTO -> UTCTime -> SubmittedIntakeRequest
-toDomainSubmitted rid pid narr req =
-  SubmittedIntakeRequest (IntakeRequestId rid) (PatientId pid) narr (toDomainDoctorRequirement req)
+toDomainSubmitted :: UUID -> UUID -> Text -> UTCTime -> SubmittedIntakeRequest
+toDomainSubmitted rid pid narr =
+  SubmittedIntakeRequest (IntakeRequestId rid) (PatientId pid) narr
 
 toDomainTriaged
-  :: UUID -> UUID -> Text -> DoctorRequirementDTO -> UTCTime
+  :: UUID -> UUID -> Text -> UTCTime
   -> UUID -> IntakeRequestPriorityDTO -> DoctorRequirementDTO -> UTCTime
   -> Either TransportError TriagedIntakeRequest
-toDomainTriaged rid pid narr req created svcId prio dreq triagedTime =
+toDomainTriaged rid pid narr created svcId prio dreq triagedTime =
   (\p -> TriagedIntakeRequest
-    (toDomainSubmitted rid pid narr req created) (HealthcareServiceId svcId) p
+    (toDomainSubmitted rid pid narr created) (HealthcareServiceId svcId) p
     (toDomainDoctorRequirement dreq) triagedTime)
   <$> toDomainIntakeRequestPriority prio
 
@@ -1026,7 +1026,6 @@ data AppointedIntakeRequestDTO = AppointedIntakeRequestDTO
   { id                  :: UUID
   , patientId           :: UUID
   , narrative           :: Text
-  , requestedDoctor     :: DoctorRequirementDTO
   , createdAt           :: UTCTime
   , healthcareServiceId :: UUID
   , priority            :: IntakeRequestPriorityDTO
@@ -1043,7 +1042,6 @@ instance ToJSON AppointedIntakeRequestDTO where
     [ "id" .= UUID.toText dto.id
     , "patientId" .= UUID.toText dto.patientId
     , "narrative" .= dto.narrative
-    , "requestedDoctor" .= dto.requestedDoctor
     , "createdAt" .= dto.createdAt
     , "healthcareServiceId" .= UUID.toText dto.healthcareServiceId
     , "priority" .= dto.priority
@@ -1059,7 +1057,6 @@ instance FromJSON AppointedIntakeRequestDTO where
     rid         <- v .: "id" >>= parseUUIDField
     pid         <- v .: "patientId" >>= parseUUIDField
     narr        <- v .: "narrative"
-    req         <- v .: "requestedDoctor"
     created     <- v .: "createdAt"
     svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
     prio        <- v .: "priority"
@@ -1068,7 +1065,7 @@ instance FromJSON AppointedIntakeRequestDTO where
     did         <- v .: "doctorId" >>= parseUUIDField
     start'      <- v .: "start"
     dur         <- v .: "duration"
-    pure (AppointedIntakeRequestDTO rid pid narr req created svcId prio dreq triagedTime did start' dur)
+    pure (AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did start' dur)
 
 instance ToSchema AppointedIntakeRequestDTO where
   declareNamedSchema _ = do
@@ -1080,12 +1077,12 @@ instance ToSchema AppointedIntakeRequestDTO where
     durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
     pure $ objectSchema "AppointedIntakeRequestDTO"
       [ ("id", uuidRef), ("patientId", uuidRef), ("narrative", textRef)
-      , ("requestedDoctor", reqRef), ("createdAt", utcRef)
+      , ("createdAt", utcRef)
       , ("healthcareServiceId", uuidRef), ("priority", prioRef), ("doctorRequirement", reqRef)
       , ("triagedAt", utcRef), ("doctorId", uuidRef), ("start", utcRef)
       , ("duration", durationRef)
       ]
-      [ "id", "patientId", "narrative", "requestedDoctor", "createdAt"
+      [ "id", "patientId", "narrative", "createdAt"
       , "healthcareServiceId", "priority", "doctorRequirement", "triagedAt", "doctorId", "start"
       , "duration"
       ]
@@ -1095,14 +1092,14 @@ toDomainAppointedIntakeRequest dto =
   (\triagedReq -> AppointedIntakeRequest triagedReq (DoctorId dto.doctorId) dto.start
     (toDomainDuration dto.duration))
   <$> toDomainTriaged
-        dto.id dto.patientId dto.narrative dto.requestedDoctor dto.createdAt
+        dto.id dto.patientId dto.narrative dto.createdAt
         dto.healthcareServiceId dto.priority dto.doctorRequirement dto.triagedAt
 
 fromDomainAppointedIntakeRequest :: AppointedIntakeRequest -> AppointedIntakeRequestDTO
 fromDomainAppointedIntakeRequest a =
-  let (rid, pid, narr, req, created, svcId, prio, dreq, triagedTime) = triagedFields a.triaged
+  let (rid, pid, narr, created, svcId, prio, dreq, triagedTime) = triagedFields a.triaged
       DoctorId did = a.doctorId
-  in AppointedIntakeRequestDTO rid pid narr req created svcId prio dreq triagedTime did a.start
+  in AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did a.start
        (fromDomainDuration a.duration)
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -1118,7 +1115,7 @@ fromDomainAppointedIntakeRequest a =
 -- Every field list below verified against Domain.hs's actual embedding
 -- chain (SubmittedIntakeRequest -> TriagedIntakeRequest ->
 -- AppointedIntakeRequest), not assumed:
---   submitted: id, patientId, narrative, requestedDoctor, createdAt
+--   submitted: id, patientId, narrative, createdAt
 --   rejected:  + rejectedAt, rejectionReason :: Text (NOT Maybe Text —
 --              unlike Cancelled's/Withdrawn's own free-text notes, a
 --              rejection reason is mandatory in Domain.hs)
@@ -1175,14 +1172,12 @@ data IntakeRequestDTO
       { id                :: UUID
       , patientId         :: UUID
       , narrative         :: Text
-      , requestedDoctor   :: DoctorRequirementDTO
       , createdAt         :: UTCTime
       }
   | RejectedDTO
       { id                :: UUID
       , patientId         :: UUID
       , narrative         :: Text
-      , requestedDoctor   :: DoctorRequirementDTO
       , createdAt         :: UTCTime
       , rejectedAt        :: UTCTime
       , rejectionReason   :: Text
@@ -1191,7 +1186,6 @@ data IntakeRequestDTO
       { id                  :: UUID
       , patientId           :: UUID
       , narrative           :: Text
-      , requestedDoctor     :: DoctorRequirementDTO
       , createdAt           :: UTCTime
       , healthcareServiceId :: UUID
       , priority            :: IntakeRequestPriorityDTO
@@ -1202,7 +1196,6 @@ data IntakeRequestDTO
       { id                  :: UUID
       , patientId           :: UUID
       , narrative           :: Text
-      , requestedDoctor     :: DoctorRequirementDTO
       , createdAt           :: UTCTime
       , healthcareServiceId :: UUID
       , priority            :: IntakeRequestPriorityDTO
@@ -1216,7 +1209,6 @@ data IntakeRequestDTO
       { id                :: UUID
       , patientId         :: UUID
       , narrative         :: Text
-      , requestedDoctor   :: DoctorRequirementDTO
       , createdAt         :: UTCTime
       , withdrawnAt       :: UTCTime
       , withdrawalNote    :: Maybe Text
@@ -1225,7 +1217,6 @@ data IntakeRequestDTO
       { id                  :: UUID
       , patientId           :: UUID
       , narrative           :: Text
-      , requestedDoctor     :: DoctorRequirementDTO
       , createdAt           :: UTCTime
       , healthcareServiceId :: UUID
       , priority            :: IntakeRequestPriorityDTO
@@ -1238,7 +1229,6 @@ data IntakeRequestDTO
       { id                  :: UUID
       , patientId           :: UUID
       , narrative           :: Text
-      , requestedDoctor     :: DoctorRequirementDTO
       , createdAt           :: UTCTime
       , healthcareServiceId :: UUID
       , priority            :: IntakeRequestPriorityDTO
@@ -1250,7 +1240,6 @@ data IntakeRequestDTO
       { id                  :: UUID
       , patientId           :: UUID
       , narrative           :: Text
-      , requestedDoctor     :: DoctorRequirementDTO
       , createdAt           :: UTCTime
       , healthcareServiceId :: UUID
       , priority            :: IntakeRequestPriorityDTO
@@ -1264,42 +1253,38 @@ data IntakeRequestDTO
   deriving (Show, Eq)
 
 instance ToJSON IntakeRequestDTO where
-  toJSON (SubmittedDTO rid pid narr req created) = object
+  toJSON (SubmittedDTO rid pid narr created) = object
     [ "type" .= ("submitted" :: Text)
     , "id" .= UUID.toText rid
     , "patientId" .= UUID.toText pid
     , "narrative" .= narr
-    , "requestedDoctor" .= req
     , "createdAt" .= created
     ]
-  toJSON (RejectedDTO rid pid narr req created rejectedTime reason) = object
+  toJSON (RejectedDTO rid pid narr created rejectedTime reason) = object
     [ "type" .= ("rejected" :: Text)
     , "id" .= UUID.toText rid
     , "patientId" .= UUID.toText pid
     , "narrative" .= narr
-    , "requestedDoctor" .= req
     , "createdAt" .= created
     , "rejectedAt" .= rejectedTime
     , "rejectionReason" .= reason
     ]
-  toJSON (AcceptedDTO rid pid narr req created svcId prio dreq triagedTime) = object
+  toJSON (AcceptedDTO rid pid narr created svcId prio dreq triagedTime) = object
     [ "type" .= ("accepted" :: Text)
     , "id" .= UUID.toText rid
     , "patientId" .= UUID.toText pid
     , "narrative" .= narr
-    , "requestedDoctor" .= req
     , "createdAt" .= created
     , "healthcareServiceId" .= UUID.toText svcId
     , "priority" .= prio
     , "doctorRequirement" .= dreq
     , "triagedAt" .= triagedTime
     ]
-  toJSON (AppointedDTO rid pid narr req created svcId prio dreq triagedTime did start' dur) = object
+  toJSON (AppointedDTO rid pid narr created svcId prio dreq triagedTime did start' dur) = object
     [ "type" .= ("appointed" :: Text)
     , "id" .= UUID.toText rid
     , "patientId" .= UUID.toText pid
     , "narrative" .= narr
-    , "requestedDoctor" .= req
     , "createdAt" .= created
     , "healthcareServiceId" .= UUID.toText svcId
     , "priority" .= prio
@@ -1309,22 +1294,20 @@ instance ToJSON IntakeRequestDTO where
     , "start" .= start'
     , "duration" .= dur
     ]
-  toJSON (WithdrawnFromSubmittedDTO rid pid narr req created withdrawnTime note) = object
+  toJSON (WithdrawnFromSubmittedDTO rid pid narr created withdrawnTime note) = object
     [ "type" .= ("withdrawnFromSubmitted" :: Text)
     , "id" .= UUID.toText rid
     , "patientId" .= UUID.toText pid
     , "narrative" .= narr
-    , "requestedDoctor" .= req
     , "createdAt" .= created
     , "withdrawnAt" .= withdrawnTime
     , "withdrawalNote" .= note
     ]
-  toJSON (WithdrawnFromAcceptedDTO rid pid narr req created svcId prio dreq triagedTime withdrawnTime note) = object
+  toJSON (WithdrawnFromAcceptedDTO rid pid narr created svcId prio dreq triagedTime withdrawnTime note) = object
     [ "type" .= ("withdrawnFromAccepted" :: Text)
     , "id" .= UUID.toText rid
     , "patientId" .= UUID.toText pid
     , "narrative" .= narr
-    , "requestedDoctor" .= req
     , "createdAt" .= created
     , "healthcareServiceId" .= UUID.toText svcId
     , "priority" .= prio
@@ -1333,12 +1316,11 @@ instance ToJSON IntakeRequestDTO where
     , "withdrawnAt" .= withdrawnTime
     , "withdrawalNote" .= note
     ]
-  toJSON (StaleDTO rid pid narr req created svcId prio dreq triagedTime staleTime) = object
+  toJSON (StaleDTO rid pid narr created svcId prio dreq triagedTime staleTime) = object
     [ "type" .= ("stale" :: Text)
     , "id" .= UUID.toText rid
     , "patientId" .= UUID.toText pid
     , "narrative" .= narr
-    , "requestedDoctor" .= req
     , "createdAt" .= created
     , "healthcareServiceId" .= UUID.toText svcId
     , "priority" .= prio
@@ -1346,12 +1328,11 @@ instance ToJSON IntakeRequestDTO where
     , "triagedAt" .= triagedTime
     , "staleAt" .= staleTime
     ]
-  toJSON (ClosedDTO rid pid narr req created svcId prio dreq triagedTime did start' dur reason) = object
+  toJSON (ClosedDTO rid pid narr created svcId prio dreq triagedTime did start' dur reason) = object
     [ "type" .= ("closed" :: Text)
     , "id" .= UUID.toText rid
     , "patientId" .= UUID.toText pid
     , "narrative" .= narr
-    , "requestedDoctor" .= req
     , "createdAt" .= created
     , "healthcareServiceId" .= UUID.toText svcId
     , "priority" .= prio
@@ -1371,34 +1352,30 @@ instance FromJSON IntakeRequestDTO where
         rid     <- v .: "id" >>= parseUUIDField
         pid     <- v .: "patientId" >>= parseUUIDField
         narr    <- v .: "narrative"
-        req     <- v .: "requestedDoctor"
         created <- v .: "createdAt"
-        pure (SubmittedDTO rid pid narr req created)
+        pure (SubmittedDTO rid pid narr created)
       "rejected" -> do
         rid          <- v .: "id" >>= parseUUIDField
         pid          <- v .: "patientId" >>= parseUUIDField
         narr         <- v .: "narrative"
-        req          <- v .: "requestedDoctor"
         created      <- v .: "createdAt"
         rejectedTime <- v .: "rejectedAt"
         reason       <- v .: "rejectionReason"
-        pure (RejectedDTO rid pid narr req created rejectedTime reason)
+        pure (RejectedDTO rid pid narr created rejectedTime reason)
       "accepted" -> do
         rid         <- v .: "id" >>= parseUUIDField
         pid         <- v .: "patientId" >>= parseUUIDField
         narr        <- v .: "narrative"
-        req         <- v .: "requestedDoctor"
         created     <- v .: "createdAt"
         svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
         prio        <- v .: "priority"
         dreq        <- v .: "doctorRequirement"
         triagedTime <- v .: "triagedAt"
-        pure (AcceptedDTO rid pid narr req created svcId prio dreq triagedTime)
+        pure (AcceptedDTO rid pid narr created svcId prio dreq triagedTime)
       "appointed" -> do
         rid         <- v .: "id" >>= parseUUIDField
         pid         <- v .: "patientId" >>= parseUUIDField
         narr        <- v .: "narrative"
-        req         <- v .: "requestedDoctor"
         created     <- v .: "createdAt"
         svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
         prio        <- v .: "priority"
@@ -1407,21 +1384,19 @@ instance FromJSON IntakeRequestDTO where
         did         <- v .: "doctorId" >>= parseUUIDField
         start'      <- v .: "start"
         dur         <- v .: "duration"
-        pure (AppointedDTO rid pid narr req created svcId prio dreq triagedTime did start' dur)
+        pure (AppointedDTO rid pid narr created svcId prio dreq triagedTime did start' dur)
       "withdrawnFromSubmitted" -> do
         rid           <- v .: "id" >>= parseUUIDField
         pid           <- v .: "patientId" >>= parseUUIDField
         narr          <- v .: "narrative"
-        req           <- v .: "requestedDoctor"
         created       <- v .: "createdAt"
         withdrawnTime <- v .: "withdrawnAt"
         note          <- v .: "withdrawalNote"
-        pure (WithdrawnFromSubmittedDTO rid pid narr req created withdrawnTime note)
+        pure (WithdrawnFromSubmittedDTO rid pid narr created withdrawnTime note)
       "withdrawnFromAccepted" -> do
         rid           <- v .: "id" >>= parseUUIDField
         pid           <- v .: "patientId" >>= parseUUIDField
         narr          <- v .: "narrative"
-        req           <- v .: "requestedDoctor"
         created       <- v .: "createdAt"
         svcId         <- v .: "healthcareServiceId" >>= parseUUIDField
         prio          <- v .: "priority"
@@ -1429,24 +1404,22 @@ instance FromJSON IntakeRequestDTO where
         triagedTime   <- v .: "triagedAt"
         withdrawnTime <- v .: "withdrawnAt"
         note          <- v .: "withdrawalNote"
-        pure (WithdrawnFromAcceptedDTO rid pid narr req created svcId prio dreq triagedTime withdrawnTime note)
+        pure (WithdrawnFromAcceptedDTO rid pid narr created svcId prio dreq triagedTime withdrawnTime note)
       "stale" -> do
         rid         <- v .: "id" >>= parseUUIDField
         pid         <- v .: "patientId" >>= parseUUIDField
         narr        <- v .: "narrative"
-        req         <- v .: "requestedDoctor"
         created     <- v .: "createdAt"
         svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
         prio        <- v .: "priority"
         dreq        <- v .: "doctorRequirement"
         triagedTime <- v .: "triagedAt"
         staleTime   <- v .: "staleAt"
-        pure (StaleDTO rid pid narr req created svcId prio dreq triagedTime staleTime)
+        pure (StaleDTO rid pid narr created svcId prio dreq triagedTime staleTime)
       "closed" -> do
         rid         <- v .: "id" >>= parseUUIDField
         pid         <- v .: "patientId" >>= parseUUIDField
         narr        <- v .: "narrative"
-        req         <- v .: "requestedDoctor"
         created     <- v .: "createdAt"
         svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
         prio        <- v .: "priority"
@@ -1456,12 +1429,12 @@ instance FromJSON IntakeRequestDTO where
         start'      <- v .: "start"
         dur         <- v .: "duration"
         reason      <- v .: "closeReason"
-        pure (ClosedDTO rid pid narr req created svcId prio dreq triagedTime did start' dur reason)
+        pure (ClosedDTO rid pid narr created svcId prio dreq triagedTime did start' dur reason)
       other -> fail ("unrecognized IntakeRequest type: " ++ show other)
 
 -- Union of all eight cases' fields — required is the intersection
 -- present in literally every case (id/patientId/narrative/
--- requestedDoctor/createdAt, verified against the field-list comment
+-- createdAt, verified against the field-list comment
 -- at the top of this section), everything else is case-specific and
 -- left optional. See taggedSchema's own comment (SWAGGER SCHEMA
 -- HELPERS) for why this flattened-union shape, not oneOf, is the
@@ -1480,7 +1453,7 @@ instance ToSchema IntakeRequestDTO where
       , "withdrawnFromSubmitted", "withdrawnFromAccepted", "stale", "closed"
       ]
       [ ("id", uuidRef), ("patientId", uuidRef), ("narrative", textRef)
-      , ("requestedDoctor", reqRef), ("createdAt", utcRef)
+      , ("createdAt", utcRef)
       , ("rejectedAt", utcRef), ("rejectionReason", textRef)
       , ("healthcareServiceId", uuidRef), ("priority", prioRef), ("doctorRequirement", reqRef)
       , ("triagedAt", utcRef)
@@ -1489,60 +1462,60 @@ instance ToSchema IntakeRequestDTO where
       , ("staleAt", utcRef)
       , ("closeReason", closeReasonRef)
       ]
-      ["id", "patientId", "narrative", "requestedDoctor", "createdAt"]
+      ["id", "patientId", "narrative", "createdAt"]
 
 toDomainIntakeRequest :: IntakeRequestDTO -> Either TransportError IntakeRequest
-toDomainIntakeRequest (SubmittedDTO rid pid narr req created) =
-  Right (Submitted (toDomainSubmitted rid pid narr req created))
-toDomainIntakeRequest (RejectedDTO rid pid narr req created rejectedTime reason) =
-  Right (Rejected (toDomainSubmitted rid pid narr req created) rejectedTime reason)
-toDomainIntakeRequest (AcceptedDTO rid pid narr req created svcId prio dreq triagedTime) =
-  Accepted <$> toDomainTriaged rid pid narr req created svcId prio dreq triagedTime
-toDomainIntakeRequest (AppointedDTO rid pid narr req created svcId prio dreq triagedTime did start' dur) =
+toDomainIntakeRequest (SubmittedDTO rid pid narr created) =
+  Right (Submitted (toDomainSubmitted rid pid narr created))
+toDomainIntakeRequest (RejectedDTO rid pid narr created rejectedTime reason) =
+  Right (Rejected (toDomainSubmitted rid pid narr created) rejectedTime reason)
+toDomainIntakeRequest (AcceptedDTO rid pid narr created svcId prio dreq triagedTime) =
+  Accepted <$> toDomainTriaged rid pid narr created svcId prio dreq triagedTime
+toDomainIntakeRequest (AppointedDTO rid pid narr created svcId prio dreq triagedTime did start' dur) =
   Appointed <$> toDomainAppointedIntakeRequest
-    (AppointedIntakeRequestDTO rid pid narr req created svcId prio dreq triagedTime did start' dur)
-toDomainIntakeRequest (WithdrawnFromSubmittedDTO rid pid narr req created withdrawnTime note) =
+    (AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did start' dur)
+toDomainIntakeRequest (WithdrawnFromSubmittedDTO rid pid narr created withdrawnTime note) =
   Right
     (Withdrawn
-      (WithdrawnFromSubmitted (toDomainSubmitted rid pid narr req created) withdrawnTime note))
+      (WithdrawnFromSubmitted (toDomainSubmitted rid pid narr created) withdrawnTime note))
 toDomainIntakeRequest
-  (WithdrawnFromAcceptedDTO rid pid narr req created svcId prio dreq triagedTime withdrawnTime note) = do
-  triagedReq <- toDomainTriaged rid pid narr req created svcId prio dreq triagedTime
+  (WithdrawnFromAcceptedDTO rid pid narr created svcId prio dreq triagedTime withdrawnTime note) = do
+  triagedReq <- toDomainTriaged rid pid narr created svcId prio dreq triagedTime
   Right (Withdrawn (WithdrawnFromAccepted triagedReq withdrawnTime note))
-toDomainIntakeRequest (StaleDTO rid pid narr req created svcId prio dreq triagedTime staleTime) =
-  (`Stale` staleTime) <$> toDomainTriaged rid pid narr req created svcId prio dreq triagedTime
-toDomainIntakeRequest (ClosedDTO rid pid narr req created svcId prio dreq triagedTime did start' dur reason) =
+toDomainIntakeRequest (StaleDTO rid pid narr created svcId prio dreq triagedTime staleTime) =
+  (`Stale` staleTime) <$> toDomainTriaged rid pid narr created svcId prio dreq triagedTime
+toDomainIntakeRequest (ClosedDTO rid pid narr created svcId prio dreq triagedTime did start' dur reason) =
   (\appointed -> Closed appointed (toDomainCloseReason reason))
   <$> toDomainAppointedIntakeRequest
-        (AppointedIntakeRequestDTO rid pid narr req created svcId prio dreq triagedTime did start' dur)
+        (AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did start' dur)
 
 fromDomainIntakeRequest :: IntakeRequest -> IntakeRequestDTO
 fromDomainIntakeRequest (Submitted s) =
-  let (rid, pid, narr, req, created) = submittedFields s
-  in SubmittedDTO rid pid narr req created
+  let (rid, pid, narr, created) = submittedFields s
+  in SubmittedDTO rid pid narr created
 fromDomainIntakeRequest (Rejected s rejectedTime reason) =
-  let (rid, pid, narr, req, created) = submittedFields s
-  in RejectedDTO rid pid narr req created rejectedTime reason
+  let (rid, pid, narr, created) = submittedFields s
+  in RejectedDTO rid pid narr created rejectedTime reason
 fromDomainIntakeRequest (Accepted t) =
-  let (rid, pid, narr, req, created, svcId, prio, dreq, triagedTime) = triagedFields t
-  in AcceptedDTO rid pid narr req created svcId prio dreq triagedTime
+  let (rid, pid, narr, created, svcId, prio, dreq, triagedTime) = triagedFields t
+  in AcceptedDTO rid pid narr created svcId prio dreq triagedTime
 fromDomainIntakeRequest (Appointed a) =
-  let AppointedIntakeRequestDTO rid pid narr req created svcId prio dreq triagedTime did start' dur =
+  let AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did start' dur =
         fromDomainAppointedIntakeRequest a
-  in AppointedDTO rid pid narr req created svcId prio dreq triagedTime did start' dur
+  in AppointedDTO rid pid narr created svcId prio dreq triagedTime did start' dur
 fromDomainIntakeRequest (Withdrawn (WithdrawnFromSubmitted s withdrawnTime note)) =
-  let (rid, pid, narr, req, created) = submittedFields s
-  in WithdrawnFromSubmittedDTO rid pid narr req created withdrawnTime note
+  let (rid, pid, narr, created) = submittedFields s
+  in WithdrawnFromSubmittedDTO rid pid narr created withdrawnTime note
 fromDomainIntakeRequest (Withdrawn (WithdrawnFromAccepted t withdrawnTime note)) =
-  let (rid, pid, narr, req, created, svcId, prio, dreq, triagedTime) = triagedFields t
-  in WithdrawnFromAcceptedDTO rid pid narr req created svcId prio dreq triagedTime withdrawnTime note
+  let (rid, pid, narr, created, svcId, prio, dreq, triagedTime) = triagedFields t
+  in WithdrawnFromAcceptedDTO rid pid narr created svcId prio dreq triagedTime withdrawnTime note
 fromDomainIntakeRequest (Stale t staleTime) =
-  let (rid, pid, narr, req, created, svcId, prio, dreq, triagedTime) = triagedFields t
-  in StaleDTO rid pid narr req created svcId prio dreq triagedTime staleTime
+  let (rid, pid, narr, created, svcId, prio, dreq, triagedTime) = triagedFields t
+  in StaleDTO rid pid narr created svcId prio dreq triagedTime staleTime
 fromDomainIntakeRequest (Closed a reason) =
-  let AppointedIntakeRequestDTO rid pid narr req created svcId prio dreq triagedTime did start' dur =
+  let AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did start' dur =
         fromDomainAppointedIntakeRequest a
-  in ClosedDTO rid pid narr req created svcId prio dreq triagedTime did start' dur
+  in ClosedDTO rid pid narr created svcId prio dreq triagedTime did start' dur
        (fromDomainCloseReason reason)
 
 -- ═══════════════════════════════════════════════════════════════════════
@@ -1564,9 +1537,8 @@ fromDomainIntakeRequest (Closed a reason) =
 -- ═══════════════════════════════════════════════════════════════════════
 
 data SubmitIntakeRequestRequest = SubmitIntakeRequestRequest
-  { patientId         :: UUID
-  , narrative         :: Text
-  , requestedDoctor   :: DoctorRequirementDTO
+  { patientId :: UUID
+  , narrative :: Text
   }
   deriving (Show, Eq)
 
@@ -1574,23 +1546,21 @@ instance ToJSON SubmitIntakeRequestRequest where
   toJSON dto = object
     [ "patientId" .= UUID.toText dto.patientId
     , "narrative" .= dto.narrative
-    , "requestedDoctor" .= dto.requestedDoctor
     ]
 
 instance FromJSON SubmitIntakeRequestRequest where
   parseJSON = withObject "SubmitIntakeRequestRequest" $ \v -> do
     patientIdText <- v .: "patientId"
     pid           <- parseUUIDField patientIdText
-    SubmitIntakeRequestRequest pid <$> v .: "narrative" <*> v .: "requestedDoctor"
+    SubmitIntakeRequestRequest pid <$> v .: "narrative"
 
 instance ToSchema SubmitIntakeRequestRequest where
   declareNamedSchema _ = do
     uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
     textRef <- declareSchemaRef (Proxy :: Proxy Text)
-    reqRef  <- declareSchemaRef (Proxy :: Proxy DoctorRequirementDTO)
     pure $ objectSchema "SubmitIntakeRequestRequest"
-      [("patientId", uuidRef), ("narrative", textRef), ("requestedDoctor", reqRef)]
-      ["patientId", "narrative", "requestedDoctor"]
+      [("patientId", uuidRef), ("narrative", textRef)]
+      ["patientId", "narrative"]
 
 data AcceptIntakeRequestRequest = AcceptIntakeRequestRequest
   { healthcareServiceId :: UUID
@@ -1718,7 +1688,6 @@ instance ToJSON CalendarEntryDTO where
     , "id" .= UUID.toText appt.id
     , "patientId" .= UUID.toText appt.patientId
     , "narrative" .= appt.narrative
-    , "requestedDoctor" .= appt.requestedDoctor
     , "createdAt" .= appt.createdAt
     , "healthcareServiceId" .= UUID.toText appt.healthcareServiceId
     , "priority" .= appt.priority
@@ -1757,7 +1726,7 @@ instance ToSchema CalendarEntryDTO where
       [ ("id", uuidRef), ("doctorId", uuidRef), ("healthcareServiceId", uuidRef)
       , ("start", utcRef), ("duration", durationRef)
       , ("patientId", uuidRef), ("narrative", textRef)
-      , ("requestedDoctor", reqRef), ("createdAt", utcRef)
+      , ("createdAt", utcRef)
       , ("priority", prioRef), ("doctorRequirement", reqRef), ("triagedAt", utcRef)
       ]
       ["id", "doctorId", "healthcareServiceId", "start", "duration"]

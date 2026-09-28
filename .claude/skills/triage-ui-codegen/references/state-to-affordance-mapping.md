@@ -6,7 +6,7 @@ Derived from `Domain.hs`'s transitions and the routes in `Api.hs`. If a transiti
 
 | State | Valid actions | `Domain.hs` transition | Route | Notes |
 |---|---|---|---|---|
-| `Submitted` | Accept (triage) | `acceptIntakeRequest` | `POST /intake-requests/:id/accept` | Triage assigns the healthcare service, the priority and the doctor requirement (pre-filled from `requestedDoctor`); the UI collects all three. |
+| `Submitted` | Accept (triage) | `acceptIntakeRequest` | `POST /intake-requests/:id/accept` | Triage assigns the healthcare service, the priority and the doctor requirement (default any doctor; the patient's preference, if any, is in the narrative); the UI collects all three. |
 | | Reject | `Rejected` (direct construction) | `POST /intake-requests/:id/reject` | Requires a reason. |
 | | Withdraw | `WithdrawnFromSubmitted` | **no route yet** | Defined in `Domain.hs`, not yet built. Don't offer it until a route exists. |
 | `Accepted` | Match to a slot | `matchIntakeRequestToSlot` | `POST /intake-requests/:id/match` with `{slotId}` | Send only the slot's id; the server matches against the stored slot. Offer only slots the request can match (service, doctor requirement, deadline) — the server rejects the rest as `requestIneligible`. |

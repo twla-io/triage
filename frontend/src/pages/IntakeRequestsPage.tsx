@@ -53,33 +53,21 @@ function outcomeMessage(outcome: string): string {
 
 function SubmitForm() {
   const { data: patients } = usePatients()
-  const { data: doctors } = useDoctors()
   const submit = useSubmitIntakeRequest()
 
   const [patientId, setPatientId] = useState<string | null>(null)
   const [narrative, setNarrative] = useState('')
-  const [needsSpecificDoctor, setNeedsSpecificDoctor] = useState(false)
-  const [specificDoctorId, setSpecificDoctorId] = useState<string | null>(null)
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault()
     if (!patientId || !narrative.trim()) return
-    if (needsSpecificDoctor && !specificDoctorId) return
 
     submit.mutate(
-      {
-        patientId,
-        narrative: narrative.trim(),
-        requestedDoctor: needsSpecificDoctor
-          ? { type: 'specificDoctor', doctorId: specificDoctorId! }
-          : { type: 'anyDoctor' },
-      },
+      { patientId, narrative: narrative.trim() },
       {
         onSuccess: () => {
           setNarrative('')
           setPatientId(null)
-          setNeedsSpecificDoctor(false)
-          setSpecificDoctorId(null)
         },
       },
     )
@@ -98,31 +86,11 @@ function SubmitForm() {
         />
         <Textarea
           label="Narrative"
-          placeholder="What is the patient asking for?"
+          placeholder="What is the patient asking for? Mention a preferred doctor here, if any."
           value={narrative}
           onChange={(event) => setNarrative(event.currentTarget.value)}
           required
         />
-        <Select
-          label="Requested doctor"
-          data={[
-            { value: 'any', label: 'Any doctor' },
-            { value: 'specific', label: 'Specific doctor' },
-          ]}
-          value={needsSpecificDoctor ? 'specific' : 'any'}
-          onChange={(value) => setNeedsSpecificDoctor(value === 'specific')}
-          allowDeselect={false}
-        />
-        {needsSpecificDoctor && (
-          <Select
-            label="Doctor"
-            placeholder="Choose a doctor"
-            data={(doctors ?? []).map((d) => ({ value: d.id, label: d.name }))}
-            value={specificDoctorId}
-            onChange={setSpecificDoctorId}
-            required
-          />
-        )}
         <Group>
           <Button type="submit" loading={submit.isPending}>
             Submit request
@@ -260,12 +228,9 @@ function AcceptForm({ request }: { request: IntakeRequestDTO }) {
   const accept = useAcceptIntakeRequest()
   const [healthcareServiceId, setHealthcareServiceId] = useState<string | null>(null)
   const [priority, setPriority] = useState<IntakeRequestPriorityPayload | null>(null)
-  // Triage decides the doctor requirement matching will use; it starts as
-  // whatever the request asked for.
-  const requested = request.requestedDoctor
-  const [requiredDoctorId, setRequiredDoctorId] = useState<string | null>(
-    requested?.type === 'specificDoctor' ? (requested.doctorId ?? null) : null,
-  )
+  // Triage decides the doctor requirement matching will use (any doctor
+  // unless set); a patient's preference, if any, is in the narrative.
+  const [requiredDoctorId, setRequiredDoctorId] = useState<string | null>(null)
   const doctorRequirement: DoctorRequirementDTO = requiredDoctorId
     ? { type: 'specificDoctor', doctorId: requiredDoctorId }
     : { type: 'anyDoctor' }
@@ -367,7 +332,7 @@ function SubmittedSection() {
             <Stack gap={2}>
               <Text fw={600}>{request.narrative}</Text>
               <Text size="sm" c="dimmed">
-                {request.requestedDoctor?.type === 'specificDoctor' ? 'Specific doctor requested' : 'Any doctor'} · submitted{' '}
+                Submitted{' '}
                 {dayjs(request.createdAt).format('MMM D, h:mm A')}
               </Text>
             </Stack>

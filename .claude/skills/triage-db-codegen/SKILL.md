@@ -66,7 +66,7 @@ Where a sum type's cases differ *solely* by the presence or absence of a payload
 
 Two live cases:
 
-- **`DoctorRequirement` (`AnyDoctor | SpecificDoctor DoctorId`)**: stored twice, as two facts — `requested_doctor_id` (what the request asked for, `SubmittedIntakeRequest.requestedDoctor`) and `required_doctor_id` (what triage decided, `TriagedIntakeRequest.doctorRequirement`, the one matching uses). Both `UUID NULL REFERENCES doctors(id)`: `NULL` means `AnyDoctor`, a set value means `SpecificDoctor`. `required_doctor_id` must be `NULL` before triage (`CHECK (healthcare_service_id IS NOT NULL OR required_doctor_id IS NULL)`).
+- **`DoctorRequirement` (`AnyDoctor | SpecificDoctor DoctorId`)**: `required_doctor_id UUID NULL REFERENCES doctors(id)`, the requirement triage decided (`TriagedIntakeRequest.doctorRequirement`). `NULL` means `AnyDoctor`; a set value means `SpecificDoctor`. It must be `NULL` before triage (`CHECK (healthcare_service_id IS NOT NULL OR required_doctor_id IS NULL)`).
 - **`RoutineDue` (`RoutineAnytime | RoutineNotBefore UTCTime | RoutineNotAfter UTCTime | RoutineWithin UTCTime UTCTime`)**: two nullable columns, `due_not_before` / `due_not_after`, give exactly 2² = 4 nullability combinations — a genuine bijection:
 
   | `due_not_before` | `due_not_after` | case |

@@ -56,7 +56,6 @@ data SubmittedIntakeRequest = SubmittedIntakeRequest
   { id                :: IntakeRequestId
   , patientId         :: PatientId
   , narrative         :: Text
-  , requestedDoctor   :: DoctorRequirement   -- what the request asked for
   , createdAt         :: UTCTime
   }
 
@@ -272,8 +271,8 @@ matches slot TriagedIntakeRequest { healthcareServiceId, priority, doctorRequire
 
 A slot and a triaged request `matches` when the slot's service matches the
 request's, the slot's doctor satisfies the `DoctorRequirement` triage decided
-(`AnyDoctor` or a specific one — not the `requestedDoctor` the request asked
-for), and the slot's start time satisfies the
+(`AnyDoctor` or a specific one; a patient's own preference lives in the
+narrative), and the slot's start time satisfies the
 request's priority-carried deadline (or window, for `Routine`).
 
 ```haskell

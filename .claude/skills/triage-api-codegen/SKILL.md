@@ -79,7 +79,6 @@ Fields shared across states/cases use **identical JSON keys everywhere they appe
   "id": "...",
   "patientId": "...",
   "narrative": "...",
-  "requestedDoctor": {...},
   "createdAt": "...",
   "healthcareServiceId": "...",
   "priority": { "type": "routine", "due": { "type": "routineWithin", "from": "...", "to": "..." } },

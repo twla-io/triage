@@ -91,7 +91,7 @@ genSubmittedIntakeRequest = do
   created  <- genMoment
   pure SubmittedIntakeRequest
     { id = newReqId, patientId = pid, narrative = "needs care"
-    , requestedDoctor = AnyDoctor, createdAt = created }
+    , createdAt = created }
 
 genPriority :: Gen IntakeRequestPriority
 genPriority = do
@@ -282,39 +282,39 @@ instance Arbitrary DoctorRequirementDTO where
 
 instance Arbitrary AppointedIntakeRequestDTO where
   arbitrary = AppointedIntakeRequestDTO
-    <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
+    <$> genUUID <*> genUUID <*> genText <*> genMoment
     <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment <*> genUUID <*> genMoment <*> arbitrary
 
 instance Arbitrary IntakeRequestDTO where
   arbitrary = oneof
     [ SubmittedDTO
-        <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
+        <$> genUUID <*> genUUID <*> genText <*> genMoment
     , RejectedDTO
-        <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
+        <$> genUUID <*> genUUID <*> genText <*> genMoment
         <*> genMoment <*> genText
     , AcceptedDTO
-        <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
+        <$> genUUID <*> genUUID <*> genText <*> genMoment
         <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment
     , AppointedDTO
-        <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
+        <$> genUUID <*> genUUID <*> genText <*> genMoment
         <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment <*> genUUID <*> genMoment <*> arbitrary
     , WithdrawnFromSubmittedDTO
-        <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
+        <$> genUUID <*> genUUID <*> genText <*> genMoment
         <*> genMoment <*> genMaybeText
     , WithdrawnFromAcceptedDTO
-        <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
+        <$> genUUID <*> genUUID <*> genText <*> genMoment
         <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment <*> genMoment <*> genMaybeText
     , StaleDTO
-        <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
+        <$> genUUID <*> genUUID <*> genText <*> genMoment
         <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment <*> genMoment
     , ClosedDTO
-        <$> genUUID <*> genUUID <*> genText <*> arbitrary <*> genMoment
+        <$> genUUID <*> genUUID <*> genText <*> genMoment
         <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment <*> genUUID <*> genMoment <*> arbitrary
         <*> arbitrary
     ]
 
 instance Arbitrary SubmitIntakeRequestRequest where
-  arbitrary = SubmitIntakeRequestRequest <$> genUUID <*> genText <*> arbitrary
+  arbitrary = SubmitIntakeRequestRequest <$> genUUID <*> genText
 
 instance Arbitrary AcceptIntakeRequestRequest where
   arbitrary = AcceptIntakeRequestRequest <$> genUUID <*> arbitrary <*> arbitrary
@@ -403,30 +403,6 @@ main = hspec $ do
       let req = acceptIntakeRequest baseRequest sid (Routine RoutineAnytime) (SpecificDoctor doc1) now
       pure $  matches slotMatch req
           .&&. not (matches slotNoMatch req)
-
-    -- The requested doctor is only what the request asked for; matching
-    -- uses what triage decided. An Emergency that asked for doc1, triaged
-    -- to AnyDoctor, takes doc2's slot inside its deadline.
-    prop "matching ignores the requested doctor" $ do
-      sid         <- arbitrary
-      doc1        <- arbitrary
-      doc2        <- arbitrary `suchThat` (/= doc1)
-      slot        <- genAvailableSlotFor sid doc2
-      baseRequest <- genSubmittedIntakeRequest
-      now         <- genMoment
-      -- Full record construction, not a { field = ... } update: several
-      -- Transport DTOs imported here share these field names, which makes
-      -- the update form ambiguous under DuplicateRecordFields.
-      let asked = SubmittedIntakeRequest
-            { id              = baseRequest.id
-            , patientId       = baseRequest.patientId
-            , narrative       = baseRequest.narrative
-            , requestedDoctor = SpecificDoctor doc1
-            , createdAt       = baseRequest.createdAt
-            }
-          deadline = EmergencyDue (addUTCTime 1 slot.start)
-          req      = acceptIntakeRequest asked sid (Emergency deadline) AnyDoctor now
-      pure (matches slot req)
 
     prop "Emergency requires slotStart <= deadline" $ do
       sid         <- arbitrary

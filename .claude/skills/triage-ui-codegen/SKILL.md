@@ -35,9 +35,9 @@ Present this as an explicit choice (e.g. a select: "Anytime / Not before / Not a
 
 `IntakeRequestPriority`'s tiers use a consistent color mapping: **red = Emergency, amber = Urgent, green = Routine** (`frontend/src/components/PriorityBadge.tsx`). Any new UI surfacing priority should reuse that component or mapping rather than inventing a new one.
 
-### Requested doctor vs. doctor requirement
+### The doctor requirement is set at triage
 
-Two different facts, shown as such. The submit form collects `requestedDoctor` — what the patient asked for. The triage (accept) form sets `doctorRequirement` — what matching will enforce — pre-filled from the request, for any priority. When Emergency or Urgent keeps a specific doctor, warn that the request will wait for that doctor even if others are free before its deadline: it's allowed, but it should be a deliberate choice.
+The submit form has no doctor control: a patient's preference goes in the narrative. The triage (accept) form sets `doctorRequirement` — what matching will enforce — for any priority, defaulting to any doctor. When Emergency or Urgent gets a specific doctor, warn that the request will wait for that doctor even if others are free before its deadline: it's allowed, but it should be a deliberate choice.
 
 ## Strategy choices
 

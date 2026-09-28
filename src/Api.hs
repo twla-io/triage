@@ -817,8 +817,7 @@ submitIntakeRequestHandler req = do
   pool      <- ask
   createdAt <- liftIO getCurrentTime
   submitted <- liftIO
-    (Service.submitIntakeRequest pool (PatientId req.patientId) req.narrative
-      (toDomainDoctorRequirement req.requestedDoctor) createdAt)
+    (Service.submitIntakeRequest pool (PatientId req.patientId) req.narrative createdAt)
   pure (fromDomainIntakeRequest (Submitted submitted))
 
 fetchIntakeWaitlistHandler :: AppM [IntakeRequestDTO]
