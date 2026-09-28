@@ -662,7 +662,7 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 --
 -- fetchIntakeWaitlistHandler — verified against Service.hs directly:
 -- fetchIntakeWaitlist :: ConnectionPool -> IO (Either DecodeError
--- [TriagedIntakeRequest]), NOT the six-case IntakeRequest. No standalone
+-- [TriagedIntakeRequest]), NOT the seven-case IntakeRequest. No standalone
 -- TriagedIntakeRequest DTO/conversion exists in Transport.hs (same gap
 -- already worked around twice — acceptSubmittedIntakeRequestHandler/
 -- reclaimAppointedIntakeRequestHandler above), so each waitlist element
@@ -700,7 +700,7 @@ slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
 -- Returns [IntakeRequest] (via Service.hs, ultimately
 -- Persistence.toDomainIntakeRequest), not a new speculative
 -- "ClosedIntakeRequest" Domain type — Closed is just one case of the
--- six-case IntakeRequest, and IntakeRequestDTO/fromDomainIntakeRequest
+-- seven-case IntakeRequest, and IntakeRequestDTO/fromDomainIntakeRequest
 -- already exist as its full wire representation, so this reuses them
 -- directly with no wrapping workaround needed (same reason
 -- fetchAppointedIntakeRequestsHandler above needs none).

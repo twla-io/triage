@@ -11,8 +11,8 @@
 -- JSON wire-format boundary for the triage domain model, generated from
 -- src/Domain.hs per .claude/skills/triage-api-codegen/SKILL.md. DTOs are
 -- twin types, not ToJSON/FromJSON instances on Domain.hs types directly —
--- Domain.hs has no serialization awareness of any kind (see its own
--- Layering section), so every wire shape lives here instead. Same pattern
+-- Domain.hs has no serialization awareness of any kind (see CLAUDE.md's
+-- "Modules and dependencies"), so every wire shape lives here instead. Same pattern
 -- as Persistence.hs's Row types and toDomainX/fromDomainX boundary
 -- functions, except JSON-shaped rather than SQL-row-shaped. Re-derive from
 -- Domain.hs on any domain change rather than hand-patching this file out
@@ -174,9 +174,9 @@ import Domain
 -- ═══════════════════════════════════════════════════════════════════════
 -- DECODE ERRORS
 -- Transport-local, not Persistence.DecodeError — Transport and Persistence
--- are peer layers over Domain (see Domain.hs's Layering section), neither
--- stacked on the other, so Transport does not depend on Persistence for
--- this.
+-- are peer layers over Domain (see CLAUDE.md's "Modules and
+-- dependencies"), neither stacked on the other, so Transport does not
+-- depend on Persistence for this.
 -- ═══════════════════════════════════════════════════════════════════════
 
 -- The shared decode-error type for the whole Transport module, not scoped

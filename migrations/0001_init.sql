@@ -36,16 +36,17 @@ CREATE TABLE healthcare_services (
 -- deleted-on-match: AvailableSlot is the only slot type. A row here means
 -- exactly one thing — "available, not yet matched" — nothing else. No
 -- state column, no appointment reference: once matchIntakeRequestToSlot
--- or reassignIntakeRequestSlot matches a row, it is DELETED in the same
+-- matches a row, it is DELETED in the same
 -- transaction that updates the intake_requests row
 -- (atomic-multi-table-write), not flagged or transitioned. There is no
 -- schema-level record of a slot's existence after it's matched — that
 -- fact lives only inside the intake_requests row it became, with no
 -- back-reference.
 --
--- Recreating a vacated time after a reassignIntakeRequestSlot is NOT
--- automatic — that's a separate, explicit call to insert a new row here,
--- by deliberate choice (mirrors Domain.hs's own refusal to decide this).
+-- Recreating a vacated time after a reclaim (reassignment is reclaim, then
+-- match again) is NOT automatic — that's a separate, explicit call to insert
+-- a new row here, by deliberate choice (mirrors Domain.hs's own refusal to
+-- decide this).
 -- ═══════════════════════════════════════════════════════════════════════
 
 CREATE TABLE slots (
@@ -244,9 +245,10 @@ CREATE TRIGGER slots_sync_doctor_calendar
 -- miss a future appointed-relevant column addition the way an OF-list
 -- would). Three cases: entering 'appointed' (from INSERT or from any
 -- other state) inserts/replaces the row; the appointed interval itself
--- changing (reassignment: start_time/duration_minutes/
--- appointed_doctor_id change while state stays 'appointed') replaces
--- the row; leaving 'appointed' deletes it.
+-- changing while state stays 'appointed' (start_time/duration_minutes/
+-- appointed_doctor_id — no current operation does this, since reassignment
+-- is reclaim then match, but it's handled) replaces the row; leaving
+-- 'appointed' deletes it.
 CREATE OR REPLACE FUNCTION sync_intake_request_to_doctor_calendar() RETURNS TRIGGER AS $$
 BEGIN
   IF NEW.state = 'appointed' AND (

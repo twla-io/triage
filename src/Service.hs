@@ -18,12 +18,12 @@
 -- separate reason the wrapper needs *some* different name regardless.
 --
 -- Checked against the one remaining existing wrapper:
---   * checkWaitlist / matchWaitlistToSlot: Domain.checkWaitlist takes a
---     bare `[TriagedHealthcareRequest]` — it has no way to check, and
+--   * checkIntakeWaitlist / matchWaitlistToSlot: Domain.checkIntakeWaitlist
+--     takes a bare `[TriagedIntakeRequest]` — it has no way to check, and
 --     doesn't check, that the list it's given is actually "the waitlist"
---     (no-delete-on-consumption's derived anti-join). matchWaitlistToSlot
---     is what performs that real fetch (fetchWaitlist) before scanning it,
---     so it's the one entitled to the name "waitlist" in its own name.
+--     (state = 'accepted'). matchWaitlistToSlot is what performs that real
+--     fetch (Persistence.fetchIntakeWaitlist) before scanning it, so it's
+--     the one entitled to the name "waitlist" in its own name.
 -- Needed no renaming under this test; already named correctly.
 --
 -- A second worked example used to live here — reassignSlot /
@@ -185,7 +185,7 @@ import Persistence
 -- ERRORS
 -- Reserved for cases indicating a bug, misuse, or genuine infrastructure
 -- failure — never for a legitimate concurrent outcome (that's
--- MatchOutcome/ReassignmentOutcome below, not ServiceError).
+-- MatchOutcome/SlotCreationOutcome/Fresh below, not ServiceError).
 -- ═══════════════════════════════════════════════════════════════════════
 
 data ServiceError
@@ -366,13 +366,12 @@ createHealthcareService pool name duration = withResource pool $ \conn -> do
 
 -- Creates a new Submitted request. SubmittedIntakeRequest is an open
 -- record with no invariant beyond its field types (id-types-plain,
--- minimal-types-minimal-tables) — nothing here can fail beyond an infra
--- error, which nothing else in this module represents either, so this
--- returns a bare IO, no Either. Also the entry point for a doctor
+-- minimal-types-minimal-tables); the one thing that can fail is an unknown
+-- patient, reported as PatientNotFound. Also the entry point for a doctor
 -- scheduling a follow-up: same flow, doctor as both author and triager —
 -- see docs/decisions.md's "Doctor-originated requests reuse the existing
 -- flow unchanged". That case needs no special handling here; the caller
--- just calls this and then triageSubmittedRequest back-to-back.
+-- just calls this and then acceptSubmittedIntakeRequest back-to-back.
 submitIntakeRequest
   :: ConnectionPool
   -> PatientId
@@ -503,9 +502,7 @@ matchWaitlistToSlot pool slot = withResource pool $ \conn -> do
 -- RequestIneligible (matchIntakeRequestToSlot returns Nothing) is a
 -- distinct MatchOutcome constructor from NoEligibleRequest: there was no
 -- scan here to come up empty, the caller picked one specific pair and it
--- doesn't structurally fit — same category as reassignAppointmentSlot's
--- Ineligible, just named differently since Ineligible is already a
--- ReassignmentOutcome constructor in this module.
+-- doesn't structurally fit; try a different slot or request.
 --
 -- The write path — persistMatch — is shared verbatim with
 -- matchWaitlistToSlot, not rebuilt: both entry points write through the

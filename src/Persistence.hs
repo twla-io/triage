@@ -130,8 +130,8 @@ import Domain
 -- CONNECTION POOLING
 -- Every function in this module takes a plain Connection, never
 -- ConnectionPool, with no exceptions. ConnectionPool exists only for
--- whatever calls into this module from outside (Service.hs, not yet
--- written) to check out a Connection via withResource — including holding
+-- whatever calls into this module from outside (Service.hs) to check out
+-- a Connection via withResource — including holding
 -- one connection across a whole withTransaction block spanning multiple
 -- calls into this module.
 -- ═══════════════════════════════════════════════════════════════════════
