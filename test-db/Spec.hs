@@ -11,9 +11,9 @@
 -- TRIAGE_TEST_PG holds extra libpq connection keywords (e.g.
 -- "host=localhost port=5433 user=me"); by default the local server is used.
 --
--- Races are simulated deterministically: a write is given a row version
--- that is already stale, instead of running two threads and hoping they
--- collide.
+-- Races are simulated deterministically: the row is moved on by another
+-- write first, then the losing write runs, instead of running two threads
+-- and hoping they collide.
 
 module Main (main) where
 
@@ -25,7 +25,7 @@ import Data.Pool                  (defaultPoolConfig, destroyAllResources, newPo
 import Data.String                (fromString)
 import Data.Time                  (UTCTime (..), addUTCTime, fromGregorian)
 import Data.UUID.V4               (nextRandom)
-import Database.PostgreSQL.Simple (Connection, Only (..), SqlError (..), close, connectPostgreSQL,
+import Database.PostgreSQL.Simple (Connection, SqlError (..), close, connectPostgreSQL,
                                    execute, execute_)
 import System.Environment         (lookupEnv)
 import Test.Hspec
@@ -35,8 +35,7 @@ import qualified Persistence as P
 import qualified Service    as S
 
 import Domain
-import Persistence (ClaimOutcome (..), ConnectionPool, MatchPersistOutcome (..), RowVersion (..),
-                    SlotOverlap (..), Versioned (..))
+import Persistence (ClaimOutcome (..), ConnectionPool, MatchPersistOutcome (..), SlotOverlap (..))
 import Service     (Fresh (..), MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..))
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -119,25 +118,15 @@ appoint pool fx at = do
   Right (Matched a) <- S.matchAcceptedIntakeRequestToSlot pool t.submitted.id slot.id
   pure (t, slot, a)
 
-stored :: ConnectionPool -> IntakeRequestId -> IO (Versioned IntakeRequest)
+stored :: ConnectionPool -> IntakeRequestId -> IO IntakeRequest
 stored pool rid = withResource pool $ \c -> do
-  Right (Just v) <- P.fetchIntakeRequest c rid
-  pure v
-
-versionOf :: ConnectionPool -> IntakeRequestId -> IO RowVersion
-versionOf pool rid = (.version) <$> stored pool rid
-
--- An update that changes nothing but still fires the version trigger —
--- stands in for "someone else wrote this row in the meantime".
-touch :: ConnectionPool -> IntakeRequestId -> IO ()
-touch pool (IntakeRequestId rid) = withResource pool $ \c -> do
-  _ <- execute c "UPDATE intake_requests SET narrative = narrative WHERE id = ?" (Only rid)
-  pure ()
+  Right (Just r) <- P.fetchIntakeRequest c rid
+  pure r
 
 stateOf :: ConnectionPool -> IntakeRequestId -> IO String
 stateOf pool rid = do
-  v <- stored pool rid
-  pure $ case v.value of
+  r <- stored pool rid
+  pure $ case r of
     Submitted {} -> "submitted"
     Rejected {}  -> "rejected"
     Accepted {}  -> "accepted"
@@ -156,27 +145,17 @@ spec pool = do
     it "a submitted request reads back unchanged" $ do
       fx <- fixture pool
       s  <- submit pool fx
-      (.value) <$> stored pool s.id `shouldReturn` Submitted s
+      stored pool s.id `shouldReturn` Submitted s
 
     it "an accepted request keeps its priority and doctor requirement" $ do
       fx <- fixture pool
       t  <- accept pool fx (SpecificDoctor fx.doctor.id)
-      (.value) <$> stored pool t.submitted.id `shouldReturn` Accepted t
+      stored pool t.submitted.id `shouldReturn` Accepted t
 
     it "an appointed request reads back unchanged" $ do
       fx        <- fixture pool
       (_, _, a) <- appoint pool fx t0
-      (.value) <$> stored pool a.triaged.submitted.id `shouldReturn` Appointed a
-
-  describe "version trigger" $
-    it "bumps the version by one on every update" $ do
-      fx <- fixture pool
-      s  <- submit pool fx
-      versionOf pool s.id `shouldReturn` RowVersion 0
-      touch pool s.id
-      versionOf pool s.id `shouldReturn` RowVersion 1
-      _ <- S.acceptSubmittedIntakeRequest pool s.id fx.service.id (Routine RoutineAnytime) AnyDoctor t0
-      versionOf pool s.id `shouldReturn` RowVersion 2
+      stored pool a.triaged.submitted.id `shouldReturn` Appointed a
 
   describe "accept / reject" $ do
     it "rejecting an already accepted request is refused, and it stays accepted" $ do
@@ -186,20 +165,19 @@ spec pool = do
         `shouldReturn` Left (RequestNotSubmittedAnymore t.submitted.id)
       stateOf pool t.submitted.id `shouldReturn` "accepted"
 
-    it "an accept with a stale version writes nothing" $ do
-      fx    <- fixture pool
-      s     <- submit pool fx
-      stale <- versionOf pool s.id
-      touch pool s.id
+    it "an accept after a concurrent reject writes nothing" $ do
+      fx <- fixture pool
+      s  <- submit pool fx
+      -- Meanwhile: rejected.
+      Right (Applied _) <- S.rejectSubmittedIntakeRequest pool s.id t0 "no"
       let t = acceptIntakeRequest s fx.service.id (Routine RoutineAnytime) AnyDoctor t0
-      withResource pool (\c -> P.persistTriagedIntakeRequest c stale t) `shouldReturn` AlreadyClaimed
-      stateOf pool s.id `shouldReturn` "submitted"
+      withResource pool (\c -> P.persistTriagedIntakeRequest c t) `shouldReturn` AlreadyClaimed
+      stateOf pool s.id `shouldReturn` "rejected"
 
-    it "a reject with the current version but the wrong state writes nothing" $ do
-      fx      <- fixture pool
-      t       <- accept pool fx AnyDoctor
-      current <- versionOf pool t.submitted.id
-      withResource pool (\c -> P.persistRejectedIntakeRequest c current t.submitted t0 "no")
+    it "a reject of an already accepted request writes nothing" $ do
+      fx <- fixture pool
+      t  <- accept pool fx AnyDoctor
+      withResource pool (\c -> P.persistRejectedIntakeRequest c t.submitted t0 "no")
         `shouldReturn` AlreadyClaimed
       stateOf pool t.submitted.id `shouldReturn` "accepted"
 
@@ -240,16 +218,16 @@ spec pool = do
       stateOf pool other.submitted.id `shouldReturn` "accepted"
 
     it "rolls the slot delete back when the request claim loses" $ do
-      fx    <- fixture pool
-      t     <- accept pool fx AnyDoctor
-      slot  <- slotAt pool fx t0
-      stale <- versionOf pool t.submitted.id
-      touch pool t.submitted.id
+      fx   <- fixture pool
+      t    <- accept pool fx AnyDoctor
+      slot <- slotAt pool fx t0
+      -- Meanwhile: marked stale.
+      Right (Applied _) <- S.markIntakeRequestStale pool t.submitted.id t0
       Just appointed <- pure (matchIntakeRequestToSlot slot t)
-      withResource pool (\c -> P.persistMatchedIntakeRequest c slot.id stale appointed)
+      withResource pool (\c -> P.persistMatchedIntakeRequest c slot.id appointed)
         `shouldReturn` RequestAlreadyMatched
       withResource pool (\c -> P.fetchSlot c slot.id) `shouldReturn` Right (Just slot)
-      stateOf pool t.submitted.id `shouldReturn` "accepted"
+      stateOf pool t.submitted.id `shouldReturn` "stale"
 
   describe "close / stale" $ do
     it "cancelling an appointment frees its time" $ do

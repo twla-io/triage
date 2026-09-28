@@ -164,7 +164,9 @@ exists) to `claimAcceptedIntakeRequest`'s `UPDATE ... WHERE state =
 'accepted'`, guarding the discriminator column itself as the version check
 (no separate `row_version` column needed — nothing in this model changes
 state without it being a real transition worth naming). *[Superseded
-2026-09-27: a row version was added — see "Row version for freshness" below.]* But if the slot
+2026-09-27: a row version was added — see "Row version for freshness" below.
+Restored 2026-09-28: the version was removed once reclaim was — see "Row
+version removed; the state guard also gives freshness" below.]* But if the slot
 delete wins and the request-side UPDATE then loses its race, the slot delete
 must still be rolled back — the same phantom-slot-loss risk the original
 `atomic-multi-table-write` entry existed to prevent, unchanged by the merge.
@@ -700,6 +702,8 @@ hold for stored data.
 
 ## Row version for freshness; state guard kept for legality (2026-09-27)
 
+**Superseded (2026-09-28):** the version was removed after reclaim was. See "Row version removed; the state guard also gives freshness" below.
+
 **Found:** reclaim made Accepted ⇄ Appointed a cycle. Between a close or reclaim's fetch and its write, the request could be reclaimed and re-matched to a different slot; the row is back in `'appointed'`, `WHERE state = 'appointed'` passes, and the write acts on an appointment its caller never saw. The earlier assumption that "state itself is the version discriminator" no longer held.
 
 **Decided:** separate the two properties. *Legality* (A → B is allowed) comes from `Domain.hs` and stays enforced by the state guard (`updates-follow-domain-transitions`). *Freshness* (the row is the one the caller decided from) gets a row version: `intake_requests.version`, bumped by a `BEFORE UPDATE` trigger on every update; every read-decide-write checks `AND version = ?` (`row-version-for-freshness`). Persistence returns `Versioned a` from the fetches decisions are made from; every transition write takes the `RowVersion`. `Domain.hs` is unchanged.
@@ -709,6 +713,8 @@ hold for stored data.
 **Not decided:** carrying the version to clients so an action taken on a stale screen is caught. Out of scope for now. The version column went into `migrations/0001_init.sql` directly, not a new migration, since no database has had the schema applied beyond local development.
 
 ## A lost version race is reported as "changed since read" — one outcome, no retry (2026-09-27)
+
+**Still in force, mechanism changed (2026-09-28):** the outcome is unchanged, but a lost race is now detected by the state guard alone, since the row version was removed. See "Row version removed; the state guard also gives freshness" below.
 
 **Found:** with the row version in place, a zero-row write can no longer mean "wrong state" (Service confirmed the state at fetch time, and an unchanged version means an unchanged row) — it always means the request changed since it was read. But each operation still reported it with a guess at *how*: close and reclaim said `RequestAlreadyClosed`, mark-stale `RequestNotAccepted`, match `RequestAlreadyClaimed` ("already scheduled, drop it"). Each is wrong when the request was reclaimed and re-matched, or matched and reclaimed back to the waitlist.
 
@@ -763,6 +769,16 @@ hold for stored data.
 **Cost accepted:** rescheduling takes close + submit + accept + match instead of reclaim + match, and the request gets a new id.
 
 **Consequence:** with no cycle, a row enters each state at most once and no update keeps a row in the same state, so the state guard also establishes freshness. The row version ("Row version for freshness; state guard kept for legality" above) is no longer needed; removing it is a separate decision. If an update that keeps the state (an in-place edit) is ever added, the need for a version returns.
+
+## Row version removed; the state guard also gives freshness (2026-09-28)
+
+**Decided:** `intake_requests.version`, its trigger, and `RowVersion`/`Versioned` are removed. Every transition write is guarded on its source state only; `Fresh`/`ChangedSinceRead`/`RequestChangedSinceRead` are unchanged — a zero-row write still means the request changed since it was read.
+
+**Why:** the version existed because reclaim made Accepted ⇄ Appointed a cycle (see "Row version for freshness" above). With reclaim gone, two things hold: no transition in `Domain.hs` leads back to an earlier state, and every `UPDATE` of `intake_requests` changes the state. So a row is in each state at most once and its data is fixed on entry; if a write finds the state its caller read, the row is the one its caller read.
+
+**Condition to preserve:** both of those. A transition back to an earlier state, or an update that keeps a row in the same state (an in-place edit), breaks the argument — then a row version is the known answer again. `triage-db-codegen`'s `state-guard-is-freshness` rule says to stop and ask in that case.
+
+**Not decided here:** whether the outcomes should become more specific now that the state a request moved to is knowable (e.g. one "moved on" outcome carrying the current request, and a `ServiceError` only for states that can't follow the expected one). A separate decision.
 
 ---
 

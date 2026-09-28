@@ -130,11 +130,6 @@ CREATE TABLE intake_requests (
   cancelled_at           TIMESTAMPTZ NULL,
   cancellation_note      TEXT NULL,
 
-  -- Row version for freshness: bumped on every UPDATE by
-  -- intake_requests_bump_version below; every read-decide-write checks
-  -- it (row-version-for-freshness in triage-db-codegen).
-  version                SMALLINT NOT NULL DEFAULT 0,
-
   CHECK (
     (state = 'submitted' AND
        rejected_at IS NULL AND healthcare_service_id IS NULL AND
@@ -271,24 +266,3 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER intake_requests_sync_doctor_calendar
   AFTER INSERT OR UPDATE ON intake_requests
   FOR EACH ROW EXECUTE FUNCTION sync_intake_request_to_doctor_calendar();
-
--- ═══════════════════════════════════════════════════════════════════════
--- ROW VERSION
--- Every UPDATE of an intake_requests row bumps its version, whatever the
--- statement itself sets — no write can forget it, and none can set it by
--- hand. Writes that decide from an earlier read check
--- WHERE version = <version read>, so any change since that read, in any
--- form (a cycle like reclaim-then-re-match, or an edit that keeps the
--- state), makes the write match zero rows.
--- ═══════════════════════════════════════════════════════════════════════
-
-CREATE OR REPLACE FUNCTION bump_intake_request_version() RETURNS TRIGGER AS $$
-BEGIN
-  NEW.version := OLD.version + 1;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER intake_requests_bump_version
-  BEFORE UPDATE ON intake_requests
-  FOR EACH ROW EXECUTE FUNCTION bump_intake_request_version();

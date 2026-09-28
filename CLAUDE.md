@@ -110,11 +110,12 @@ or protects against races. Enforcement is split:
   reads, not held in a transaction with the write.
 - **Persistence writes:** every lifecycle transition (accept, reject,
   match, mark-stale, close) uses an `UPDATE` conditioned on the
-  expected current state (legality) and on the row version the caller read
-  (freshness, `intake_requests.version`, bumped by a trigger), with an
-  affected-rows check (`ClaimOutcome`), so a concurrent change surfaces as
-  an error or outcome instead of being overwritten. Matching (delete slot + update request) runs in one
-  transaction with rollback (`persistMatchedIntakeRequest`).
+  expected current state, with an affected-rows check (`ClaimOutcome`), so
+  a concurrent change surfaces as an outcome instead of being overwritten.
+  The state guard gives both legality and freshness because no transition
+  leads back to an earlier state and every update changes the state.
+  Matching (delete slot + update request) runs in one transaction with
+  rollback (`persistMatchedIntakeRequest`).
 - **Database:** a `CHECK` on `intake_requests` enforces each state's column
   shape, plus the tier/deadline and close-reason shapes; durations limited
   to 15/30/60 minutes; foreign keys. `doctor_calendar` (maintained by

@@ -141,7 +141,7 @@ deleteSlot conn (SlotId sid) = do
   pure (if n > 0 then Claimed else AlreadyClaimed)
 ```
 
-## Case 3 — `IntakeRequest`: one table, a `state` discriminator, nullability bijections, and a versioned fetch
+## Case 3 — `IntakeRequest`: one table, a `state` discriminator, nullability bijections, and state-guarded writes
 
 `IntakeRequest`'s seven cases (`Submitted | Rejected | Accepted | Appointed | Withdrawn | Stale | Closed`) live in one `intake_requests` table (`discriminator-column-tables`), one row per `IntakeRequestId` for its whole life (`no-delete-on-consumption`). The row type has one field per column — every stage's columns, nullable where a stage doesn't use them (see `migrations/0001_init.sql` for the per-state `CHECK`s):
 
@@ -225,29 +225,27 @@ toDomainIntakeRequest row = case row.state of
   other -> Left (InvalidState other)
 ```
 
-**The fetch a decision is made from is versioned** (`row-version-for-freshness`). The version isn't part of the row type or of `Domain.hs`; it's selected first and composed with postgresql-simple's `:.`:
-
 ```haskell
-fetchIntakeRequest :: Connection -> IntakeRequestId -> IO (Either DecodeError (Maybe (Versioned IntakeRequest)))
+fetchIntakeRequest :: Connection -> IntakeRequestId -> IO (Either DecodeError (Maybe IntakeRequest))
 fetchIntakeRequest conn (IntakeRequestId rid) = do
   rows <- query conn
-    "SELECT version, id, patient_id, ..., cancellation_note \
+    "SELECT id, patient_id, ..., cancellation_note \
     \FROM intake_requests WHERE id = ?"
     (Only rid)
   pure $ case rows of
-    []                  -> Right Nothing
-    ((Only v :. row) : _) -> Just . Versioned (RowVersion v) <$> toDomainIntakeRequest row
+    []        -> Right Nothing
+    (row : _) -> Just <$> toDomainIntakeRequest row
 ```
 
-**Every transition write is guarded twice**: on the source case `Domain.hs` defines (`updates-follow-domain-transitions`, legality) and on the version the caller read (`row-version-for-freshness`, freshness). Zero rows affected is a lost race, reported as an outcome (`uniqueness-races-are-outcomes`). Accepted → Stale is the plain template; every other transition has the same shape:
+**Every transition write is guarded on the source case** `Domain.hs` defines (`updates-follow-domain-transitions`), which gives legality and freshness alike (`state-guard-is-freshness`). Zero rows affected is a lost race, reported as an outcome (`uniqueness-races-are-outcomes`). Accepted → Stale is the plain template; every other transition has the same shape:
 
 ```haskell
-persistStaleIntakeRequest :: Connection -> RowVersion -> IntakeRequestId -> UTCTime -> IO ClaimOutcome
-persistStaleIntakeRequest conn (RowVersion v) (IntakeRequestId rid) staleAt = do
+persistStaleIntakeRequest :: Connection -> IntakeRequestId -> UTCTime -> IO ClaimOutcome
+persistStaleIntakeRequest conn (IntakeRequestId rid) staleAt = do
   n <- execute conn
     "UPDATE intake_requests SET state = 'stale', stale_at = ? \
-    \WHERE id = ? AND state = 'accepted' AND version = ?"
-    (staleAt, rid, v)
+    \WHERE id = ? AND state = 'accepted'"
+    (staleAt, rid)
   pure (if n > 0 then Claimed else AlreadyClaimed)
 ```
 
@@ -255,17 +253,17 @@ persistStaleIntakeRequest conn (RowVersion v) (IntakeRequestId rid) staleAt = do
 
 Matching deletes the `slots` row and moves the `intake_requests` row from `'accepted'` to `'appointed'`, copying the slot's doctor/start/duration into it (`deleted-on-match`: no FK back to the slot, which no longer exists). Both writes must commit together or not at all (`atomic-multi-table-write`), and each can independently lose a race: another match took the slot, or the request changed since it was read.
 
-The request-side write is guarded like every other transition (source case plus version). It also catches `doctor_calendar`'s `EXCLUDE` violation (23P01) and folds it into the same `AlreadyClaimed`; since the appointment copies the deleted slot's own interval, freed in the same transaction, that case should be unreachable.
+The request-side write is guarded like every other transition (on its source case). It also catches `doctor_calendar`'s `EXCLUDE` violation (23P01) and folds it into the same `AlreadyClaimed`; since the appointment copies the deleted slot's own interval, freed in the same transaction, that case should be unreachable.
 
 ```haskell
-claimAcceptedIntakeRequest :: Connection -> RowVersion -> IntakeRequestId -> AppointedIntakeRequest -> IO ClaimOutcome
-claimAcceptedIntakeRequest conn (RowVersion v) (IntakeRequestId rid) appointed = do
+claimAcceptedIntakeRequest :: Connection -> IntakeRequestId -> AppointedIntakeRequest -> IO ClaimOutcome
+claimAcceptedIntakeRequest conn (IntakeRequestId rid) appointed = do
   let row = fromDomainAppointed appointed
   result <- try $ execute conn
     "UPDATE intake_requests \
     \SET state = 'appointed', appointed_doctor_id = ?, start_time = ?, duration_minutes = ? \
-    \WHERE id = ? AND state = 'accepted' AND version = ?"
-    (row.appointedDoctorId, row.startTime, row.durationMinutes, rid, v)
+    \WHERE id = ? AND state = 'accepted'"
+    (row.appointedDoctorId, row.startTime, row.durationMinutes, rid)
   case result of
     Right n                        -> pure (if n > 0 then Claimed else AlreadyClaimed)
     Left e | sqlState e == "23P01" -> pure AlreadyClaimed
@@ -280,15 +278,15 @@ data MatchPersistOutcome = MatchPersisted | SlotAlreadyGone | RequestAlreadyMatc
 data MatchAbort = SlotGone | RequestGone   -- not exported
 instance Exception MatchAbort
 
-persistMatchedIntakeRequest :: Connection -> SlotId -> RowVersion -> AppointedIntakeRequest -> IO MatchPersistOutcome
-persistMatchedIntakeRequest conn matchedSlotId requestVersion appointed =
+persistMatchedIntakeRequest :: Connection -> SlotId -> AppointedIntakeRequest -> IO MatchPersistOutcome
+persistMatchedIntakeRequest conn matchedSlotId appointed =
   handle recoverAbort $ withTransaction conn $ do
     slotOutcome <- deleteSlot conn matchedSlotId
     case slotOutcome of
       AlreadyClaimed -> throwIO SlotGone
       Claimed -> do
         let reqId = appointed.triaged.submitted.id
-        reqOutcome <- claimAcceptedIntakeRequest conn requestVersion reqId appointed
+        reqOutcome <- claimAcceptedIntakeRequest conn reqId appointed
         case reqOutcome of
           AlreadyClaimed -> throwIO RequestGone
           Claimed        -> pure MatchPersisted
