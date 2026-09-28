@@ -22,7 +22,7 @@ This skill encodes specific decisions already made for `triage`, not a menu of s
 | `id-types-plain` | ID newtypes need no helper functions |
 | `minimal-types-minimal-tables` | Don't add speculative columns beyond what `Domain.hs` has |
 | `sealed-type-replay` | Reconstruct sealed types by replaying through their exported smart constructors — live for `RoutineWithin` and `DoctorCalendar` |
-| `no-delete-on-consumption` | Healthcare requests are never deleted or flagged matched; "waiting" is a derived anti-join |
+| `no-delete-on-consumption` | Intake requests are never deleted or flagged matched; "waiting" is `state = 'accepted'` |
 | `deleted-on-match` | Slots have no post-match existence; a matched slot's row is deleted, not flagged |
 | `sealed-value-decomposition` | Extracting fields from an already-held sealed value needs a read-only `Domain.hs` accessor — replay doesn't apply |
 | `uniqueness-races-are-outcomes` | A write whose success depends on a row's observed shape staying put needs affected-rows detection, never a caught exception |
@@ -42,7 +42,7 @@ Persistence   — Row types matching storage shape, toDomain/fromDomain at the b
 
 ## A note on churn in this file
 
-`Domain.hs` has changed twice already since this skill was first written: once removing the offer/decline waitlist mechanism, and again removing `Slot`/`BookedSlot` as a sum type entirely (`AvailableSlot` is now the only slot type, with no post-match existence at all — see `deleted-on-match`). Rules in this file have been retired, added, and had their live cases disappear as a result (`sealed-type-replay` currently has nothing to replay; `atomic-multi-table-write` no longer means "keep two FKs in sync" the way it once did). This is expected, not a sign of instability — re-read `Domain.hs` fresh every time rather than trusting that a rule's original justification still holds.
+`Domain.hs` has changed twice already since this skill was first written: once removing the offer/decline waitlist mechanism, and again removing `Slot`/`BookedSlot` as a sum type entirely (`AvailableSlot` is now the only slot type, with no post-match existence at all — see `deleted-on-match`). Rules in this file have been retired, added, and had their live cases change as a result (`sealed-type-replay` lost its first live case, `BookedSlot`, and later gained `RoutineWithin` and `DoctorCalendar`; `atomic-multi-table-write` no longer means "keep two FKs in sync" the way it once did). This is expected, not a sign of instability — re-read `Domain.hs` fresh every time rather than trusting that a rule's original justification still holds.
 
 **A rule applies to existing code, not only to new code.** When a rule here is added or changed, or when `Persistence.hs` is regenerated or migrated (e.g. one type folded into another), check every existing function against every rule — don't carry a function over in its old shape. Accept and reject stayed unguarded because the guard rules were introduced after they were written, and the Appointment→IntakeRequest fold then carried them over unchanged.
 
@@ -56,7 +56,9 @@ This single table supersedes what used to be a two-table split, `healthcare_requ
 
 `Slot` is **not** a case of this rule — `AvailableSlot` is the only slot type, so there's nothing to discriminate. See `deleted-on-match`.
 
-Write **one `CHECK` constraint per valid constructor shape**, derived mechanically from the constructors themselves — every combination of which nullable columns are set must correspond to exactly one constructor. See `migrations/0001_init.sql` for the current worked example — that file is the live reference; when generating SQL, derive it fresh from `Domain.hs` and write it to `migrations/` at the repo root, numbered sequentially.
+Write **one `CHECK` constraint per valid constructor shape**, derived mechanically from the constructors themselves — every combination of which nullable columns are set must correspond to exactly one constructor. `migrations/0001_init.sql` is the current instance; the rules here are meant to be enough to derive it. When generating SQL, derive it fresh from `Domain.hs` and write it to `migrations/` at the repo root, numbered sequentially.
+
+Enumeration-like fields are stored as `TEXT` with a `CHECK` listing their values — each constructor's name in lower snake_case: `tier IN ('emergency', 'urgent', 'routine')`, `close_reason IN ('completed', 'cancelled', 'no_show')`, and `closed_by_party IN ('doctor', 'patient')` (`AppointmentParty`'s `ByDoctor`/`ByPatient` without the `By`).
 
 This isn't redundant with `Domain.hs`'s own type-level guarantee — it's a backstop against backdoor writes (manual SQL, bad migrations, anything bypassing the generated Persistence module) that the type system can no longer see once data has left Haskell.
 
@@ -140,7 +142,7 @@ Two live cases:
 
 History: the rule's first live case was `BookedSlot`, replayed through `satisfyHealthcareRequest`'s `matches` gate. `BookedSlot` was removed by the `Slot` redesign.
 
-## `sealed-value-decomposition` (new) — Extracting fields from an already-held sealed value needs a read-only `Domain.hs` accessor; `sealed-type-replay` doesn't apply
+## `sealed-value-decomposition` — Extracting fields from an already-held sealed value needs a read-only `Domain.hs` accessor; `sealed-type-replay` doesn't apply
 
 This is a different problem from `sealed-type-replay`, even though both involve a sealed constructor, and it's worth being precise about the distinction rather than reaching for replay out of habit whenever a sealed type is involved:
 
@@ -184,7 +186,7 @@ One further correction, not just a join removed: an earlier version of this rule
 
 This rule is the deliberate mirror image of `deleted-on-match` — the same "does the schema honor what `Domain.hs` actually asserts about a thing's persistence" discipline, applied to two aggregates that turned out to need opposite answers. Don't let the two rules' existence talk you into treating them as interchangeable, or into assuming one implies the other for a third aggregate — check `Domain.hs`'s own wording each time.
 
-## `deleted-on-match` (new) — Slots have no post-match existence; a matched slot's row is deleted, not flagged
+## `deleted-on-match` — Slots have no post-match existence; a matched slot's row is deleted, not flagged
 
 `Domain.hs`'s own comment on `AvailableSlot`: *"a slot has no existence independent of matching: it is available until claimed, then fully absorbed into the appointment."* `AppointedIntakeRequest` hard-copies `DoctorId`/`UTCTime`/`Duration` directly rather than referencing a slot by ID — so once matched, nothing in the domain model ever again asks "what slot was this."
 
@@ -197,7 +199,7 @@ Two things this deliberately does **not** do, both real decisions rather than ov
 
 The actual backstop against a double-booking making it all the way to two live commitments for the same doctor at the same time is **not** a same-table partial unique index — `intake_requests` has no open/closed-style state distinction that a `state = 'open'`-scoped index could hang off, the way an old, now-gone `appointments` table once had. It's `doctor_calendar`'s cross-table `EXCLUDE` constraint instead, which sees `slots` and `intake_requests(state = 'appointed')` together as one combined set of intervals — see `cross-table-invariants-need-a-shadow-table`.
 
-## `uniqueness-races-are-outcomes` (new) — A write whose success depends on a row's observed shape staying put needs affected-rows detection, never a caught exception
+## `uniqueness-races-are-outcomes` — A write whose success depends on a row's observed shape staying put needs affected-rows detection, never a caught exception
 
 If a write's success depends on a row's observed shape — its existence, or its `state` — staying exactly as last observed, where a concurrent writer could change that shape before this write lands, the `Persistence.hs` function performing it must detect a lost race via the write's own affected-row count on a conditional statement (`DELETE ... WHERE id = ?`, `UPDATE ... WHERE state = ?`, checking `n > 0`), not by letting the database throw and catching/ignoring a `SqlError`. `deleted-on-match`'s `deleteSlot` (guarding a row's existence at delete time) was the first instance of this pattern; treat it as the template, not a one-off. A `UNIQUE` constraint enforcing a domain invariant is one way this kind of race can show up at the schema level (the matching guard there would be `INSERT ... WHERE NOT EXISTS (...)`) — but it isn't the only shape, and it isn't the current one: both live cases below are plain `state` guards on an `UPDATE`, with no `UNIQUE` constraint underneath either.
 
@@ -209,7 +211,7 @@ The rule isn't limited to constraints literally named `UNIQUE` in the schema —
 
 **Second live case:** `persistClosedIntakeRequestIfAppointed` guards a plain state-transition race, no `UNIQUE` constraint involved at all — `Service.closeAppointedIntakeRequest` fetches a request, confirms it's `Appointed`, then writes; between the fetch and the write, a concurrent second close on the same row could pass the same fetch-time check and silently overwrite which reason the request closed for. The `UPDATE` is conditioned on `state = 'appointed'` (`WHERE id = ? AND state = 'appointed'`), and `AlreadyClaimed` (zero rows affected) is reported by Service as the same `MovedOn` the initial fetch would have produced for an already closed request — the caller doesn't need to distinguish "already closed when I checked" from "closed by someone else a moment later." This is one instance of `updates-follow-domain-transitions`: every lifecycle transition is guarded this way, with no case-by-case choice about which races matter. Unlike `claimAcceptedIntakeRequest`, it needs no `23P01` catch — closing only ever transitions a row *out of* `'appointed'`, which `doctor_calendar`'s trigger handles as a plain delete, never something an `EXCLUDE` constraint could reject.
 
-## `updates-follow-domain-transitions` (new) — Updates follow the transition rules defined in `Domain.hs`
+## `updates-follow-domain-transitions` — Updates follow the transition rules defined in `Domain.hs`
 
 An `UPDATE` that changes a sum type's case from A to B (the discriminator column of a `discriminator-column-tables` table) is allowed only if `Domain.hs` defines a transition from A to B, and it must be conditioned on the source case — `WHERE id = ? AND state = 'A'` — reporting the affected-row count as `ClaimOutcome` (`uniqueness-races-are-outcomes`). No `Persistence.hs` function writes a case change `Domain.hs` doesn't define. This is derived, not judged: there is no "is this race worth guarding?" question, and no transition is exempt. A type proves a transition's source case only for the in-memory value; the guard re-asserts it for the stored row at the moment of the write.
 
@@ -233,7 +235,7 @@ Every transition is a `Domain.hs` function or constructor. Field access alone ne
 
 **Why this is a named rule:** accept and reject were written with `WHERE id = ?` only and stayed that way until commit `819eae5`, while every transition written later was guarded. The old framing of `uniqueness-races-are-outcomes` asked which races were worth guarding; close was chosen, and accept/reject were never considered — though `Domain.hs` defined their source case all along.
 
-## `state-guard-is-freshness` (new) — The state guard also proves the row is the one the caller read
+## `state-guard-is-freshness` — The state guard also proves the row is the one the caller read
 
 `updates-follow-domain-transitions` guards every transition write on its source case (`WHERE id = ? AND state = 'A'`), which makes the write *legal*. For `intake_requests` the same guard also makes it *fresh* — the row is the one the caller decided from — because of two properties of `Domain.hs`:
 
@@ -246,13 +248,30 @@ Together: if the write finds the case its caller read, nothing has written the r
 - **Check both properties whenever `Domain.hs` changes.** A transition back to an earlier case, or a write that keeps the case (an in-place edit such as re-triage), breaks the argument. Then stop and ask: a row version (a `BEFORE UPDATE` trigger bumping a counter, checked with `AND version = ?`) is the known answer, and it was used here while reclaim existed — see `docs/decisions.md`, "Row version for freshness" (2026-09-27) and "Row version removed" (2026-09-28).
 - **Tables that are never updated need nothing** — `slots` rows are only inserted and deleted; doctors, patients and services are never updated.
 
-## `cross-table-invariants-need-a-shadow-table` (new) — An invariant spanning two tables needs a trigger-maintained shadow table with one EXCLUDE constraint
+## `cross-table-invariants-need-a-shadow-table` — An invariant spanning two tables needs a trigger-maintained shadow table with one EXCLUDE constraint
 
 Some invariants can't be expressed as a single-table `CHECK`/`UNIQUE`/`EXCLUDE` constraint because the rows that must not conflict live in two different tables. The live case: no two time intervals may overlap for the same doctor, where an interval is either a `slots` row (`AvailableSlot`) or an `intake_requests` row with `state = 'appointed'`. A single-table `EXCLUDE USING gist (doctor_id WITH =, during WITH &&)` declared on `slots` alone can't see appointed `intake_requests` rows, and vice versa — Postgres's `EXCLUDE` mechanism only ever sees one table at a time.
 
 **Rejected alternatives** (full reasoning in `docs/decisions.md`'s "Overlap prevention" entry — not repeated here): naive check-then-insert (races under `READ COMMITTED`, since two concurrent inserts can both see no overlap and both commit); `pg_advisory_xact_lock` keyed on doctor id (works and is cheaper, but is convention-enforced rather than schema-enforced — any write path that forgets to take the lock silently violates the invariant); `SELECT ... FOR UPDATE` (can't lock rows that don't exist yet, so it doesn't help two inserts racing into empty space); `SERIALIZABLE` isolation (closes the race, but shares the advisory lock's rejection reason — a transaction-level convention every writer must opt into, not a schema-enforced guarantee, on top of higher retry-on-conflict overhead).
 
-**Decided mechanism:** a trigger-maintained shadow table, `doctor_calendar`, carrying **one** `EXCLUDE USING gist (doctor_id WITH =, during WITH &&)` constraint that sees both sources at once. `AFTER INSERT` on `slots` (via `sync_slot_to_doctor_calendar`) and `AFTER INSERT OR UPDATE` on `intake_requests` (via `sync_intake_request_to_doctor_calendar`) keep it in sync; `slot_id`'s `ON DELETE CASCADE` handles slot removal without a second trigger. See `migrations/0001_init.sql` for the full schema and trigger bodies — that file is the live reference.
+**Decided mechanism:** a trigger-maintained shadow table, `doctor_calendar`, carrying **one** `EXCLUDE USING gist (doctor_id WITH =, during WITH &&)` constraint that sees both sources at once. `AFTER INSERT` on `slots` (via `sync_slot_to_doctor_calendar`) and `AFTER INSERT OR UPDATE` on `intake_requests` (via `sync_intake_request_to_doctor_calendar`) keep it in sync; `slot_id`'s `ON DELETE CASCADE` handles slot removal without a second trigger. The table:
+
+```sql
+CREATE TABLE doctor_calendar (
+  doctor_id         UUID NOT NULL,
+  during            TSTZRANGE NOT NULL,          -- [start, start + duration), tstzrange's default [)
+  source            TEXT NOT NULL CHECK (source IN ('slot', 'appointment')),
+  slot_id           UUID UNIQUE REFERENCES slots(id) ON DELETE CASCADE,
+  intake_request_id UUID UNIQUE REFERENCES intake_requests(id),
+  CHECK (
+    (source = 'slot'        AND slot_id IS NOT NULL AND intake_request_id IS NULL) OR
+    (source = 'appointment' AND intake_request_id IS NOT NULL AND slot_id IS NULL)
+  ),
+  EXCLUDE USING gist (doctor_id WITH =, during WITH &&)   -- needs btree_gist
+);
+```
+
+What the triggers must keep true: inserting a slot adds its interval; an `intake_requests` insert or update adds (or replaces) the row's interval when the row is `'appointed'` and removes it when the row leaves `'appointed'`; deleting a slot removes its interval through the cascade. `migrations/0001_init.sql` is the current implementation of exactly this — derive it from the layout and these rules, don't copy it unchecked.
 
 **The invariant is declared in `Domain.hs`, enforced here.** `DoctorCalendar` (sealed; `mkDoctorCalendar`/`addAvailableSlot`) states the rule; this constraint is what makes it hold for stored data, since a `Domain.hs` value can't prove it matches what is stored. The mapping must stay exact: per doctor, both `slots` and appointed `intake_requests` count, and intervals are half-open — `Domain.hs`'s `[start, end)` is `tstzrange`'s default `[)`. General rule: an invariant `Domain.hs` declares over a *single* value maps to a `CHECK` (live case: `RoutineWithin`'s `from <= to`, sealed behind `mkRoutineWithin`, is `CHECK (due_not_before IS NULL OR due_not_after IS NULL OR due_not_before <= due_not_after)`); one it declares over a *collection* of stored rows (a sealed collection type such as `DoctorCalendar`) must map to an `EXCLUDE`/`UNIQUE` constraint — a pure check in Service alone is never enough. Either way, decoding still replays through the smart constructor (`sealed-type-replay`). `fetchDoctorCalendar` decodes stored entries through `mkDoctorCalendar` and fails loudly with `OverlappingCalendarEntries`, like `InvalidWithin` for `mkRoutineWithin`.
 
@@ -267,12 +286,12 @@ All Persistence-layer code lives in a single module, `src/Persistence.hs` (modul
 Conventions established for this module, settled across the schema and Persistence-writing sessions, apply uniformly with no case-by-case exceptions:
 
 - **DB library: `postgresql-simple`.**
-- **Every function takes a plain `Connection`, never `ConnectionPool`, with no exceptions.** `ConnectionPool` (`type ConnectionPool = Pool Connection`) exists only for whatever calls into this module from outside (`Service.hs`) to check out a `Connection` via `withResource` for a unit of work — including holding one connection across a whole `withTransaction` block spanning multiple `Persistence.hs` calls. A function that took `ConnectionPool` directly could only ever run as its own isolated unit of work, foreclosing composition into a larger transaction.
+- **Every function takes a plain `Connection`, never `ConnectionPool`, with no exceptions.** `ConnectionPool` (`type ConnectionPool = Pool Connection`, defined in `Persistence.hs`, `Pool` from `resource-pool`) exists only for whatever calls into this module from outside (`Service.hs`) to check out a `Connection` via `withResource` for a unit of work — including holding one connection across a whole `withTransaction` block spanning multiple `Persistence.hs` calls. A function that took `ConnectionPool` directly could only ever run as its own isolated unit of work, foreclosing composition into a larger transaction.
 - **Row↔domain mapping is written by hand, never derived.** `FromRow` instances are hand-written field-by-field (`SomeRow <$> field <*> field <*> ...`, one line per column, commented with the column name) rather than `Generic`-derived. Writes use explicit tuples/lists at the `execute` call site, never a shared `ToRow` instance — this keeps the column list and the value list visible together at every call site, at the cost of some repetition across functions writing the same row shape.
 - **`<$>`/`fmap` is the default** for a function with exactly one fallible sub-computation feeding pure construction. Reserve `do`-notation/`>>=` for genuinely multiple sequential fallible steps, or for chaining a fallible result into a further fallible computation (e.g. `decodeAppointed` chaining `decodeTriaged`'s result into `decodeDuration`).
 - **Decode failures return `Either DecodeError X`, never throw.** No exceptions for "this row didn't decode."
-- **Dedicated functions per domain operation, never a generic update dispatching on the value's shape.** E.g. `insertAvailableSlot`/`persistBookedSlot`(historical)/`persistFreedSlot`(historical), or `insertSubmittedIntakeRequest`/`persistTriagedIntakeRequest` — named to mirror the `Domain.hs` verb that produced the value being persisted, one clear meaning per function, no runtime dispatch a reader has to trace into.
-- **Transaction boundaries live inside the function that needs them, not pushed up to the caller.** A function performing an operation requiring `atomic-multi-table-write` calls `withTransaction conn $ do { ... }` internally — the caller passes in a `Connection` and gets one atomic operation; it isn't responsible for remembering to wrap anything itself. This was a deliberate choice: "the business action already defines its transactional scope." Currently `persistMatchedIntakeRequest` is the only function actually doing this — see `atomic-multi-table-write`'s note on why reassignment isn't (yet, or not currently) a second case.
+- **Dedicated functions per domain operation, never a generic update dispatching on the value's shape.** E.g. `insertAvailableSlot`, or `insertSubmittedIntakeRequest`/`persistTriagedIntakeRequest` — named to mirror the `Domain.hs` verb that produced the value being persisted, one clear meaning per function, no runtime dispatch a reader has to trace into.
+- **Transaction boundaries live inside the function that needs them, not pushed up to the caller.** A function performing an operation requiring `atomic-multi-table-write` calls `withTransaction conn $ do { ... }` internally — the caller passes in a `Connection` and gets one atomic operation; it isn't responsible for remembering to wrap anything itself. This was a deliberate choice: "the business action already defines its transactional scope." Currently `persistMatchedIntakeRequest` is the only function doing this.
 - **ID generation** (`newIntakeRequestId`, `newSlotId`, etc.) lives in `Service.hs`, not here — minting a new ID is an orchestration decision, not a fetch or a store. `Persistence.hs` only ever receives an already-minted ID as an argument; it never generates one.
 
 For each domain aggregate with its own table(s), generate within `Persistence.hs`:
@@ -288,4 +307,4 @@ See `references/persistence-pattern.md` for worked examples.
 
 ## When unsure
 
-If a rule above doesn't cover a case that comes up, prefer the option that mirrors `Domain.hs`'s own structure most directly, and flag the ambiguity to the user rather than inventing a convention silently. When adding a genuinely new rule, give it a name in this same style before writing content under it. When a rule's live case disappears because `Domain.hs` changed, say so explicitly in the rule itself (as `sealed-type-replay` now does) rather than deleting the rule or leaving it silently describing something no longer true.
+If a rule above doesn't cover a case that comes up, prefer the option that mirrors `Domain.hs`'s own structure most directly, and flag the ambiguity to the user rather than inventing a convention silently. When adding a genuinely new rule, give it a name in this same style before writing content under it. When a rule's live case disappears because `Domain.hs` changed, say so explicitly in the rule itself (as `sealed-type-replay`'s History line does for `BookedSlot`) rather than deleting the rule or leaving it silently describing something no longer true.
