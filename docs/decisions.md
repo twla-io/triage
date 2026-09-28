@@ -838,6 +838,15 @@ Per expected state: every state comes after Submitted, so accept/reject only eve
   domain expert about whether there's already a stable per-patient
   identifier in informal use today. Domain.hs is unchanged for now — do
   not modify it as part of this task.
+- `NoShow`'s `AppointmentParty` (added 2026-09-28): does it mean the party
+  who didn't turn up (`NoShow ByPatient` — the patient was absent), a
+  different fact from `Cancelled`'s party (who cancelled)? And does a
+  no-show need an optional note, as a cancellation has? Neither was ever
+  decided: the CloseReason entry above justifies only `Cancelled`'s and
+  `Completed`'s fields. Came up while giving every stored value a name in
+  Domain.hs; the model treats the two parties as separate facts pending
+  this answer. No time is proposed — a no-show happens at the
+  appointment's own `start`.
 
 Do not resolve these speculatively in code. Validate with the domain expert
 first, per the workflow discipline in CLAUDE.md.
