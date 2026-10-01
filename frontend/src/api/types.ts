@@ -4,7 +4,138 @@
  */
 
 export interface paths {
-    "/calendar": {
+    "/available-slots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json;charset=utf-8": components["schemas"]["CreateAvailableSlotRequest"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json;charset=utf-8": components["schemas"]["CreateAvailableSlotAnswer"];
+                    };
+                };
+                /** @description Invalid `body` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/available-slots/{slotId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    slotId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json;charset=utf-8": components["schemas"]["FetchAvailableSlotAnswer"];
+                    };
+                };
+                /** @description Invalid `slotId` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/available-slots/{slotId}/match-by-priority": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    slotId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json;charset=utf-8": components["schemas"]["MatchAvailableSlotByPriorityAnswer"];
+                    };
+                };
+                /** @description Invalid `slotId` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/doctor-calendar": {
         parameters: {
             query?: never;
             header?: never;
@@ -14,9 +145,8 @@ export interface paths {
         get: {
             parameters: {
                 query: {
-                    start: string;
-                    end: string;
-                    doctorId?: string;
+                    from: string;
+                    to: string;
                 };
                 header?: never;
                 path?: never;
@@ -29,10 +159,10 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["CalendarEntryDTO"][];
+                        "application/json;charset=utf-8": components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswer"];
                     };
                 };
-                /** @description Invalid `doctorId` or `end` or `start` */
+                /** @description Invalid `to` or `from` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -70,7 +200,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["DoctorDTO"][];
+                        "application/json;charset=utf-8": components["schemas"]["FetchDoctorsAnswer"];
                     };
                 };
             };
@@ -94,7 +224,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["DoctorDTO"];
+                        "application/json;charset=utf-8": components["schemas"]["CreateDoctorAnswer"];
                     };
                 };
                 /** @description Invalid `body` */
@@ -112,7 +242,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/doctors/{id}": {
+    "/doctors/{doctorId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -124,7 +254,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    id: string;
+                    doctorId: string;
                 };
                 cookie?: never;
             };
@@ -135,10 +265,10 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["DoctorDTO"];
+                        "application/json;charset=utf-8": components["schemas"]["FetchDoctorAnswer"];
                     };
                 };
-                /** @description Invalid `id` */
+                /** @description Invalid `doctorId` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -176,7 +306,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["HealthcareServiceDTO"][];
+                        "application/json;charset=utf-8": components["schemas"]["FetchHealthcareServicesAnswer"];
                     };
                 };
             };
@@ -200,7 +330,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["HealthcareServiceDTO"];
+                        "application/json;charset=utf-8": components["schemas"]["CreateHealthcareServiceAnswer"];
                     };
                 };
                 /** @description Invalid `body` */
@@ -218,7 +348,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/healthcare-services/{id}": {
+    "/healthcare-services/{healthcareServiceId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -230,7 +360,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    id: string;
+                    healthcareServiceId: string;
                 };
                 cookie?: never;
             };
@@ -241,10 +371,10 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["HealthcareServiceDTO"];
+                        "application/json;charset=utf-8": components["schemas"]["FetchHealthcareServiceAnswer"];
                     };
                 };
-                /** @description Invalid `id` */
+                /** @description Invalid `healthcareServiceId` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -288,7 +418,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["Value"];
+                        "application/json;charset=utf-8": components["schemas"]["SubmitIntakeRequestAnswer"];
                     };
                 };
                 /** @description Invalid `body` */
@@ -306,7 +436,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/intake-requests/appointed": {
+    "/intake-requests/accepted": {
         parameters: {
             query?: never;
             header?: never;
@@ -315,11 +445,7 @@ export interface paths {
         };
         get: {
             parameters: {
-                query?: {
-                    start?: string;
-                    end?: string;
-                    doctorId?: string;
-                };
+                query?: never;
                 header?: never;
                 path?: never;
                 cookie?: never;
@@ -331,15 +457,42 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["AppointedIntakeRequestDTO"][];
+                        "application/json;charset=utf-8": components["schemas"]["FetchAcceptedIntakeRequestsAnswer"];
                     };
                 };
-                /** @description Invalid `doctorId` or `end` or `start` */
-                400: {
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/intake-requests/appointed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
                     headers: {
                         [name: string]: unknown;
                     };
-                    content?: never;
+                    content: {
+                        "application/json;charset=utf-8": components["schemas"]["FetchAppointedIntakeRequestsAnswer"];
+                    };
                 };
             };
         };
@@ -361,9 +514,8 @@ export interface paths {
         get: {
             parameters: {
                 query: {
-                    start: string;
-                    end: string;
-                    doctorId?: string;
+                    from: string;
+                    to: string;
                 };
                 header?: never;
                 path?: never;
@@ -376,10 +528,98 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["IntakeRequestDTO"][];
+                        "application/json;charset=utf-8": components["schemas"]["FetchClosedIntakeRequestsByStartAnswer"];
                     };
                 };
-                /** @description Invalid `doctorId` or `end` or `start` */
+                /** @description Invalid `to` or `from` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/intake-requests/rejected": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    from: string;
+                    to: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json;charset=utf-8": components["schemas"]["FetchRejectedIntakeRequestsByRejectedAtAnswer"];
+                    };
+                };
+                /** @description Invalid `to` or `from` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/intake-requests/stale": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query: {
+                    from: string;
+                    to: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json;charset=utf-8": components["schemas"]["FetchStaleIntakeRequestsByStaleAtAnswer"];
+                    };
+                };
+                /** @description Invalid `to` or `from` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -417,7 +657,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["IntakeRequestDTO"][];
+                        "application/json;charset=utf-8": components["schemas"]["FetchSubmittedIntakeRequestsAnswer"];
                     };
                 };
             };
@@ -430,7 +670,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/intake-requests/waitlist": {
+    "/intake-requests/withdrawn": {
         parameters: {
             query?: never;
             header?: never;
@@ -439,7 +679,10 @@ export interface paths {
         };
         get: {
             parameters: {
-                query?: never;
+                query: {
+                    from: string;
+                    to: string;
+                };
                 header?: never;
                 path?: never;
                 cookie?: never;
@@ -451,8 +694,15 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["IntakeRequestDTO"][];
+                        "application/json;charset=utf-8": components["schemas"]["FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer"];
                     };
+                };
+                /** @description Invalid `to` or `from` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
                 };
             };
         };
@@ -464,7 +714,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/intake-requests/{id}": {
+    "/intake-requests/{intakeRequestId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -476,7 +726,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    id: string;
+                    intakeRequestId: string;
                 };
                 cookie?: never;
             };
@@ -487,10 +737,10 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["IntakeRequestDTO"];
+                        "application/json;charset=utf-8": components["schemas"]["FetchIntakeRequestAnswer"];
                     };
                 };
-                /** @description Invalid `id` */
+                /** @description Invalid `intakeRequestId` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -507,7 +757,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/intake-requests/{id}/accept": {
+    "/intake-requests/{intakeRequestId}/accept": {
         parameters: {
             query?: never;
             header?: never;
@@ -521,13 +771,13 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    id: string;
+                    intakeRequestId: string;
                 };
                 cookie?: never;
             };
             requestBody: {
                 content: {
-                    "application/json;charset=utf-8": components["schemas"]["AcceptIntakeRequestRequest"];
+                    "application/json;charset=utf-8": components["schemas"]["AcceptSubmittedIntakeRequestRequest"];
                 };
             };
             responses: {
@@ -536,10 +786,10 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["Value"];
+                        "application/json;charset=utf-8": components["schemas"]["AcceptSubmittedIntakeRequestAnswer"];
                     };
                 };
-                /** @description Invalid `body` or `id` */
+                /** @description Invalid `body` or `intakeRequestId` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -554,7 +804,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/intake-requests/{id}/close": {
+    "/intake-requests/{intakeRequestId}/close": {
         parameters: {
             query?: never;
             header?: never;
@@ -568,13 +818,13 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    id: string;
+                    intakeRequestId: string;
                 };
                 cookie?: never;
             };
             requestBody: {
                 content: {
-                    "application/json;charset=utf-8": components["schemas"]["CloseReasonRequestDTO"];
+                    "application/json;charset=utf-8": components["schemas"]["CloseAppointedIntakeRequestRequest"];
                 };
             };
             responses: {
@@ -583,10 +833,10 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["Value"];
+                        "application/json;charset=utf-8": components["schemas"]["CloseAppointedIntakeRequestAnswer"];
                     };
                 };
-                /** @description Invalid `body` or `id` */
+                /** @description Invalid `body` or `intakeRequestId` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -601,7 +851,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/intake-requests/{id}/mark-stale": {
+    "/intake-requests/{intakeRequestId}/mark-stale": {
         parameters: {
             query?: never;
             header?: never;
@@ -615,7 +865,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    id: string;
+                    intakeRequestId: string;
                 };
                 cookie?: never;
             };
@@ -626,10 +876,10 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["Value"];
+                        "application/json;charset=utf-8": components["schemas"]["MarkAcceptedIntakeRequestStaleAnswer"];
                     };
                 };
-                /** @description Invalid `id` */
+                /** @description Invalid `intakeRequestId` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -644,7 +894,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/intake-requests/{id}/match": {
+    "/intake-requests/{intakeRequestId}/match-to-slot": {
         parameters: {
             query?: never;
             header?: never;
@@ -658,13 +908,13 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    id: string;
+                    intakeRequestId: string;
                 };
                 cookie?: never;
             };
             requestBody: {
                 content: {
-                    "application/json;charset=utf-8": components["schemas"]["MatchIntakeRequestRequest"];
+                    "application/json;charset=utf-8": components["schemas"]["MatchAcceptedIntakeRequestToSlotRequest"];
                 };
             };
             responses: {
@@ -673,10 +923,10 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["Value"];
+                        "application/json;charset=utf-8": components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswer"];
                     };
                 };
-                /** @description Invalid `body` or `id` */
+                /** @description Invalid `body` or `intakeRequestId` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -691,7 +941,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/intake-requests/{id}/reject": {
+    "/intake-requests/{intakeRequestId}/reject": {
         parameters: {
             query?: never;
             header?: never;
@@ -705,13 +955,13 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    id: string;
+                    intakeRequestId: string;
                 };
                 cookie?: never;
             };
             requestBody: {
                 content: {
-                    "application/json;charset=utf-8": components["schemas"]["RejectIntakeRequestRequest"];
+                    "application/json;charset=utf-8": components["schemas"]["RejectSubmittedIntakeRequestRequest"];
                 };
             };
             responses: {
@@ -720,10 +970,57 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["Value"];
+                        "application/json;charset=utf-8": components["schemas"]["RejectSubmittedIntakeRequestAnswer"];
                     };
                 };
-                /** @description Invalid `body` or `id` */
+                /** @description Invalid `body` or `intakeRequestId` */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/intake-requests/{intakeRequestId}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    intakeRequestId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json;charset=utf-8": components["schemas"]["WithdrawIntakeRequestRequest"];
+                };
+            };
+            responses: {
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json;charset=utf-8": components["schemas"]["WithdrawIntakeRequestAnswer"];
+                    };
+                };
+                /** @description Invalid `body` or `intakeRequestId` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -759,7 +1056,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["PatientDTO"][];
+                        "application/json;charset=utf-8": components["schemas"]["FetchPatientsAnswer"];
                     };
                 };
             };
@@ -783,7 +1080,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["PatientDTO"];
+                        "application/json;charset=utf-8": components["schemas"]["CreatePatientAnswer"];
                     };
                 };
                 /** @description Invalid `body` */
@@ -801,7 +1098,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/patients/{id}": {
+    "/patients/{patientId}": {
         parameters: {
             query?: never;
             header?: never;
@@ -813,7 +1110,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    id: string;
+                    patientId: string;
                 };
                 cookie?: never;
             };
@@ -824,10 +1121,10 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["PatientDTO"];
+                        "application/json;charset=utf-8": components["schemas"]["FetchPatientAnswer"];
                     };
                 };
-                /** @description Invalid `id` */
+                /** @description Invalid `patientId` */
                 400: {
                     headers: {
                         [name: string]: unknown;
@@ -844,229 +1141,437 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/slots": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get: {
-            parameters: {
-                query: {
-                    start: string;
-                    end: string;
-                    doctorId?: string;
-                    healthcareServiceId?: string;
-                };
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody?: never;
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json;charset=utf-8": components["schemas"]["AvailableSlotDTO"][];
-                    };
-                };
-                /** @description Invalid `healthcareServiceId` or `doctorId` or `end` or `start` */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        put?: never;
-        post: {
-            parameters: {
-                query?: never;
-                header?: never;
-                path?: never;
-                cookie?: never;
-            };
-            requestBody: {
-                content: {
-                    "application/json;charset=utf-8": components["schemas"]["CreateAvailableSlotRequest"];
-                };
-            };
-            responses: {
-                200: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content: {
-                        "application/json;charset=utf-8": components["schemas"]["Value"];
-                    };
-                };
-                /** @description Invalid `body` */
-                400: {
-                    headers: {
-                        [name: string]: unknown;
-                    };
-                    content?: never;
-                };
-            };
-        };
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        AcceptIntakeRequestRequest: {
-            doctorRequirement: components["schemas"]["DoctorRequirementDTO"];
-            healthcareServiceId: components["schemas"]["UUID"];
-            priority: components["schemas"]["IntakeRequestPriorityDTO"];
+        AcceptSubmittedIntakeRequestAnswer: {
+            /** @description By outcome: transitioned: TriagedIntakeRequest; movedOn: IntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "transitioned" | "movedOn" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
         };
-        AppointedIntakeRequestDTO: {
+        AcceptSubmittedIntakeRequestRequest: {
+            doctorRequirement: components["schemas"]["DoctorRequirement"];
+            healthcareServiceId: components["schemas"]["HealthcareServiceId"];
+            priority: components["schemas"]["IntakeRequestPriority"];
+        };
+        AppointedIntakeRequest: {
             createdAt: components["schemas"]["UTCTime"];
-            doctorId: components["schemas"]["UUID"];
-            doctorRequirement: components["schemas"]["DoctorRequirementDTO"];
-            duration: components["schemas"]["DurationDTO"];
-            healthcareServiceId: components["schemas"]["UUID"];
-            id: components["schemas"]["UUID"];
+            doctorId: components["schemas"]["DoctorId"];
+            doctorRequirement: components["schemas"]["DoctorRequirement"];
+            duration: components["schemas"]["Duration"];
+            healthcareServiceId: components["schemas"]["HealthcareServiceId"];
+            id: components["schemas"]["IntakeRequestId"];
             narrative: string;
-            patientId: components["schemas"]["UUID"];
-            priority: components["schemas"]["IntakeRequestPriorityDTO"];
+            patientId: components["schemas"]["PatientId"];
+            priority: components["schemas"]["IntakeRequestPriority"];
             start: components["schemas"]["UTCTime"];
             triagedAt: components["schemas"]["UTCTime"];
         };
-        AppointmentPartyDTO: {
+        /** @description One object per case, told apart by "type". doctorParty: no other keys; patientParty: no other keys */
+        AppointmentParty: {
             /** @enum {string} */
-            type: "byDoctor" | "byPatient";
+            type: "doctorParty" | "patientParty";
         };
-        AvailableSlotDTO: {
-            doctorId: components["schemas"]["UUID"];
-            duration: components["schemas"]["DurationDTO"];
-            healthcareServiceId: components["schemas"]["UUID"];
-            id: components["schemas"]["UUID"];
+        AvailableSlot: {
+            doctorId: components["schemas"]["DoctorId"];
+            duration: components["schemas"]["Duration"];
+            healthcareServiceId: components["schemas"]["HealthcareServiceId"];
+            id: components["schemas"]["SlotId"];
             start: components["schemas"]["UTCTime"];
         };
-        CalendarEntryDTO: {
+        CloseAppointedIntakeRequestAnswer: {
+            /** @description By outcome: transitioned: ClosedIntakeRequest; movedOn: IntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "transitioned" | "movedOn" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        CloseAppointedIntakeRequestRequest: {
+            closeReason: components["schemas"]["CloseReasonRequest"];
+        };
+        /** @description One object per case, told apart by "type". completed: no other keys; cancelled: cancelledBy, cancelledAt, cancellationNote; noShow: absentParty */
+        CloseReason: {
+            absentParty?: components["schemas"]["AppointmentParty"];
+            cancellationNote?: string;
+            cancelledAt?: components["schemas"]["UTCTime"];
+            cancelledBy?: components["schemas"]["AppointmentParty"];
+            /** @enum {string} */
+            type: "completed" | "cancelled" | "noShow";
+        };
+        /** @description One object per case, told apart by "type". completed: no other keys; cancelled: cancelledBy, cancellationNote; noShow: absentParty */
+        CloseReasonRequest: {
+            absentParty?: components["schemas"]["AppointmentParty"];
+            cancellationNote?: string;
+            cancelledBy?: components["schemas"]["AppointmentParty"];
+            /** @enum {string} */
+            type: "completed" | "cancelled" | "noShow";
+        };
+        ClosedIntakeRequest: {
+            closeReason: components["schemas"]["CloseReason"];
+            createdAt: components["schemas"]["UTCTime"];
+            doctorId: components["schemas"]["DoctorId"];
+            doctorRequirement: components["schemas"]["DoctorRequirement"];
+            duration: components["schemas"]["Duration"];
+            healthcareServiceId: components["schemas"]["HealthcareServiceId"];
+            id: components["schemas"]["IntakeRequestId"];
+            narrative: string;
+            patientId: components["schemas"]["PatientId"];
+            priority: components["schemas"]["IntakeRequestPriority"];
+            start: components["schemas"]["UTCTime"];
+            triagedAt: components["schemas"]["UTCTime"];
+        };
+        CreateAvailableSlotAnswer: {
+            /** @description By outcome: slotCreated: AvailableSlot; slotOverlapsDoctorCalendar: null; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "slotCreated" | "slotOverlapsDoctorCalendar" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        CreateAvailableSlotRequest: {
+            doctorId: components["schemas"]["DoctorId"];
+            healthcareServiceId: components["schemas"]["HealthcareServiceId"];
+            start: components["schemas"]["UTCTime"];
+        };
+        CreateDoctorAnswer: {
+            /** @description By outcome: ok: Doctor */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok";
+        };
+        CreateDoctorRequest: {
+            name: string;
+        };
+        CreateHealthcareServiceAnswer: {
+            /** @description By outcome: ok: HealthcareService */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok";
+        };
+        CreateHealthcareServiceRequest: {
+            duration: components["schemas"]["Duration"];
+            name: string;
+        };
+        CreatePatientAnswer: {
+            /** @description By outcome: ok: Patient */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok";
+        };
+        CreatePatientRequest: {
+            name: string;
+        };
+        Doctor: {
+            id: components["schemas"]["DoctorId"];
+            name: string;
+        };
+        /** @description One object per case, told apart by "type". slot: id, doctorId, healthcareServiceId, start, duration; appointment: id, patientId, narrative, createdAt, healthcareServiceId, priority, doctorRequirement, triagedAt, doctorId, start, duration */
+        DoctorCalendarEntry: {
             createdAt?: components["schemas"]["UTCTime"];
-            doctorId: components["schemas"]["UUID"];
-            doctorRequirement?: components["schemas"]["DoctorRequirementDTO"];
-            duration: components["schemas"]["DurationDTO"];
-            healthcareServiceId: components["schemas"]["UUID"];
-            id: components["schemas"]["UUID"];
+            doctorId: components["schemas"]["DoctorId"];
+            doctorRequirement?: components["schemas"]["DoctorRequirement"];
+            duration: components["schemas"]["Duration"];
+            healthcareServiceId: components["schemas"]["HealthcareServiceId"];
+            id: components["schemas"]["SlotId"];
             narrative?: string;
-            patientId?: components["schemas"]["UUID"];
-            priority?: components["schemas"]["IntakeRequestPriorityDTO"];
+            patientId?: components["schemas"]["PatientId"];
+            priority?: components["schemas"]["IntakeRequestPriority"];
             start: components["schemas"]["UTCTime"];
             triagedAt?: components["schemas"]["UTCTime"];
             /** @enum {string} */
             type: "slot" | "appointment";
         };
-        CloseReasonDTO: {
-            by?: components["schemas"]["AppointmentPartyDTO"];
-            cancelledAt?: components["schemas"]["UTCTime"];
-            note?: string;
-            /** @enum {string} */
-            type: "completed" | "cancelled" | "noShow";
-        };
-        CloseReasonRequestDTO: {
-            by?: components["schemas"]["AppointmentPartyDTO"];
-            note?: string;
-            /** @enum {string} */
-            type: "completed" | "cancelled" | "noShow";
-        };
-        CreateAvailableSlotRequest: {
-            doctorId: components["schemas"]["UUID"];
-            healthcareServiceId: components["schemas"]["UUID"];
-            start: components["schemas"]["UTCTime"];
-        };
-        CreateDoctorRequest: {
-            name: string;
-        };
-        CreateHealthcareServiceRequest: {
-            duration: components["schemas"]["DurationDTO"];
-            name: string;
-        };
-        CreatePatientRequest: {
-            name: string;
-        };
-        DoctorDTO: {
-            id: components["schemas"]["UUID"];
-            name: string;
-        };
-        DoctorRequirementDTO: {
-            doctorId?: components["schemas"]["UUID"];
+        /**
+         * Format: uuid
+         * @example 00000000-0000-0000-0000-000000000000
+         */
+        DoctorId: string;
+        /** @description One object per case, told apart by "type". anyDoctor: no other keys; specificDoctor: specificDoctor */
+        DoctorRequirement: {
+            specificDoctor?: components["schemas"]["DoctorId"];
             /** @enum {string} */
             type: "anyDoctor" | "specificDoctor";
         };
-        DurationDTO: {
+        /** @description One object per case, told apart by "type". quarterOfAnHour: no other keys; halfAnHour: no other keys; oneHour: no other keys */
+        Duration: {
             /** @enum {string} */
             type: "quarterOfAnHour" | "halfAnHour" | "oneHour";
         };
-        HealthcareServiceDTO: {
-            duration: components["schemas"]["DurationDTO"];
-            id: components["schemas"]["UUID"];
+        FetchAcceptedIntakeRequestsAnswer: {
+            /** @description By outcome: ok: array of TriagedIntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchAppointedIntakeRequestsAnswer: {
+            /** @description By outcome: ok: array of AppointedIntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchAvailableSlotAnswer: {
+            /** @description By outcome: ok: AvailableSlot; availableSlotConsumed: null; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "availableSlotConsumed" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchClosedIntakeRequestsByStartAnswer: {
+            /** @description By outcome: ok: array of ClosedIntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchDoctorAnswer: {
+            /** @description By outcome: ok: Doctor; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchDoctorCalendarEntriesOverlappingAnswer: {
+            /** @description By outcome: ok: array of DoctorCalendarEntry; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchDoctorsAnswer: {
+            /** @description By outcome: ok: array of Doctor */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok";
+        };
+        FetchHealthcareServiceAnswer: {
+            /** @description By outcome: ok: HealthcareService; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchHealthcareServicesAnswer: {
+            /** @description By outcome: ok: array of HealthcareService; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchIntakeRequestAnswer: {
+            /** @description By outcome: ok: IntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchPatientAnswer: {
+            /** @description By outcome: ok: Patient; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchPatientsAnswer: {
+            /** @description By outcome: ok: array of Patient */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok";
+        };
+        FetchRejectedIntakeRequestsByRejectedAtAnswer: {
+            /** @description By outcome: ok: array of RejectedIntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchStaleIntakeRequestsByStaleAtAnswer: {
+            /** @description By outcome: ok: array of StaleIntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchSubmittedIntakeRequestsAnswer: {
+            /** @description By outcome: ok: array of SubmittedIntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer: {
+            /** @description By outcome: ok: array of WithdrawnIntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        HealthcareService: {
+            duration: components["schemas"]["Duration"];
+            id: components["schemas"]["HealthcareServiceId"];
             name: string;
         };
-        IntakeRequestDTO: {
-            closeReason?: components["schemas"]["CloseReasonDTO"];
+        /**
+         * Format: uuid
+         * @example 00000000-0000-0000-0000-000000000000
+         */
+        HealthcareServiceId: string;
+        /** @description One object per case, told apart by "type". submitted: id, patientId, narrative, createdAt; rejected: id, patientId, narrative, createdAt, rejectedAt, rejectionReason; accepted: id, patientId, narrative, createdAt, healthcareServiceId, priority, doctorRequirement, triagedAt; appointed: id, patientId, narrative, createdAt, healthcareServiceId, priority, doctorRequirement, triagedAt, doctorId, start, duration; withdrawn: withdrawnFrom, id, patientId, narrative, createdAt, healthcareServiceId, priority, doctorRequirement, triagedAt, withdrawnAt, withdrawalNote; stale: id, patientId, narrative, createdAt, healthcareServiceId, priority, doctorRequirement, triagedAt, staleAt; closed: id, patientId, narrative, createdAt, healthcareServiceId, priority, doctorRequirement, triagedAt, doctorId, start, duration, closeReason */
+        IntakeRequest: {
+            closeReason?: components["schemas"]["CloseReason"];
             createdAt: components["schemas"]["UTCTime"];
-            doctorId?: components["schemas"]["UUID"];
-            doctorRequirement?: components["schemas"]["DoctorRequirementDTO"];
-            duration?: components["schemas"]["DurationDTO"];
-            healthcareServiceId?: components["schemas"]["UUID"];
-            id: components["schemas"]["UUID"];
+            doctorId?: components["schemas"]["DoctorId"];
+            doctorRequirement?: components["schemas"]["DoctorRequirement"];
+            duration?: components["schemas"]["Duration"];
+            healthcareServiceId?: components["schemas"]["HealthcareServiceId"];
+            id: components["schemas"]["IntakeRequestId"];
             narrative: string;
-            patientId: components["schemas"]["UUID"];
-            priority?: components["schemas"]["IntakeRequestPriorityDTO"];
+            patientId: components["schemas"]["PatientId"];
+            priority?: components["schemas"]["IntakeRequestPriority"];
             rejectedAt?: components["schemas"]["UTCTime"];
             rejectionReason?: string;
             staleAt?: components["schemas"]["UTCTime"];
             start?: components["schemas"]["UTCTime"];
             triagedAt?: components["schemas"]["UTCTime"];
             /** @enum {string} */
-            type: "submitted" | "rejected" | "accepted" | "appointed" | "withdrawnFromSubmitted" | "withdrawnFromAccepted" | "stale" | "closed";
+            type: "submitted" | "rejected" | "accepted" | "appointed" | "withdrawn" | "stale" | "closed";
             withdrawalNote?: string;
             withdrawnAt?: components["schemas"]["UTCTime"];
-        };
-        IntakeRequestPriorityDTO: {
-            due: {
-                [key: string]: unknown;
+            withdrawnFrom?: {
+                /** @enum {string} */
+                type: "fromSubmitted" | "fromAccepted";
             };
+        };
+        /**
+         * Format: uuid
+         * @example 00000000-0000-0000-0000-000000000000
+         */
+        IntakeRequestId: string;
+        /** @description One object per case, told apart by "type". emergency: mustBeSeenBy; urgent: mustBeSeenBy; routine: routine */
+        IntakeRequestPriority: {
+            mustBeSeenBy?: components["schemas"]["UTCTime"];
+            routine?: components["schemas"]["RoutineDue"];
             /** @enum {string} */
             type: "emergency" | "urgent" | "routine";
         };
-        MatchIntakeRequestRequest: {
-            slotId: components["schemas"]["UUID"];
+        MarkAcceptedIntakeRequestStaleAnswer: {
+            /** @description By outcome: transitioned: StaleIntakeRequest; movedOn: IntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "transitioned" | "movedOn" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
         };
-        PatientDTO: {
-            id: components["schemas"]["UUID"];
+        MatchAcceptedIntakeRequestToSlotAnswer: {
+            /** @description By outcome: matched: AppointedIntakeRequest; availableSlotConsumed: null; intakeRequestMovedOn: IntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "matched" | "availableSlotConsumed" | "intakeRequestMovedOn" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        MatchAcceptedIntakeRequestToSlotRequest: {
+            slotId: components["schemas"]["SlotId"];
+        };
+        MatchAvailableSlotByPriorityAnswer: {
+            /** @description By outcome: noMatchingIntakeRequest: null; matchAttempted: MatchOutcome; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "noMatchingIntakeRequest" | "matchAttempted" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        MatchOutcome: {
+            /** @description By outcome: matched: AppointedIntakeRequest; availableSlotConsumed: null; intakeRequestMovedOn: IntakeRequest */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "matched" | "availableSlotConsumed" | "intakeRequestMovedOn";
+        };
+        Patient: {
+            id: components["schemas"]["PatientId"];
             name: string;
         };
-        RejectIntakeRequestRequest: {
+        /**
+         * Format: uuid
+         * @example 00000000-0000-0000-0000-000000000000
+         */
+        PatientId: string;
+        RejectSubmittedIntakeRequestAnswer: {
+            /** @description By outcome: transitioned: RejectedIntakeRequest; movedOn: IntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "transitioned" | "movedOn" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        RejectSubmittedIntakeRequestRequest: {
             rejectionReason: string;
+        };
+        RejectedIntakeRequest: {
+            createdAt: components["schemas"]["UTCTime"];
+            id: components["schemas"]["IntakeRequestId"];
+            narrative: string;
+            patientId: components["schemas"]["PatientId"];
+            rejectedAt: components["schemas"]["UTCTime"];
+            rejectionReason: string;
+        };
+        /** @description One object per case, told apart by "type". routineAnytime: no other keys; routineNotBefore: routineNotBefore; routineNotAfter: routineNotAfter; routineWithin: routineNotBefore, routineNotAfter */
+        RoutineDue: {
+            routineNotAfter?: components["schemas"]["UTCTime"];
+            routineNotBefore?: components["schemas"]["UTCTime"];
+            /** @enum {string} */
+            type: "routineAnytime" | "routineNotBefore" | "routineNotAfter" | "routineWithin";
+        };
+        /**
+         * Format: uuid
+         * @example 00000000-0000-0000-0000-000000000000
+         */
+        SlotId: string;
+        StaleIntakeRequest: {
+            createdAt: components["schemas"]["UTCTime"];
+            doctorRequirement: components["schemas"]["DoctorRequirement"];
+            healthcareServiceId: components["schemas"]["HealthcareServiceId"];
+            id: components["schemas"]["IntakeRequestId"];
+            narrative: string;
+            patientId: components["schemas"]["PatientId"];
+            priority: components["schemas"]["IntakeRequestPriority"];
+            staleAt: components["schemas"]["UTCTime"];
+            triagedAt: components["schemas"]["UTCTime"];
+        };
+        SubmitIntakeRequestAnswer: {
+            /** @description By outcome: ok: SubmittedIntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "ok" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
         };
         SubmitIntakeRequestRequest: {
             narrative: string;
-            patientId: components["schemas"]["UUID"];
+            patientId: components["schemas"]["PatientId"];
+        };
+        SubmittedIntakeRequest: {
+            createdAt: components["schemas"]["UTCTime"];
+            id: components["schemas"]["IntakeRequestId"];
+            narrative: string;
+            patientId: components["schemas"]["PatientId"];
+        };
+        TriagedIntakeRequest: {
+            createdAt: components["schemas"]["UTCTime"];
+            doctorRequirement: components["schemas"]["DoctorRequirement"];
+            healthcareServiceId: components["schemas"]["HealthcareServiceId"];
+            id: components["schemas"]["IntakeRequestId"];
+            narrative: string;
+            patientId: components["schemas"]["PatientId"];
+            priority: components["schemas"]["IntakeRequestPriority"];
+            triagedAt: components["schemas"]["UTCTime"];
         };
         /**
          * Format: yyyy-mm-ddThh:MM:ssZ
          * @example 2016-07-22T00:00:00Z
          */
         UTCTime: string;
-        /**
-         * Format: uuid
-         * @example 00000000-0000-0000-0000-000000000000
-         */
-        UUID: string;
-        Value: {
-            [key: string]: unknown;
+        WithdrawIntakeRequestAnswer: {
+            /** @description By outcome: transitioned: WithdrawnIntakeRequest; movedOn: IntakeRequest; doctorNotFound: DoctorId; patientNotFound: PatientId; healthcareServiceNotFound: HealthcareServiceId; intakeRequestNotFound: IntakeRequestId; intakeRequestInWrongState: IntakeRequest; slotDoesNotMatchIntakeRequest: null */
+            detail: unknown;
+            /** @enum {string} */
+            outcome: "transitioned" | "movedOn" | "doctorNotFound" | "patientNotFound" | "healthcareServiceNotFound" | "intakeRequestNotFound" | "intakeRequestInWrongState" | "slotDoesNotMatchIntakeRequest";
+        };
+        WithdrawIntakeRequestRequest: {
+            withdrawalNote?: string;
+        };
+        /** @description Keys of the stage it was withdrawn from, by withdrawnFrom.type. fromSubmitted: id, patientId, narrative, createdAt; fromAccepted: id, patientId, narrative, createdAt, healthcareServiceId, priority, doctorRequirement, triagedAt */
+        WithdrawnIntakeRequest: {
+            createdAt: components["schemas"]["UTCTime"];
+            doctorRequirement?: components["schemas"]["DoctorRequirement"];
+            healthcareServiceId?: components["schemas"]["HealthcareServiceId"];
+            id: components["schemas"]["IntakeRequestId"];
+            narrative: string;
+            patientId: components["schemas"]["PatientId"];
+            priority?: components["schemas"]["IntakeRequestPriority"];
+            triagedAt?: components["schemas"]["UTCTime"];
+            withdrawalNote?: string;
+            withdrawnAt: components["schemas"]["UTCTime"];
+            withdrawnFrom: {
+                /** @enum {string} */
+                type: "fromSubmitted" | "fromAccepted";
+            };
         };
     };
     responses: never;

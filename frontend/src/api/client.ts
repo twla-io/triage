@@ -1,74 +1,34 @@
-import type { components } from './types'
+// The one fetch wrapper. Answers are returned untyped; src/api/wire.ts decodes them.
 
-export type Schemas = components['schemas']
-
-const BASE_URL: string = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
+const baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
 
 export class ApiError extends Error {
-  status: number
+  readonly status: number
+  readonly body: string
 
-  constructor(status: number, message: string) {
-    super(message)
+  constructor(status: number, body: string) {
+    super(`${status}: ${body}`)
+    this.name = 'ApiError'
     this.status = status
+    this.body = body
   }
 }
 
-// One shared fetch wrapper: base URL, JSON headers, and non-2xx -> ApiError.
-// Mirrors handleServiceError's "one place, not per-endpoint" discipline on
-// the backend (src/Api.hs).
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      ...init?.headers,
-    },
-  })
+type Query = Record<string, string>
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    throw new ApiError(res.status, body || res.statusText)
-  }
-
-  if (res.status === 204) {
-    return undefined as T
-  }
-
-  return (await res.json()) as T
-}
-
-export function get<T>(path: string): Promise<T> {
-  return request<T>(path)
-}
-
-export function post<T>(path: string, body?: unknown): Promise<T> {
-  return request<T>(path, {
-    method: 'POST',
+async function request(method: 'GET' | 'POST', path: string, query?: Query, body?: unknown): Promise<unknown> {
+  const search = query ? `?${new URLSearchParams(query).toString()}` : ''
+  const response = await fetch(`${baseUrl}${path}${search}`, {
+    method,
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
+  const text = await response.text()
+  if (!response.ok) throw new ApiError(response.status, text)
+  const parsed: unknown = text === '' ? null : JSON.parse(text)
+  return parsed
 }
 
-// Every mutation that has an outcome to discriminate (per Api.hs's own
-// MIDDLEWARE section) responds with this shape: {"outcome": tag,
-// "detail": value|null}. Unwrapped here, in the one place any caller needs
-// to know the envelope exists at all — call sites just switch on `outcome`.
-export interface Envelope<TDetail = unknown> {
-  outcome: string
-  detail: TDetail | null
-}
+export const apiGet = (path: string, query?: Query): Promise<unknown> => request('GET', path, query)
 
-export function postEnveloped<TDetail = unknown>(path: string, body?: unknown): Promise<Envelope<TDetail>> {
-  return post<Envelope<TDetail>>(path, body)
-}
-
-function toQuery(params: Record<string, string | undefined>): string {
-  const search = new URLSearchParams()
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined) search.set(key, value)
-  }
-  const qs = search.toString()
-  return qs ? `?${qs}` : ''
-}
-
-export { toQuery }
+export const apiPost = (path: string, body?: unknown): Promise<unknown> => request('POST', path, undefined, body)

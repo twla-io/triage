@@ -1,122 +1,110 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { get, postEnveloped, toQuery, type Schemas } from '../client'
+import { useQuery } from '@tanstack/react-query'
+import { apiGet, apiPost } from '../client'
+import {
+  decodeAcceptSubmittedIntakeRequestAnswer,
+  decodeCloseAppointedIntakeRequestAnswer,
+  decodeFetchAcceptedIntakeRequestsAnswer,
+  decodeFetchAppointedIntakeRequestsAnswer,
+  decodeFetchClosedIntakeRequestsAnswer,
+  decodeFetchRejectedIntakeRequestsAnswer,
+  decodeFetchStaleIntakeRequestsAnswer,
+  decodeFetchSubmittedIntakeRequestsAnswer,
+  decodeFetchWithdrawnIntakeRequestsAnswer,
+  decodeMarkAcceptedIntakeRequestStaleAnswer,
+  decodeMatchAcceptedIntakeRequestToSlotAnswer,
+  decodeRejectSubmittedIntakeRequestAnswer,
+  decodeSubmitIntakeRequestAnswer,
+  decodeWithdrawIntakeRequestAnswer,
+  type AcceptSubmittedIntakeRequestRequest,
+  type CloseAppointedIntakeRequestRequest,
+  type IntakeRequestId,
+  type MatchAcceptedIntakeRequestToSlotRequest,
+  type RejectSubmittedIntakeRequestRequest,
+  type SubmitIntakeRequestRequest,
+  type WithdrawIntakeRequestRequest,
+} from '../wire'
+import { useAnswerMutation, type TimeRange } from './mutation'
 
-export type IntakeRequestDTO = Schemas['IntakeRequestDTO']
-export type DoctorRequirementDTO = Schemas['DoctorRequirementDTO']
+const base = '/intake-requests'
+const one = (id: IntakeRequestId, action: string) => `${base}/${encodeURIComponent(id)}/${action}`
 
-// IntakeRequestPriorityDTO's "due" field comes back from the generated
-// schema as `unknown` (Transport.hs's swagger schema declares it as an
-// inline free-form object, see Transport.hs's IntakeRequestPriorityDTO
-// ToSchema instance) -- these two mirror Transport.hs's RoutineDueDTO /
-// IntakeRequestPriorityDTO wire shapes by hand for the one direction that
-// actually needs a precise type: building the request payload.
-export type RoutineDuePayload =
-  | { type: 'routineAnytime' }
-  | { type: 'routineNotBefore'; from: string }
-  | { type: 'routineNotAfter'; to: string }
-  | { type: 'routineWithin'; from: string; to: string }
+// ── Reads: one per IntakeRequest case ──────────────────────────────────────
 
-export type IntakeRequestPriorityPayload =
-  | { type: 'emergency'; due: string }
-  | { type: 'urgent'; due: string }
-  | { type: 'routine'; due: RoutineDuePayload }
-
-export function useSubmittedIntakeRequests() {
-  return useQuery({
+export const useSubmittedIntakeRequests = () =>
+  useQuery({
     queryKey: ['intake-requests', 'submitted'],
-    queryFn: () => get<IntakeRequestDTO[]>('/intake-requests/submitted'),
+    queryFn: async () => decodeFetchSubmittedIntakeRequestsAnswer(await apiGet(`${base}/submitted`)),
   })
-}
 
-export function useIntakeWaitlist() {
-  return useQuery({
-    queryKey: ['intake-requests', 'waitlist'],
-    queryFn: () => get<IntakeRequestDTO[]>('/intake-requests/waitlist'),
+export const useRejectedIntakeRequests = (range: TimeRange) =>
+  useQuery({
+    queryKey: ['intake-requests', 'rejected', range.from, range.to],
+    queryFn: async () => decodeFetchRejectedIntakeRequestsAnswer(await apiGet(`${base}/rejected`, { ...range })),
   })
-}
 
-export interface ClosedRange {
-  start: string
-  end: string
-  doctorId?: string
-}
-
-export function useClosedIntakeRequests(range: ClosedRange) {
-  return useQuery({
-    queryKey: ['intake-requests', 'closed', range],
-    queryFn: () =>
-      get<IntakeRequestDTO[]>(
-        `/intake-requests/closed${toQuery({ start: range.start, end: range.end, doctorId: range.doctorId })}`,
-      ),
+export const useAcceptedIntakeRequests = () =>
+  useQuery({
+    queryKey: ['intake-requests', 'accepted'],
+    queryFn: async () => decodeFetchAcceptedIntakeRequestsAnswer(await apiGet(`${base}/accepted`)),
   })
-}
 
-export interface SubmitIntakeRequestInput {
-  patientId: string
-  narrative: string
-}
-
-function invalidateIntakeQueries(queryClient: ReturnType<typeof useQueryClient>) {
-  queryClient.invalidateQueries({ queryKey: ['intake-requests'] })
-}
-
-export function useSubmitIntakeRequest() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (input: SubmitIntakeRequestInput) => postEnveloped<IntakeRequestDTO>('/intake-requests', input),
-    onSuccess: () => invalidateIntakeQueries(queryClient),
+export const useAppointedIntakeRequests = () =>
+  useQuery({
+    queryKey: ['intake-requests', 'appointed'],
+    queryFn: async () => decodeFetchAppointedIntakeRequestsAnswer(await apiGet(`${base}/appointed`)),
   })
-}
 
-export function useAcceptIntakeRequest() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: ({
-      id,
-      healthcareServiceId,
-      priority,
-      doctorRequirement,
-    }: {
-      id: string
-      healthcareServiceId: string
-      priority: IntakeRequestPriorityPayload
-      doctorRequirement: DoctorRequirementDTO
-    }) =>
-      postEnveloped<IntakeRequestDTO>(`/intake-requests/${id}/accept`, {
-        healthcareServiceId,
-        priority,
-        doctorRequirement,
-      }),
-    onSuccess: () => invalidateIntakeQueries(queryClient),
+export const useWithdrawnIntakeRequests = (range: TimeRange) =>
+  useQuery({
+    queryKey: ['intake-requests', 'withdrawn', range.from, range.to],
+    queryFn: async () => decodeFetchWithdrawnIntakeRequestsAnswer(await apiGet(`${base}/withdrawn`, { ...range })),
   })
-}
 
-export function useRejectIntakeRequest() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: ({ id, rejectionReason }: { id: string; rejectionReason: string }) =>
-      postEnveloped<IntakeRequestDTO>(`/intake-requests/${id}/reject`, { rejectionReason }),
-    onSuccess: () => invalidateIntakeQueries(queryClient),
+export const useStaleIntakeRequests = (range: TimeRange) =>
+  useQuery({
+    queryKey: ['intake-requests', 'stale', range.from, range.to],
+    queryFn: async () => decodeFetchStaleIntakeRequestsAnswer(await apiGet(`${base}/stale`, { ...range })),
   })
-}
 
-export function useMatchIntakeRequest() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: ({ id, slotId }: { id: string; slotId: string }) =>
-      postEnveloped(`/intake-requests/${id}/match`, { slotId }),
-    onSuccess: () => {
-      invalidateIntakeQueries(queryClient)
-      queryClient.invalidateQueries({ queryKey: ['slots'] })
-      queryClient.invalidateQueries({ queryKey: ['calendar'] })
-    },
+export const useClosedIntakeRequests = (range: TimeRange) =>
+  useQuery({
+    queryKey: ['intake-requests', 'closed', range.from, range.to],
+    queryFn: async () => decodeFetchClosedIntakeRequestsAnswer(await apiGet(`${base}/closed`, { ...range })),
   })
-}
 
-export function useMarkIntakeRequestStale() {
-  const queryClient = useQueryClient()
-  return useMutation({
-    mutationFn: (id: string) => postEnveloped<IntakeRequestDTO>(`/intake-requests/${id}/mark-stale`),
-    onSuccess: () => invalidateIntakeQueries(queryClient),
-  })
-}
+// ── Mutations ──────────────────────────────────────────────────────────────
+
+export const useSubmitIntakeRequest = () =>
+  useAnswerMutation(async (body: SubmitIntakeRequestRequest) =>
+    decodeSubmitIntakeRequestAnswer(await apiPost(base, body)),
+  )
+
+export const useAcceptSubmittedIntakeRequest = () =>
+  useAnswerMutation(async ({ id, body }: { id: IntakeRequestId; body: AcceptSubmittedIntakeRequestRequest }) =>
+    decodeAcceptSubmittedIntakeRequestAnswer(await apiPost(one(id, 'accept'), body)),
+  )
+
+export const useRejectSubmittedIntakeRequest = () =>
+  useAnswerMutation(async ({ id, body }: { id: IntakeRequestId; body: RejectSubmittedIntakeRequestRequest }) =>
+    decodeRejectSubmittedIntakeRequestAnswer(await apiPost(one(id, 'reject'), body)),
+  )
+
+export const useWithdrawIntakeRequest = () =>
+  useAnswerMutation(async ({ id, body }: { id: IntakeRequestId; body: WithdrawIntakeRequestRequest }) =>
+    decodeWithdrawIntakeRequestAnswer(await apiPost(one(id, 'withdraw'), body)),
+  )
+
+export const useMatchAcceptedIntakeRequestToSlot = () =>
+  useAnswerMutation(async ({ id, body }: { id: IntakeRequestId; body: MatchAcceptedIntakeRequestToSlotRequest }) =>
+    decodeMatchAcceptedIntakeRequestToSlotAnswer(await apiPost(one(id, 'match-to-slot'), body)),
+  )
+
+export const useMarkAcceptedIntakeRequestStale = () =>
+  useAnswerMutation(async (id: IntakeRequestId) =>
+    decodeMarkAcceptedIntakeRequestStaleAnswer(await apiPost(one(id, 'mark-stale'))),
+  )
+
+export const useCloseAppointedIntakeRequest = () =>
+  useAnswerMutation(async ({ id, body }: { id: IntakeRequestId; body: CloseAppointedIntakeRequestRequest }) =>
+    decodeCloseAppointedIntakeRequestAnswer(await apiPost(one(id, 'close'), body)),
+  )
