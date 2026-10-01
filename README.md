@@ -7,21 +7,23 @@ A priority-based medical appointment scheduling domain model in Haskell.
 
 `src/Domain.hs` is the pure domain model — every type and its valid state
 transitions. Sealed types and smart constructors encode invariants directly
-into the type system, so the file doubles as a specification other layers
-(DB schema, API, UI) can be generated from.
+into the type system, and every stored value has a name, so the file doubles
+as a specification other layers (DB schema, persistence, service, API, UI)
+are generated from.
 
 ### Core types
 
 **ID wrappers** — `DoctorId`, `PatientId`, `HealthcareServiceId`,
 `IntakeRequestId`, `SlotId`: `UUID`-backed identifiers.
 
-**Duration** — `Duration = QuarterOfAnHour | HalfAnHour | OneHour`.
+**Duration** — `Duration = QuarterOfAnHour | HalfAnHour | OneHour`, deriving
+`Enum, Bounded`.
 
 **Doctor / Patient** — `Doctor`, `Patient`: `id` and `name` only, deliberately
-minimal pending a future external system.
+minimal — expected to move to a separate system later.
 
-**Healthcare Service** — `HealthcareService`: `id`, `name`, `duration` (the
-canonical duration copied into each `Slot` at allocation time). Deliberately
+**Healthcare Service** — `HealthcareService`: `id`, `name`, `duration` — the
+canonical duration copied into each slot at allocation time. Deliberately
 unrelated to `IntakeRequest`'s naming — this is the service catalog, a
 broader concept than any one request's front-door path.
 
@@ -31,83 +33,94 @@ any priority; a patient's preference is part of the narrative, not a typed
 field. An `Emergency` or `Urgent` request waits for a specific doctor only if
 triage sets one.
 
-**Priority / Due constraints** — `EmergencyDue`, `UrgentDue` (each a `UTCTime`
-deadline); `RoutineDue = RoutineAnytime | RoutineNotBefore UTCTime |
-RoutineNotAfter UTCTime | RoutineWithin UTCTime UTCTime`;
-`IntakeRequestPriority = Emergency EmergencyDue | Urgent UrgentDue | Routine
-RoutineDue`. Priority is assigned by a triager, never self-declared by the
-patient.
+**Priority / Due constraints** — `MustBeSeenBy` (a `UTCTime` deadline);
+`RoutineDue = RoutineAnytime | RoutineNotBefore UTCTime | RoutineNotAfter
+UTCTime | RoutineWithin RoutineWindow`; `RoutineWindow` (sealed, read through
+`routineNotBefore` / `routineNotAfter`); `IntakeRequestPriority = Emergency
+MustBeSeenBy | Urgent MustBeSeenBy | Routine RoutineDue`. Priority is assigned
+by a triager (doctor or qualified assistant), never self-declared by the
+patient. Emergency and Urgent express "must be seen by X"; Routine expresses
+the appointment window (or Anytime). A constructor with a single field names
+that field's value.
 
 **Intake Request** — `IntakeRequest` is the narrow front-door path from a
 patient's raw ask to a single appointment, not a general "appointment"
 aggregate; because the relationship is confirmed 1:1 permanently, there is no
-separate `Appointment` type. One linear embedding chain: `SubmittedIntakeRequest`
-(the base record — `id`, `patientId`, `narrative`, `createdAt`; no separate
-"Details" type) → `TriagedIntakeRequest` (embeds `submitted` and adds
-`healthcareServiceId`, `priority`, `doctorRequirement`, `triagedAt`) →
-`AppointedIntakeRequest` (embeds `triaged` and adds `doctorId`, `start`,
-`duration`). `WithdrawnIntakeRequest = WithdrawnFromSubmitted
-SubmittedIntakeRequest UTCTime (Maybe Text) | WithdrawnFromAccepted
-TriagedIntakeRequest UTCTime (Maybe Text)` — only two cases; ending an
-`Appointed` request is always `Closed` instead. `AppointmentParty = ByDoctor
-| ByPatient`. `CloseReason = Completed | Cancelled AppointmentParty UTCTime
-(Maybe Text) | NoShow AppointmentParty` — `Cancelled`'s `UTCTime` is when the
-cancellation occurred, distinct from the request's own scheduled date, not
-validated against it structurally; the trailing `Maybe Text` is an optional
-administrative note. `IntakeRequest = Submitted SubmittedIntakeRequest |
-Rejected SubmittedIntakeRequest UTCTime Text | Accepted TriagedIntakeRequest
-| Appointed AppointedIntakeRequest | Withdrawn WithdrawnIntakeRequest | Stale
-TriagedIntakeRequest UTCTime | Closed AppointedIntakeRequest CloseReason` —
-one sum type, one identity (`IntakeRequestId`) throughout;
-`Rejected`/`Withdrawn`/`Stale`/`Closed` are all permanently terminal, no
-transitions back out of any of them; a patient who needs to be seen again —
-including one displaced or rescheduled from an appointment, which is
-`Closed (Cancelled ...)` — gets a brand new `IntakeRequest`. `Stale` is reachable only from
-`Accepted` — staff manually closing out an accepted request that never got
-matched to a slot or withdrawn by the patient; always an explicit,
-staff-initiated action, never automatic or timer-driven.
+separate `Appointment` type. Each stage embeds the prior stage whole and adds
+only the fields that stage contributes:
+- `SubmittedIntakeRequest` — the base record: `id`, `patientId`,
+  `narrative`, `createdAt`; no separate "Details" type.
+- `RejectedIntakeRequest` — `submitted`, `rejectedAt`, `rejectionReason`.
+- `TriagedIntakeRequest` — `submitted`, `healthcareServiceId`, `priority`,
+  `doctorRequirement`, `triagedAt`.
+- `AppointedIntakeRequest` — `triaged`, `doctorId`, `start`, `duration`.
+- `WithdrawnIntakeRequest` — `withdrawnFrom`, `withdrawnAt`,
+  `withdrawalNote`, with `WithdrawnFrom = FromSubmitted
+  SubmittedIntakeRequest | FromAccepted TriagedIntakeRequest` — only two
+  cases; ending an `Appointed` request is always `Closed` instead.
+- `StaleIntakeRequest` — `triaged`, `staleAt`.
+- `ClosedIntakeRequest` — `appointed`, `closeReason`, with `CloseReason =
+  Completed | Cancelled Cancellation | NoShow Absence`, `Cancellation` —
+  `cancelledBy`, `cancelledAt`, `cancellationNote`, and `Absence` —
+  `absentParty`. `AppointmentParty = DoctorParty | PatientParty`, deriving
+  `Enum, Bounded`. `cancelledAt` is when the cancellation occurred, not the
+  appointment's own start — not validated against it; Cancelled vs. NoShow is
+  the booking manager's judgment call, recorded as given.
+
+`IntakeRequest = Submitted SubmittedIntakeRequest | Rejected
+RejectedIntakeRequest | Accepted TriagedIntakeRequest | Appointed
+AppointedIntakeRequest | Withdrawn WithdrawnIntakeRequest | Stale
+StaleIntakeRequest | Closed ClosedIntakeRequest` — one sum type, one identity
+(`IntakeRequestId`) throughout. `Rejected`/`Withdrawn`/`Stale`/`Closed` are
+all permanently terminal; a patient who needs to be seen again — including
+one displaced or rescheduled from an appointment, which is `Closed
+(Cancelled ...)` — gets a brand new `IntakeRequest`. `Stale` is reachable only
+from `Accepted` — always an explicit, staff-initiated action, never automatic
+or timer-driven.
 
 **Slot** — `AvailableSlot`: `id`, `doctorId`, `healthcareServiceId`, `start`,
 `duration`. A slot has no existence independent of matching — available
-until claimed, then fully absorbed into the appointed request; there is no
+until claimed, then fully absorbed into the appointment; there is no
 post-booking slot state, no freeing, and no sealed "proof" wrapper.
 
-**Doctor Calendar** — `CalendarEntry = Slot AvailableSlot | Appointment
+**Doctor Calendar** — `DoctorCalendarEntry = Slot AvailableSlot | Appointment
 AppointedIntakeRequest`: everything that occupies a doctor's time.
 `DoctorCalendar`: all doctors' entries, where no two entries of the same
 doctor overlap; entries occupy half-open intervals `[start, end)`, so
-touching is not overlapping. `mkDoctorCalendar :: [CalendarEntry] -> Maybe
-DoctorCalendar` builds one from existing entries; `addAvailableSlot ::
-DoctorCalendar -> SlotId -> DoctorId -> HealthcareService -> UTCTime ->
-Maybe (AvailableSlot, DoctorCalendar)` creates a new slot, lasting as long
-as its service, and grows the calendar with it — a slot is the only thing
-ever added; appointments arrive by matching, which takes
-over the slot's exact interval. A value cannot prove it matches what is
-currently stored, so stored data needs the same invariant enforced where it
-lives.
+touching is not overlapping. A slot is the only thing ever added to a
+calendar; appointments arrive by matching, which takes over the slot's exact
+interval. A value cannot prove it matches what is currently stored, so
+stored data needs the same invariant enforced where it lives.
 
 ### Sealed vs. open
 
 Constructors are hidden only where there's an invariant to protect:
 
-- `RoutineDue`'s `RoutineWithin` case — construct only via
-  `mkRoutineWithin` (enforces `from <= to`); read its bounds back out via
-  `routineWithinBounds` (returns `Nothing` for any other constructor), the
-  read-only accessor a downstream layer needs to encode an already-valid
-  value without the constructor itself being exported.
-- `DoctorCalendar` — construct only via `mkDoctorCalendar` and grow only via
-  `addAvailableSlot`, both of which enforce the no-overlap invariant for the
-  value they build.
+- `RoutineWindow` — construct only via `mkRoutineWindow :: UTCTime ->
+  UTCTime -> Maybe RoutineWindow` (enforces `routineNotBefore <=
+  routineNotAfter`); it has no record fields, since record update would
+  bypass that check — its values are read through the exported read-only
+  accessors `routineNotBefore` / `routineNotAfter`.
+- `DoctorCalendar` — construct only via `mkDoctorCalendar ::
+  [DoctorCalendarEntry] -> Maybe DoctorCalendar` and grow only via
+  `addAvailableSlot :: DoctorCalendar -> SlotId -> DoctorId ->
+  HealthcareService -> UTCTime -> Maybe (AvailableSlot, DoctorCalendar)`,
+  which creates a slot lasting as long as its service; both enforce the
+  no-overlap invariant for the value they build.
 
-Every other type (`IntakeRequestPriority`, `AvailableSlot`,
-`CalendarEntry`, `SubmittedIntakeRequest`, `TriagedIntakeRequest`, `AppointedIntakeRequest`,
-`WithdrawnIntakeRequest`, `IntakeRequest`, ...) exports its constructors
-openly — there's no invariant beyond what its own field types already
-enforce.
+Every other type (`IntakeRequestPriority`, `RoutineDue`, `AvailableSlot`,
+`DoctorCalendarEntry`, `SubmittedIntakeRequest`, `TriagedIntakeRequest`,
+`AppointedIntakeRequest`, `WithdrawnIntakeRequest`, `IntakeRequest`, ...)
+exports its constructors openly — there's no invariant beyond what its own
+field types already enforce.
 
 ### Key functions
 
 ```haskell
+acceptIntakeRequest
+  :: SubmittedIntakeRequest -> HealthcareServiceId -> IntakeRequestPriority
+  -> DoctorRequirement -> UTCTime -> TriagedIntakeRequest
+
 matches
   :: AvailableSlot -> TriagedIntakeRequest -> Bool
 
@@ -119,15 +132,11 @@ matchByPriority
 ```
 
 `matchByPriority` sorts the requests it is given by priority and tries
-`matchIntakeRequestToSlot` against each in order, taking the first success —
-no separate offer/accept step. `matchIntakeRequestToSlot` returns the
-`AppointedIntakeRequest` alone: the matched slot's doctor/time/duration facts
-are copied once into the request at the moment of matching, and the original
-slot ceases to be referenced or exist thereafter. There is no
-reassignment or reclaim function: rescheduling closes the appointment and
-matches a new request like any other waitlisted one.
-There is no `rejectIntakeRequest` function either — rejection is direct
-construction (`Rejected submitted rejectedAt reason`), no dedicated function.
+`matchIntakeRequestToSlot` against each in order, taking the first success.
+`matchIntakeRequestToSlot` copies the slot's doctor, start and duration into
+the `AppointedIntakeRequest`; the slot itself is not referenced afterwards.
+Reject, withdraw, stale and close have no dedicated function — they are
+direct construction of their stage records.
 
 ### Generating downstream layers
 
@@ -135,14 +144,13 @@ If you're generating a database schema, a service layer, an API, or a UI
 from this domain model — whether by hand or with an AI coding agent — read
 the relevant skill under `.claude/skills/` first:
 
-- `triage-db-codegen` — database schema and persistence-layer conventions
-- `triage-service-codegen` — Service.hs orchestration-layer conventions
-- `triage-api-codegen` — API conventions
-- `triage-ui-codegen` — UI/UX conventions
+- `triage-db-codegen` — database schema generation
+- `triage-service-codegen` — Service.hs orchestration layer generation
+- `triage-api-codegen` — REST/GraphQL/RPC API generation
+- `triage-ui-codegen` — frontend UI/UX generation
 
-Each separates fixed invariants of the domain model from genuine architecture
-choices — the invariants always apply; the choices should be confirmed with
-whoever owns that layer before assuming one.
+Each skill holds generic rules for how a kind of Haskell construct maps to
+its layer; every name and shape comes from `Domain.hs`.
 <!-- DOMAIN-MODEL:END -->
 
 See `src/Domain.hs` for the full model and the reasoning behind each design

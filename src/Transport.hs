@@ -1,432 +1,380 @@
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE NamedFieldPuns        #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
--- ToSchema Value below is a genuine orphan: Value is aeson's, ToSchema is
--- swagger2's, neither defined here. Needed at the library level (not
--- just in tests) because Api.hs's own toSwagger call walks every route
--- in API, several of which respond with a bare Value (the
--- {"outcome","detail"} envelope — see Api.hs's MIDDLEWARE section).
-{-# OPTIONS_GHC -Wno-orphans #-}
+{-# LANGUAGE TypeApplications      #-}
 
--- JSON wire-format boundary for the triage domain model, generated from
--- src/Domain.hs per .claude/skills/triage-api-codegen/SKILL.md. DTOs are
--- twin types, not ToJSON/FromJSON instances on Domain.hs types directly —
--- Domain.hs has no serialization awareness of any kind (see CLAUDE.md's
--- "Modules and dependencies"), so every wire shape lives here instead. Same pattern
--- as Persistence.hs's Row types and toDomainX/fromDomainX boundary
--- functions, except JSON-shaped rather than SQL-row-shaped. Re-derive from
--- Domain.hs on any domain change rather than hand-patching this file out
--- of sync with it.
+-- Derived from src/Domain.hs by the triage-api-codegen skill: the JSON wire
+-- format. One DTO per Domain.hs type that crosses the wire, with
+-- hand-written ToJSON / FromJSON / ToSchema, plus one request type per
+-- Service function that takes caller-supplied facts. Domain types carry no
+-- instances.
 --
--- ToJSON/FromJSON instances below are written by hand against explicit
--- JSON string keys (opaque-uuid-ids, tagged-flat-serialization), never
--- `deriving (Generic, ToJSON)` — a wire key must not silently drift if a
--- Haskell field is renamed later.
---
--- ToSchema instances (swagger2) are hand-written for the identical
--- reason and sit immediately below each DTO's ToJSON/FromJSON pair —
--- never `genericDeclareNamedSchema`, which would describe aeson
--- Generic's default nested {"tag","contents"} shape, not the flat,
--- uniformly-"type"-tagged shape these ToJSON instances actually
--- produce. See the SWAGGER SCHEMA HELPERS section below for the shared
--- building blocks and the Swagger-2.0-has-no-oneOf reasoning that
--- shapes every discriminated-union instance in this file.
-
+-- Wire shape (tagged-flat-serialization): a sum type is one flat object per
+-- case, discriminated by "type" (the constructor in lowerCamelCase);
+-- embedded stages are flattened into their case's object; a nested value is
+-- an object under its field's key; every ID is a plain UUID string.
 module Transport
-  ( -- ── Decode errors ────────────────────────────────────────────────────
-    TransportError (..)
+  ( -- ── IDs ──────────────────────────────────────────────────────────────
+    DoctorIdDTO (..)
+  , PatientIdDTO (..)
+  , HealthcareServiceIdDTO (..)
+  , IntakeRequestIdDTO (..)
+  , SlotIdDTO (..)
+  , toDomainDoctorId
+  , fromDomainDoctorId
+  , toDomainPatientId
+  , fromDomainPatientId
+  , toDomainHealthcareServiceId
+  , fromDomainHealthcareServiceId
+  , toDomainIntakeRequestId
+  , fromDomainIntakeRequestId
+  , toDomainSlotId
+  , fromDomainSlotId
 
-    -- ── Doctor / Patient ─────────────────────────────────────────────────
-  , DoctorDTO (..)
-  , toDomainDoctor
-  , fromDomainDoctor
-  , PatientDTO (..)
-  , toDomainPatient
-  , fromDomainPatient
-
-    -- ── Doctor / Patient Create Requests ─────────────────────────────────
-  , CreateDoctorRequest (..)
-  , CreatePatientRequest (..)
-
-    -- ── Duration ─────────────────────────────────────────────────────────
+    -- ── Enumerations ─────────────────────────────────────────────────────
   , DurationDTO (..)
   , toDomainDuration
   , fromDomainDuration
-
-    -- ── Healthcare Service ───────────────────────────────────────────────
-  , HealthcareServiceDTO (..)
-  , toDomainHealthcareService
-  , fromDomainHealthcareService
-
-    -- ── Healthcare Service Create Request ────────────────────────────────
-  , CreateHealthcareServiceRequest (..)
-
-    -- ── Slot ─────────────────────────────────────────────────────────────
-  , AvailableSlotDTO (..)
-  , fromDomainAvailableSlot
-
-    -- ── Slot Create Request ──────────────────────────────────────────────
-  , CreateAvailableSlotRequest (..)
-
-    -- ── Appointment Party ────────────────────────────────────────────────
   , AppointmentPartyDTO (..)
   , toDomainAppointmentParty
   , fromDomainAppointmentParty
 
-    -- ── Routine Due ──────────────────────────────────────────────────────
+    -- ── Doctor / Patient / Healthcare service ────────────────────────────
+  , DoctorDTO (..)
+  , fromDomainDoctor
+  , toDomainDoctor
+  , PatientDTO (..)
+  , fromDomainPatient
+  , toDomainPatient
+  , HealthcareServiceDTO (..)
+  , fromDomainHealthcareService
+  , toDomainHealthcareService
+
+    -- ── Doctor requirement / priority ────────────────────────────────────
+  , DoctorRequirementDTO (..)
+  , toDomainDoctorRequirement
+  , fromDomainDoctorRequirement
+  , MustBeSeenByDTO (..)
+  , toDomainMustBeSeenBy
+  , fromDomainMustBeSeenBy
+  , RoutineWindowDTO (..)
+  , toDomainRoutineWindow
+  , fromDomainRoutineWindow
   , RoutineDueDTO (..)
   , toDomainRoutineDue
   , fromDomainRoutineDue
-
-    -- ── Close Reason ─────────────────────────────────────────────────────
-  , CloseReasonDTO (..)
-  , toDomainCloseReason
-  , fromDomainCloseReason
-
-    -- ── Close Reason Request ─────────────────────────────────────────────
-  , CloseReasonRequestDTO (..)
-  , closeReasonFromRequest
-
-    -- ── Intake Request Priority ──────────────────────────────────────────
   , IntakeRequestPriorityDTO (..)
   , toDomainIntakeRequestPriority
   , fromDomainIntakeRequestPriority
 
-    -- ── Doctor Requirement ───────────────────────────────────────────────
-  , DoctorRequirementDTO (..)
-  , toDomainDoctorRequirement
-  , fromDomainDoctorRequirement
-
-    -- ── Appointed Intake Request ─────────────────────────────────────────
+    -- ── Intake request ───────────────────────────────────────────────────
+  , SubmittedIntakeRequestDTO (..)
+  , toDomainSubmittedIntakeRequest
+  , fromDomainSubmittedIntakeRequest
+  , RejectedIntakeRequestDTO (..)
+  , toDomainRejectedIntakeRequest
+  , fromDomainRejectedIntakeRequest
+  , TriagedIntakeRequestDTO (..)
+  , toDomainTriagedIntakeRequest
+  , fromDomainTriagedIntakeRequest
   , AppointedIntakeRequestDTO (..)
   , toDomainAppointedIntakeRequest
   , fromDomainAppointedIntakeRequest
-
-    -- ── Intake Request ───────────────────────────────────────────────────
+  , WithdrawnFromDTO (..)
+  , toDomainWithdrawnFrom
+  , fromDomainWithdrawnFrom
+  , WithdrawnIntakeRequestDTO (..)
+  , toDomainWithdrawnIntakeRequest
+  , fromDomainWithdrawnIntakeRequest
+  , StaleIntakeRequestDTO (..)
+  , toDomainStaleIntakeRequest
+  , fromDomainStaleIntakeRequest
+  , CancellationDTO (..)
+  , toDomainCancellation
+  , fromDomainCancellation
+  , AbsenceDTO (..)
+  , toDomainAbsence
+  , fromDomainAbsence
+  , CloseReasonDTO (..)
+  , toDomainCloseReason
+  , fromDomainCloseReason
+  , ClosedIntakeRequestDTO (..)
+  , toDomainClosedIntakeRequest
+  , fromDomainClosedIntakeRequest
   , IntakeRequestDTO (..)
   , toDomainIntakeRequest
   , fromDomainIntakeRequest
 
-    -- ── Intake Request Requests (Submit / Accept / Reject) ───────────────
-  , SubmitIntakeRequestRequest (..)
-  , AcceptIntakeRequestRequest (..)
-  , RejectIntakeRequestRequest (..)
-  , MatchIntakeRequestRequest (..)
+    -- ── Slot / doctor calendar ───────────────────────────────────────────
+  , AvailableSlotDTO (..)
+  , toDomainAvailableSlot
+  , fromDomainAvailableSlot
+  , DoctorCalendarEntryDTO (..)
+  , toDomainDoctorCalendarEntry
+  , fromDomainDoctorCalendarEntry
 
-    -- ── Calendar Entry ───────────────────────────────────────────────────
-  , CalendarEntryDTO (..)
-  , fromDomainCalendarEntry
+    -- ── Request bodies ───────────────────────────────────────────────────
+  , CreateDoctorRequest (..)
+  , CreatePatientRequest (..)
+  , CreateHealthcareServiceRequest (..)
+  , SubmitIntakeRequestRequest (..)
+  , AcceptSubmittedIntakeRequestRequest (..)
+  , RejectSubmittedIntakeRequestRequest (..)
+  , MatchAcceptedIntakeRequestToSlotRequest (..)
+  , WithdrawIntakeRequestRequest (..)
+  , CloseAppointedIntakeRequestRequest (..)
+  , CloseReasonRequest (..)
+  , CancellationRequest (..)
+  , toDomainCloseReasonRequest
+  , CreateAvailableSlotRequest (..)
   ) where
 
-import Control.Lens     ((&), (.~), (?~))
-import Data.Aeson       (FromJSON (..), ToJSON (..), Value (String), object, withObject, (.:), (.=))
-import Data.Aeson.Types (Parser)
-import Data.Proxy       (Proxy (..))
+import Control.Lens        ((&), (.~), (?~))
+import Control.Monad       (unless)
+import Data.Aeson
+  ( FromJSON (..), Object, ToJSON (..), Value (..), object, withObject, (.:), (.=) )
+import Data.Aeson.Types    (Pair, Parser)
+import Data.Function       (on)
+import Data.List           (find, intersect, nubBy)
+import Data.Proxy          (Proxy (..))
 import Data.Swagger
-  ( AdditionalProperties (AdditionalPropertiesAllowed)
-  , NamedSchema (NamedSchema)
-  , Referenced (Inline)
-  , Schema
-  , SwaggerType (SwaggerObject, SwaggerString)
-  , ToSchema (..)
-  , additionalProperties
-  , declareSchemaRef
-  , enum_
-  , properties
-  , required
-  , type_
-  )
-import Data.Text        (Text)
-import Data.Time        (UTCTime)
-import Data.UUID        (UUID)
+  ( Definitions, NamedSchema (..), Referenced (..), Schema, SwaggerType (..), ToParamSchema (..)
+  , ToSchema (..), declareSchemaRef, description, enum_, properties, required, toSchema, type_ )
+import Data.Swagger.Declare (Declare)
+import Data.Text           (Text)
+import Data.Time           (UTCTime)
+import Data.UUID           (UUID)
+import GHC.Exts            (fromList)
+import Servant.API         (FromHttpApiData (..))
 
-import qualified Data.HashMap.Strict.InsOrd.Compat as InsOrdHashMap
-import qualified Data.UUID                         as UUID
+import qualified Data.Aeson.Key    as Key
+import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.Text         as Text
+import qualified Data.UUID         as UUID
 
 import Domain
-  ( AppointedIntakeRequest (..)
-  , AppointmentParty (..)
-  , AvailableSlot (..)
-  , CalendarEntry (..)
-  , CloseReason (..)
-  , Doctor (..)
-  , DoctorId (..)
-  , DoctorRequirement (..)
-  , Duration (..)
-  , EmergencyDue (..)
-  , HealthcareService (..)
-  , HealthcareServiceId (..)
-  , IntakeRequest (..)
-  , IntakeRequestId (..)
-  , IntakeRequestPriority (..)
-  , Patient (..)
-  , PatientId (..)
-  , RoutineDue (RoutineAnytime, RoutineNotAfter, RoutineNotBefore)
-  , SlotId (..)
-  , SubmittedIntakeRequest (..)
-  , TriagedIntakeRequest (..)
-  , UrgentDue (..)
-  , WithdrawnIntakeRequest (..)
-  , mkRoutineWithin
-  , routineWithinBounds
-  )
 
--- ═══════════════════════════════════════════════════════════════════════
--- DECODE ERRORS
--- Transport-local, not Persistence.DecodeError — Transport and Persistence
--- are peer layers over Domain (see CLAUDE.md's "Modules and
--- dependencies"), neither stacked on the other, so Transport does not
--- depend on Persistence for this.
--- ═══════════════════════════════════════════════════════════════════════
+-- ═══════════════════════════════════════════════════════════════════════════
+-- FLAT OBJECTS
+-- Every DTO is an object; flattening a value into an enclosing object is
+-- concatenating its keys. Each DTO says once which keys it contributes, how
+-- to read them back from an object, and their schema; its ToJSON, FromJSON
+-- and ToSchema are built from that.
+-- ═══════════════════════════════════════════════════════════════════════════
 
--- The shared decode-error type for the whole Transport module, not scoped
--- to any one type — down to a single constructor for now (Duration used
--- to contribute InvalidDurationMinutes too, back when it wired as a raw
--- durationMinutes :: Int; now that Duration is its own tagged DTO enum
--- like every other closed Domain.hs sum type, an invalid tag fails to
--- parse before any TransportError-producing function ever runs, so that
--- case is gone).
-data TransportError
-  = InvalidRoutineWithinRange UTCTime UTCTime
-    -- ^ a { "type": "routineWithin", "from": ..., "to": ... } DTO whose
-    -- from/to fail mkRoutineWithin's from <= to invariant.
-  deriving (Show, Eq)
+type Decl = Declare (Definitions Schema)
 
--- Shared by every DTO field below carrying an ID — opaque-uuid-ids: plain
--- UUID strings on the wire, never a wrapped object.
-parseUUIDField :: Text -> Parser UUID
-parseUUIDField t = maybe (fail ("invalid UUID: " ++ show t)) pure (UUID.fromText t)
-
--- ═══════════════════════════════════════════════════════════════════════
--- SWAGGER SCHEMA HELPERS
--- Shared building blocks for every hand-written ToSchema instance below.
--- swagger2's own declareSchemaRef reuses its already-correct base
--- instances for UUID/Text/UTCTime (formats, "uuid"/date-time hints, ...)
--- — reused here rather than hand-rolled, same reuse discipline as every
--- DTO's own toJSON reusing UUID.toText rather than reimplementing UUID
--- formatting.
---
--- objectSchema is for DTOs with no discriminator at all (DoctorDTO,
--- AppointedIntakeRequestDTO, ...): a flat object, every listed field in
--- "properties", the given subset "required".
---
--- taggedSchema is for every discriminated-union DTO (DurationDTO,
--- AppointmentPartyDTO, RoutineDueDTO, CloseReasonDTO,
--- CloseReasonRequestDTO, IntakeRequestPriorityDTO, DoctorRequirementDTO,
--- IntakeRequestDTO, CalendarEntryDTO). Swagger 2.0 has no oneOf — that is
--- an OpenAPI 3.x-only feature, absent from swagger2's own Schema type
--- entirely (checked directly against Data.Swagger.Internal, not
--- assumed). Swagger 2.0's Schema does carry a "discriminator" field, but
--- swagger2's own validator (Data.Swagger.Internal.Schema.Validation's
--- validateObject) interprets it as OpenAPI's allOf/subtype-schema
--- polymorphism — it expects the discriminator property's VALUE to
--- itself parse as a Referenced Schema (a registered subtype's schema
--- name), which is the wrong mechanism entirely for a flat semantic tag
--- like "type": "submitted". So taggedSchema does NOT set discriminator;
--- instead it describes one flattened object schema whose properties are
--- the UNION of every case's fields, gated by a required, enum-
--- constrained "type" string property. This is also what validates
--- correctly under swagger2's own validateProps: every key genuinely
--- present in a specific case's JSON must appear in the declared
--- properties (checked against the union, so it always does), while
--- properties absent from that case are fine as long as they're not
--- listed as required.
--- ═══════════════════════════════════════════════════════════════════════
-
-objectSchema :: Text -> [(Text, Referenced Schema)] -> [Text] -> NamedSchema
-objectSchema dtoName fields reqs = NamedSchema (Just dtoName) $ mempty
-  & type_ ?~ SwaggerObject
-  & properties .~ InsOrdHashMap.fromList fields
-  & required .~ reqs
-
--- The "type" discriminator's own schema, shared by every tagged case —
--- a plain string constrained to the case's exact set of tag values.
-tagSchema :: [Text] -> Schema
-tagSchema tags = mempty
-  & type_ ?~ SwaggerString
-  & enum_ ?~ map String tags
-
-taggedSchema :: Text -> [Text] -> [(Text, Referenced Schema)] -> [Text] -> NamedSchema
-taggedSchema dtoName tags fields reqs =
-  objectSchema dtoName (("type", Inline (tagSchema tags)) : fields) ("type" : reqs)
-
--- IntakeRequestPriorityDTO's own "due" field is the one place in this
--- file where a single field name genuinely carries two incompatible
--- wire shapes depending on the sibling "type" tag: a bare UTCTime string
--- for emergency/urgent, a nested tagged RoutineDueDTO object for
--- routine. Swagger 2.0 has no union-of-types support to express this
--- precisely (SwaggerType is a single value, not a list, and there is no
--- oneOf/anyOf — see taggedSchema's own comment above) — anySchema
--- leaves the type unconstrained and additionalProperties permissive,
--- the most honest description swagger2 can produce for this one field,
--- rather than picking one of the two real shapes and silently
--- mis-describing the other.
-anySchema :: Schema
-anySchema = mempty & additionalProperties ?~ AdditionalPropertiesAllowed True
-
--- Every mutation Api.hs wraps in the {"outcome","detail"} envelope
--- (runService/runMatchOutcome/runSlotCreation) has a Servant route type
--- ending in bare Value, not a DTO — there's no single static Haskell
--- type for "any outcome tag plus its detail payload". Value has no
--- ToSchema instance anywhere upstream (verified against swagger2
--- directly: it defines ToSchema for Data.Aeson.Object, not the full
--- Value sum), so this reuses anySchema above rather than inventing a
--- separate one — same "no static structure to describe" reasoning,
--- applied to Value itself instead of just IntakeRequestPriorityDTO's
--- "due" field.
-instance ToSchema Value where
-  declareNamedSchema _ = pure (NamedSchema (Just "Value") anySchema)
-
--- ═══════════════════════════════════════════════════════════════════════
--- DOCTOR / PATIENT
--- No invariant beyond field types already enforced (same as Domain.hs's
--- own reasoning for exporting these constructors openly) — no decode
--- failure is possible, so toDomainX here is total, unlike the Healthcare
--- Service / Slot DTOs below.
--- ═══════════════════════════════════════════════════════════════════════
-
-data DoctorDTO = DoctorDTO
-  { id   :: UUID
-  , name :: Text
+-- An object's schema, before it is named: its properties in order, the keys
+-- every value has, and (for a sum) which keys each case has.
+data Shape = Shape
+  { shapeProperties  :: [(Text, Referenced Schema)]
+  , shapeRequired    :: [Text]
+  , shapeDescription :: Maybe Text
   }
-  deriving (Show, Eq)
 
-instance ToJSON DoctorDTO where
-  toJSON dto = object ["id" .= UUID.toText dto.id, "name" .= dto.name]
+instance Semigroup Shape where
+  Shape p r d <> Shape p' r' d' = Shape (p <> p') (r <> r') (maybe d' Just d)
 
-instance FromJSON DoctorDTO where
-  parseJSON = withObject "DoctorDTO" $ \v -> do
-    idText <- v .: "id"
-    uid    <- parseUUIDField idText
-    DoctorDTO uid <$> v .: "name"
+instance Monoid Shape where
+  mempty = Shape [] [] Nothing
 
-instance ToSchema DoctorDTO where
-  declareNamedSchema _ = do
-    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
-    nameRef <- declareSchemaRef (Proxy :: Proxy Text)
-    pure $ objectSchema "DoctorDTO" [("id", uuidRef), ("name", nameRef)] ["id", "name"]
+class Flat a where
+  flatten   :: a -> [Pair]
+  unflatten :: Object -> Parser a
+  shape     :: Proxy a -> Decl Shape
 
-toDomainDoctor :: DoctorDTO -> Doctor
-toDomainDoctor dto = Doctor { id = DoctorId dto.id, name = dto.name }
+encodeFlat :: Flat a => a -> Value
+encodeFlat = object . flatten
 
-fromDomainDoctor :: Doctor -> DoctorDTO
-fromDomainDoctor d =
-  let DoctorId did = d.id
-  in DoctorDTO { id = did, name = d.name }
+-- A case's object has exactly its own keys: a key the decoded value would
+-- not encode is a wrong field.
+decodeFlat :: Flat a => String -> Value -> Parser a
+decodeFlat name = withObject name $ \o -> do
+  a <- unflatten o
+  let expected = map fst (flatten a)
+      extra    = filter (`notElem` expected) (KeyMap.keys o)
+  unless (null extra) $
+    fail (name <> ": unexpected keys " <> show (map Key.toString extra))
+  pure a
 
-data PatientDTO = PatientDTO
-  { id   :: UUID
-  , name :: Text
+schemaFlat :: Flat a => Text -> Proxy a -> Decl NamedSchema
+schemaFlat name p = NamedSchema (Just name) . shapeSchema <$> shape p
+
+shapeSchema :: Shape -> Schema
+shapeSchema (Shape props req desc) =
+  mempty
+    & type_ ?~ SwaggerObject
+    & properties .~ fromList props
+    & required .~ req
+    & description .~ desc
+
+-- A key every value has.
+field :: ToSchema a => Text -> Proxy a -> Decl Shape
+field key p = do
+  ref <- declareSchemaRef p
+  pure (Shape [(key, ref)] [key] Nothing)
+
+-- A Maybe field: its key is always present, and null when the value is
+-- absent. Swagger 2.0 cannot mark a property nullable, so it is left out of
+-- "required" (the validator accepts null only for a non-required key).
+maybeField :: ToSchema a => Text -> Proxy a -> Decl Shape
+maybeField key p = do
+  ref <- declareSchemaRef p
+  pure (Shape [(key, ref)] [] (Nothing))
+
+tagKey :: Text -> Pair
+tagKey t = "type" .= t
+
+tagSchema :: [Text] -> Referenced Schema
+tagSchema tags = Inline $
+  mempty & type_ ?~ SwaggerString & enum_ ?~ map String tags
+
+-- Swagger 2.0 has no oneOf: a sum is described as one object with the union
+-- of its cases' properties, "type" listing the cases, only the keys every
+-- case has as required, and each case's keys in the description.
+unionShape :: Text -> [(Text, Shape)] -> Shape
+unionShape intro cases = Shape
+  { shapeProperties  = nubBy ((==) `on` fst) (concatMap (shapeProperties . snd) cases)
+  , shapeRequired    = foldr1 intersect (map (shapeRequired . snd) cases)
+  , shapeDescription = Just $ intro <> Text.intercalate "; " (map describe cases)
   }
-  deriving (Show, Eq)
+  where
+    describe (t, s) = case map fst (shapeProperties s) of
+      []   -> t <> ": no other keys"
+      keys -> t <> ": " <> Text.intercalate ", " keys
 
-instance ToJSON PatientDTO where
-  toJSON dto = object ["id" .= UUID.toText dto.id, "name" .= dto.name]
+sumShape :: [(Text, Decl Shape)] -> Decl Shape
+sumShape cases = do
+  shapes <- traverse (\(t, d) -> (,) t <$> d) cases
+  let union = unionShape "One object per case, told apart by \"type\". " shapes
+  pure union
+    { shapeProperties = ("type", tagSchema (map fst cases)) : shapeProperties union
+    , shapeRequired   = "type" : shapeRequired union
+    }
 
-instance FromJSON PatientDTO where
-  parseJSON = withObject "PatientDTO" $ \v -> do
-    idText <- v .: "id"
-    uid    <- parseUUIDField idText
-    PatientDTO uid <$> v .: "name"
+readTag :: Object -> Parser Text
+readTag o = o .: "type"
 
-instance ToSchema PatientDTO where
-  declareNamedSchema _ = do
-    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
-    nameRef <- declareSchemaRef (Proxy :: Proxy Text)
-    pure $ objectSchema "PatientDTO" [("id", uuidRef), ("name", nameRef)] ["id", "name"]
+unknownTag :: String -> Text -> Parser a
+unknownTag name t = fail (name <> ": unknown type " <> show t)
 
-toDomainPatient :: PatientDTO -> Patient
-toDomainPatient dto = Patient { id = PatientId dto.id, name = dto.name }
+-- An enumeration: an object with only "type".
+enumerationFrom :: (Enum a, Bounded a) => String -> (a -> Text) -> Object -> Parser a
+enumerationFrom name tagOf o = do
+  t <- readTag o
+  maybe (unknownTag name t) pure (find ((== t) . tagOf) [minBound .. maxBound])
 
-fromDomainPatient :: Patient -> PatientDTO
-fromDomainPatient p =
-  let PatientId pid = p.id
-  in PatientDTO { id = pid, name = p.name }
+enumerationShape :: (Enum a, Bounded a) => (a -> Text) -> Proxy a -> Decl Shape
+enumerationShape tagOf p = sumShape [(tagOf c, pure mempty) | c <- values p]
+  where
+    values :: (Enum a, Bounded a) => Proxy a -> [a]
+    values _ = [minBound .. maxBound]
 
--- ═══════════════════════════════════════════════════════════════════════
--- DOCTOR / PATIENT CREATE REQUESTS
--- Request-body DTOs, per servant-implementation.md section 5 — still
--- wire-format DTOs, so they live here alongside every other DTO in this
--- file, not in Api.hs. Same hand-written ToJSON/FromJSON convention as
--- everywhere else (no Generic derivation). Both trivial, single-field,
--- total both directions — and neither has a toDomain/fromDomain pair,
--- unlike every DTO above: Service.createDoctor/createPatient each take a
--- bare Text, not a Domain.hs type, so there is nothing on the Domain side
--- for these two to convert to or from.
--- ═══════════════════════════════════════════════════════════════════════
+-- ═══════════════════════════════════════════════════════════════════════════
+-- IDS
+-- A plain UUID string; each ID type has its own named schema.
+-- ═══════════════════════════════════════════════════════════════════════════
 
-newtype CreateDoctorRequest = CreateDoctorRequest
-  { name :: Text
-  }
-  deriving (Show, Eq)
+idSchema :: Text -> Decl NamedSchema
+idSchema name = pure (NamedSchema (Just name) (toSchema (Proxy @UUID)))
 
-instance ToJSON CreateDoctorRequest where
-  toJSON dto = object ["name" .= dto.name]
+parseIdPiece :: (UUID -> a) -> Text -> Either Text a
+parseIdPiece wrap = maybe (Left "not a UUID") (Right . wrap) . UUID.fromText
 
-instance FromJSON CreateDoctorRequest where
-  parseJSON = withObject "CreateDoctorRequest" $ \v ->
-    CreateDoctorRequest <$> v .: "name"
+newtype DoctorIdDTO = DoctorIdDTO UUID deriving (Show, Eq)
 
-instance ToSchema CreateDoctorRequest where
-  declareNamedSchema _ = do
-    nameRef <- declareSchemaRef (Proxy :: Proxy Text)
-    pure $ objectSchema "CreateDoctorRequest" [("name", nameRef)] ["name"]
+instance ToJSON DoctorIdDTO where toJSON (DoctorIdDTO u) = toJSON u
+instance FromJSON DoctorIdDTO where parseJSON v = DoctorIdDTO <$> parseJSON v
+instance ToSchema DoctorIdDTO where declareNamedSchema _ = idSchema "DoctorId"
+instance ToParamSchema DoctorIdDTO where toParamSchema _ = toParamSchema (Proxy @UUID)
+instance FromHttpApiData DoctorIdDTO where parseUrlPiece = parseIdPiece DoctorIdDTO
 
-newtype CreatePatientRequest = CreatePatientRequest
-  { name :: Text
-  }
-  deriving (Show, Eq)
+toDomainDoctorId :: DoctorIdDTO -> DoctorId
+toDomainDoctorId (DoctorIdDTO u) = DoctorId u
 
-instance ToJSON CreatePatientRequest where
-  toJSON dto = object ["name" .= dto.name]
+fromDomainDoctorId :: DoctorId -> DoctorIdDTO
+fromDomainDoctorId (DoctorId u) = DoctorIdDTO u
 
-instance FromJSON CreatePatientRequest where
-  parseJSON = withObject "CreatePatientRequest" $ \v ->
-    CreatePatientRequest <$> v .: "name"
+newtype PatientIdDTO = PatientIdDTO UUID deriving (Show, Eq)
 
-instance ToSchema CreatePatientRequest where
-  declareNamedSchema _ = do
-    nameRef <- declareSchemaRef (Proxy :: Proxy Text)
-    pure $ objectSchema "CreatePatientRequest" [("name", nameRef)] ["name"]
+instance ToJSON PatientIdDTO where toJSON (PatientIdDTO u) = toJSON u
+instance FromJSON PatientIdDTO where parseJSON v = PatientIdDTO <$> parseJSON v
+instance ToSchema PatientIdDTO where declareNamedSchema _ = idSchema "PatientId"
+instance ToParamSchema PatientIdDTO where toParamSchema _ = toParamSchema (Proxy @UUID)
+instance FromHttpApiData PatientIdDTO where parseUrlPiece = parseIdPiece PatientIdDTO
 
--- ═══════════════════════════════════════════════════════════════════════
--- DURATION
--- A closed 3-case enum, same nullary-sum-type treatment as
--- AppointmentPartyDTO — a named "type" string on the wire, not a raw
--- magic number a client has to separately know the meaning of. This
--- replaces an earlier durationMinutes :: Int convention that was carried
--- over from Persistence.hs's storage shape without re-examining whether
--- it fit the wire format — it didn't: every other closed enum in this
--- file (AppointmentParty, CloseReason, IntakeRequestPriority's tiers)
--- already gets tagged-flat-serialization's proper treatment, and
--- Duration is no different. No decode failure possible: an unrecognized
--- "type" string fails to parse as a normal aeson parse error before
--- toDomainDuration ever runs, so both directions here are total.
--- ═══════════════════════════════════════════════════════════════════════
+toDomainPatientId :: PatientIdDTO -> PatientId
+toDomainPatientId (PatientIdDTO u) = PatientId u
+
+fromDomainPatientId :: PatientId -> PatientIdDTO
+fromDomainPatientId (PatientId u) = PatientIdDTO u
+
+newtype HealthcareServiceIdDTO = HealthcareServiceIdDTO UUID deriving (Show, Eq)
+
+instance ToJSON HealthcareServiceIdDTO where toJSON (HealthcareServiceIdDTO u) = toJSON u
+instance FromJSON HealthcareServiceIdDTO where parseJSON v = HealthcareServiceIdDTO <$> parseJSON v
+instance ToSchema HealthcareServiceIdDTO where declareNamedSchema _ = idSchema "HealthcareServiceId"
+instance ToParamSchema HealthcareServiceIdDTO where toParamSchema _ = toParamSchema (Proxy @UUID)
+instance FromHttpApiData HealthcareServiceIdDTO where parseUrlPiece = parseIdPiece HealthcareServiceIdDTO
+
+toDomainHealthcareServiceId :: HealthcareServiceIdDTO -> HealthcareServiceId
+toDomainHealthcareServiceId (HealthcareServiceIdDTO u) = HealthcareServiceId u
+
+fromDomainHealthcareServiceId :: HealthcareServiceId -> HealthcareServiceIdDTO
+fromDomainHealthcareServiceId (HealthcareServiceId u) = HealthcareServiceIdDTO u
+
+newtype IntakeRequestIdDTO = IntakeRequestIdDTO UUID deriving (Show, Eq)
+
+instance ToJSON IntakeRequestIdDTO where toJSON (IntakeRequestIdDTO u) = toJSON u
+instance FromJSON IntakeRequestIdDTO where parseJSON v = IntakeRequestIdDTO <$> parseJSON v
+instance ToSchema IntakeRequestIdDTO where declareNamedSchema _ = idSchema "IntakeRequestId"
+instance ToParamSchema IntakeRequestIdDTO where toParamSchema _ = toParamSchema (Proxy @UUID)
+instance FromHttpApiData IntakeRequestIdDTO where parseUrlPiece = parseIdPiece IntakeRequestIdDTO
+
+toDomainIntakeRequestId :: IntakeRequestIdDTO -> IntakeRequestId
+toDomainIntakeRequestId (IntakeRequestIdDTO u) = IntakeRequestId u
+
+fromDomainIntakeRequestId :: IntakeRequestId -> IntakeRequestIdDTO
+fromDomainIntakeRequestId (IntakeRequestId u) = IntakeRequestIdDTO u
+
+newtype SlotIdDTO = SlotIdDTO UUID deriving (Show, Eq)
+
+instance ToJSON SlotIdDTO where toJSON (SlotIdDTO u) = toJSON u
+instance FromJSON SlotIdDTO where parseJSON v = SlotIdDTO <$> parseJSON v
+instance ToSchema SlotIdDTO where declareNamedSchema _ = idSchema "SlotId"
+instance ToParamSchema SlotIdDTO where toParamSchema _ = toParamSchema (Proxy @UUID)
+instance FromHttpApiData SlotIdDTO where parseUrlPiece = parseIdPiece SlotIdDTO
+
+toDomainSlotId :: SlotIdDTO -> SlotId
+toDomainSlotId (SlotIdDTO u) = SlotId u
+
+fromDomainSlotId :: SlotId -> SlotIdDTO
+fromDomainSlotId (SlotId u) = SlotIdDTO u
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ENUMERATIONS
+-- ═══════════════════════════════════════════════════════════════════════════
 
 data DurationDTO
   = QuarterOfAnHourDTO
   | HalfAnHourDTO
   | OneHourDTO
-  deriving (Show, Eq)
+  deriving (Show, Eq, Enum, Bounded)
 
-instance ToJSON DurationDTO where
-  toJSON QuarterOfAnHourDTO = object ["type" .= ("quarterOfAnHour" :: Text)]
-  toJSON HalfAnHourDTO      = object ["type" .= ("halfAnHour" :: Text)]
-  toJSON OneHourDTO         = object ["type" .= ("oneHour" :: Text)]
+durationTag :: DurationDTO -> Text
+durationTag QuarterOfAnHourDTO = "quarterOfAnHour"
+durationTag HalfAnHourDTO      = "halfAnHour"
+durationTag OneHourDTO         = "oneHour"
 
-instance FromJSON DurationDTO where
-  parseJSON = withObject "DurationDTO" $ \v -> do
-    tag <- v .: "type"
-    case (tag :: Text) of
-      "quarterOfAnHour" -> pure QuarterOfAnHourDTO
-      "halfAnHour"      -> pure HalfAnHourDTO
-      "oneHour"         -> pure OneHourDTO
-      other             -> fail ("unrecognized Duration type: " ++ show other)
+instance Flat DurationDTO where
+  flatten d = [tagKey (durationTag d)]
+  unflatten = enumerationFrom "Duration" durationTag
+  shape     = enumerationShape durationTag
 
-instance ToSchema DurationDTO where
-  declareNamedSchema _ = pure $
-    taggedSchema "DurationDTO" ["quarterOfAnHour", "halfAnHour", "oneHour"] [] []
+instance ToJSON DurationDTO where toJSON = encodeFlat
+instance FromJSON DurationDTO where parseJSON = decodeFlat "Duration"
+instance ToSchema DurationDTO where declareNamedSchema = schemaFlat "Duration"
 
 toDomainDuration :: DurationDTO -> Duration
 toDomainDuration QuarterOfAnHourDTO = QuarterOfAnHour
@@ -438,1289 +386,1079 @@ fromDomainDuration QuarterOfAnHour = QuarterOfAnHourDTO
 fromDomainDuration HalfAnHour      = HalfAnHourDTO
 fromDomainDuration OneHour         = OneHourDTO
 
--- ═══════════════════════════════════════════════════════════════════════
--- HEALTHCARE SERVICE
--- Duration nested as its own tagged DurationDTO object under the
--- "duration" key (see DURATION above), not a flat durationMinutes
--- number. Unlike the earlier Int-range-checked convention, DurationDTO
--- has no decode failure of its own, so toDomainHealthcareService is now
--- total, unlike Slot/Appointed Intake Request below whose Either comes
--- from a different field entirely (Slot has none; Appointed Intake
--- Request's comes from priority, not duration).
--- ═══════════════════════════════════════════════════════════════════════
+data AppointmentPartyDTO
+  = DoctorPartyDTO
+  | PatientPartyDTO
+  deriving (Show, Eq, Enum, Bounded)
+
+appointmentPartyTag :: AppointmentPartyDTO -> Text
+appointmentPartyTag DoctorPartyDTO  = "doctorParty"
+appointmentPartyTag PatientPartyDTO = "patientParty"
+
+instance Flat AppointmentPartyDTO where
+  flatten p = [tagKey (appointmentPartyTag p)]
+  unflatten = enumerationFrom "AppointmentParty" appointmentPartyTag
+  shape     = enumerationShape appointmentPartyTag
+
+instance ToJSON AppointmentPartyDTO where toJSON = encodeFlat
+instance FromJSON AppointmentPartyDTO where parseJSON = decodeFlat "AppointmentParty"
+instance ToSchema AppointmentPartyDTO where declareNamedSchema = schemaFlat "AppointmentParty"
+
+toDomainAppointmentParty :: AppointmentPartyDTO -> AppointmentParty
+toDomainAppointmentParty DoctorPartyDTO  = DoctorParty
+toDomainAppointmentParty PatientPartyDTO = PatientParty
+
+fromDomainAppointmentParty :: AppointmentParty -> AppointmentPartyDTO
+fromDomainAppointmentParty DoctorParty  = DoctorPartyDTO
+fromDomainAppointmentParty PatientParty = PatientPartyDTO
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DOCTOR / PATIENT / HEALTHCARE SERVICE
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data DoctorDTO = DoctorDTO
+  { id   :: DoctorIdDTO
+  , name :: Text
+  }
+  deriving (Show, Eq)
+
+instance Flat DoctorDTO where
+  flatten d = ["id" .= d.id, "name" .= d.name]
+  unflatten o = DoctorDTO <$> o .: "id" <*> o .: "name"
+  shape _ = mconcat <$> sequence [field "id" (Proxy @DoctorIdDTO), field "name" (Proxy @Text)]
+
+instance ToJSON DoctorDTO where toJSON = encodeFlat
+instance FromJSON DoctorDTO where parseJSON = decodeFlat "Doctor"
+instance ToSchema DoctorDTO where declareNamedSchema = schemaFlat "Doctor"
+
+fromDomainDoctor :: Doctor -> DoctorDTO
+fromDomainDoctor d = DoctorDTO (fromDomainDoctorId d.id) d.name
+
+toDomainDoctor :: DoctorDTO -> Doctor
+toDomainDoctor d = Doctor { id = toDomainDoctorId d.id, name = d.name }
+
+data PatientDTO = PatientDTO
+  { id   :: PatientIdDTO
+  , name :: Text
+  }
+  deriving (Show, Eq)
+
+instance Flat PatientDTO where
+  flatten p = ["id" .= p.id, "name" .= p.name]
+  unflatten o = PatientDTO <$> o .: "id" <*> o .: "name"
+  shape _ = mconcat <$> sequence [field "id" (Proxy @PatientIdDTO), field "name" (Proxy @Text)]
+
+instance ToJSON PatientDTO where toJSON = encodeFlat
+instance FromJSON PatientDTO where parseJSON = decodeFlat "Patient"
+instance ToSchema PatientDTO where declareNamedSchema = schemaFlat "Patient"
+
+fromDomainPatient :: Patient -> PatientDTO
+fromDomainPatient p = PatientDTO (fromDomainPatientId p.id) p.name
+
+toDomainPatient :: PatientDTO -> Patient
+toDomainPatient p = Patient { id = toDomainPatientId p.id, name = p.name }
 
 data HealthcareServiceDTO = HealthcareServiceDTO
-  { id       :: UUID
+  { id       :: HealthcareServiceIdDTO
   , name     :: Text
   , duration :: DurationDTO
   }
   deriving (Show, Eq)
 
-instance ToJSON HealthcareServiceDTO where
-  toJSON dto = object
-    [ "id" .= UUID.toText dto.id
-    , "name" .= dto.name
-    , "duration" .= dto.duration
+instance Flat HealthcareServiceDTO where
+  flatten s = ["id" .= s.id, "name" .= s.name, "duration" .= s.duration]
+  unflatten o = HealthcareServiceDTO <$> o .: "id" <*> o .: "name" <*> o .: "duration"
+  shape _ = mconcat <$> sequence
+    [ field "id" (Proxy @HealthcareServiceIdDTO)
+    , field "name" (Proxy @Text)
+    , field "duration" (Proxy @DurationDTO)
     ]
 
-instance FromJSON HealthcareServiceDTO where
-  parseJSON = withObject "HealthcareServiceDTO" $ \v -> do
-    idText <- v .: "id"
-    uid    <- parseUUIDField idText
-    HealthcareServiceDTO uid <$> v .: "name" <*> v .: "duration"
-
-instance ToSchema HealthcareServiceDTO where
-  declareNamedSchema _ = do
-    uuidRef     <- declareSchemaRef (Proxy :: Proxy UUID)
-    nameRef     <- declareSchemaRef (Proxy :: Proxy Text)
-    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
-    pure $ objectSchema "HealthcareServiceDTO"
-      [("id", uuidRef), ("name", nameRef), ("duration", durationRef)]
-      ["id", "name", "duration"]
-
-toDomainHealthcareService :: HealthcareServiceDTO -> HealthcareService
-toDomainHealthcareService dto =
-  HealthcareService
-    { id = HealthcareServiceId dto.id, name = dto.name, duration = toDomainDuration dto.duration }
+instance ToJSON HealthcareServiceDTO where toJSON = encodeFlat
+instance FromJSON HealthcareServiceDTO where parseJSON = decodeFlat "HealthcareService"
+instance ToSchema HealthcareServiceDTO where declareNamedSchema = schemaFlat "HealthcareService"
 
 fromDomainHealthcareService :: HealthcareService -> HealthcareServiceDTO
 fromDomainHealthcareService s =
-  let HealthcareServiceId hsid = s.id
-  in HealthcareServiceDTO
-       { id = hsid, name = s.name, duration = fromDomainDuration s.duration }
+  HealthcareServiceDTO (fromDomainHealthcareServiceId s.id) s.name (fromDomainDuration s.duration)
 
--- ═══════════════════════════════════════════════════════════════════════
--- HEALTHCARE SERVICE CREATE REQUEST
--- Request-body DTO, per servant-implementation.md section 5 — same
--- caller-supplied-facts-only convention as CreateDoctorRequest/
--- CreatePatientRequest above, just two fields since
--- Service.createHealthcareService takes both a name and a Duration.
--- Reuses DurationDTO directly rather than a bespoke inline shape, same
--- reuse discipline as HealthcareServiceDTO's own "duration" field above.
--- ═══════════════════════════════════════════════════════════════════════
+toDomainHealthcareService :: HealthcareServiceDTO -> HealthcareService
+toDomainHealthcareService s = HealthcareService
+  { id = toDomainHealthcareServiceId s.id, name = s.name, duration = toDomainDuration s.duration }
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DOCTOR REQUIREMENT
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data DoctorRequirementDTO
+  = AnyDoctorDTO
+  | SpecificDoctorDTO DoctorIdDTO
+  deriving (Show, Eq)
+
+instance Flat DoctorRequirementDTO where
+  flatten AnyDoctorDTO          = [tagKey "anyDoctor"]
+  flatten (SpecificDoctorDTO d) = [tagKey "specificDoctor", "specificDoctor" .= d]
+  unflatten o = readTag o >>= \t -> case t of
+    "anyDoctor"      -> pure AnyDoctorDTO
+    "specificDoctor" -> SpecificDoctorDTO <$> o .: "specificDoctor"
+    _                -> unknownTag "DoctorRequirement" t
+  shape _ = sumShape
+    [ ("anyDoctor", pure mempty)
+    , ("specificDoctor", field "specificDoctor" (Proxy @DoctorIdDTO))
+    ]
+
+instance ToJSON DoctorRequirementDTO where toJSON = encodeFlat
+instance FromJSON DoctorRequirementDTO where parseJSON = decodeFlat "DoctorRequirement"
+instance ToSchema DoctorRequirementDTO where declareNamedSchema = schemaFlat "DoctorRequirement"
+
+toDomainDoctorRequirement :: DoctorRequirementDTO -> DoctorRequirement
+toDomainDoctorRequirement AnyDoctorDTO          = AnyDoctor
+toDomainDoctorRequirement (SpecificDoctorDTO d) = SpecificDoctor (toDomainDoctorId d)
+
+fromDomainDoctorRequirement :: DoctorRequirement -> DoctorRequirementDTO
+fromDomainDoctorRequirement AnyDoctor          = AnyDoctorDTO
+fromDomainDoctorRequirement (SpecificDoctor d) = SpecificDoctorDTO (fromDomainDoctorId d)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- PRIORITY / DUE CONSTRAINTS
+-- ═══════════════════════════════════════════════════════════════════════════
+
+newtype MustBeSeenByDTO = MustBeSeenByDTO UTCTime
+  deriving (Show, Eq)
+
+instance Flat MustBeSeenByDTO where
+  flatten (MustBeSeenByDTO t) = ["mustBeSeenBy" .= t]
+  unflatten o = MustBeSeenByDTO <$> o .: "mustBeSeenBy"
+  shape _ = field "mustBeSeenBy" (Proxy @UTCTime)
+
+instance ToJSON MustBeSeenByDTO where toJSON = encodeFlat
+instance FromJSON MustBeSeenByDTO where parseJSON = decodeFlat "MustBeSeenBy"
+instance ToSchema MustBeSeenByDTO where declareNamedSchema = schemaFlat "MustBeSeenBy"
+
+toDomainMustBeSeenBy :: MustBeSeenByDTO -> MustBeSeenBy
+toDomainMustBeSeenBy (MustBeSeenByDTO t) = MustBeSeenBy t
+
+fromDomainMustBeSeenBy :: MustBeSeenBy -> MustBeSeenByDTO
+fromDomainMustBeSeenBy (MustBeSeenBy t) = MustBeSeenByDTO t
+
+-- Sealed: holds a RoutineWindow, so it exists only once mkRoutineWindow has
+-- accepted its bounds. Decoding goes through mkRoutineWindow; a refusal is a
+-- parse failure.
+newtype RoutineWindowDTO = RoutineWindowDTO RoutineWindow
+  deriving (Show, Eq)
+
+instance Flat RoutineWindowDTO where
+  flatten (RoutineWindowDTO w) =
+    ["routineNotBefore" .= routineNotBefore w, "routineNotAfter" .= routineNotAfter w]
+  unflatten o = do
+    notBefore <- o .: "routineNotBefore"
+    notAfter  <- o .: "routineNotAfter"
+    maybe (fail "RoutineWindow: routineNotBefore is after routineNotAfter")
+          (pure . RoutineWindowDTO)
+          (mkRoutineWindow notBefore notAfter)
+  shape _ = mconcat <$> sequence
+    [field "routineNotBefore" (Proxy @UTCTime), field "routineNotAfter" (Proxy @UTCTime)]
+
+instance ToJSON RoutineWindowDTO where toJSON = encodeFlat
+instance FromJSON RoutineWindowDTO where parseJSON = decodeFlat "RoutineWindow"
+instance ToSchema RoutineWindowDTO where declareNamedSchema = schemaFlat "RoutineWindow"
+
+toDomainRoutineWindow :: RoutineWindowDTO -> RoutineWindow
+toDomainRoutineWindow (RoutineWindowDTO w) = w
+
+fromDomainRoutineWindow :: RoutineWindow -> RoutineWindowDTO
+fromDomainRoutineWindow = RoutineWindowDTO
+
+data RoutineDueDTO
+  = RoutineAnytimeDTO
+  | RoutineNotBeforeDTO UTCTime
+  | RoutineNotAfterDTO  UTCTime
+  | RoutineWithinDTO    RoutineWindowDTO
+  deriving (Show, Eq)
+
+instance Flat RoutineDueDTO where
+  flatten RoutineAnytimeDTO       = [tagKey "routineAnytime"]
+  flatten (RoutineNotBeforeDTO t) = [tagKey "routineNotBefore", "routineNotBefore" .= t]
+  flatten (RoutineNotAfterDTO t)  = [tagKey "routineNotAfter", "routineNotAfter" .= t]
+  flatten (RoutineWithinDTO w)    = tagKey "routineWithin" : flatten w
+  unflatten o = readTag o >>= \t -> case t of
+    "routineAnytime"   -> pure RoutineAnytimeDTO
+    "routineNotBefore" -> RoutineNotBeforeDTO <$> o .: "routineNotBefore"
+    "routineNotAfter"  -> RoutineNotAfterDTO <$> o .: "routineNotAfter"
+    "routineWithin"    -> RoutineWithinDTO <$> unflatten o
+    _                  -> unknownTag "RoutineDue" t
+  shape _ = sumShape
+    [ ("routineAnytime", pure mempty)
+    , ("routineNotBefore", field "routineNotBefore" (Proxy @UTCTime))
+    , ("routineNotAfter", field "routineNotAfter" (Proxy @UTCTime))
+    , ("routineWithin", shape (Proxy @RoutineWindowDTO))
+    ]
+
+instance ToJSON RoutineDueDTO where toJSON = encodeFlat
+instance FromJSON RoutineDueDTO where parseJSON = decodeFlat "RoutineDue"
+instance ToSchema RoutineDueDTO where declareNamedSchema = schemaFlat "RoutineDue"
+
+toDomainRoutineDue :: RoutineDueDTO -> RoutineDue
+toDomainRoutineDue RoutineAnytimeDTO       = RoutineAnytime
+toDomainRoutineDue (RoutineNotBeforeDTO t) = RoutineNotBefore t
+toDomainRoutineDue (RoutineNotAfterDTO t)  = RoutineNotAfter t
+toDomainRoutineDue (RoutineWithinDTO w)    = RoutineWithin (toDomainRoutineWindow w)
+
+fromDomainRoutineDue :: RoutineDue -> RoutineDueDTO
+fromDomainRoutineDue RoutineAnytime       = RoutineAnytimeDTO
+fromDomainRoutineDue (RoutineNotBefore t) = RoutineNotBeforeDTO t
+fromDomainRoutineDue (RoutineNotAfter t)  = RoutineNotAfterDTO t
+fromDomainRoutineDue (RoutineWithin w)    = RoutineWithinDTO (fromDomainRoutineWindow w)
+
+-- Routine's payload is a sum type, so it is nested under "routine" (one
+-- object can't hold two "type" keys).
+data IntakeRequestPriorityDTO
+  = EmergencyDTO MustBeSeenByDTO
+  | UrgentDTO    MustBeSeenByDTO
+  | RoutineDTO   RoutineDueDTO
+  deriving (Show, Eq)
+
+instance Flat IntakeRequestPriorityDTO where
+  flatten (EmergencyDTO m) = tagKey "emergency" : flatten m
+  flatten (UrgentDTO m)    = tagKey "urgent" : flatten m
+  flatten (RoutineDTO d)   = [tagKey "routine", "routine" .= d]
+  unflatten o = readTag o >>= \t -> case t of
+    "emergency" -> EmergencyDTO <$> unflatten o
+    "urgent"    -> UrgentDTO <$> unflatten o
+    "routine"   -> RoutineDTO <$> o .: "routine"
+    _           -> unknownTag "IntakeRequestPriority" t
+  shape _ = sumShape
+    [ ("emergency", shape (Proxy @MustBeSeenByDTO))
+    , ("urgent", shape (Proxy @MustBeSeenByDTO))
+    , ("routine", field "routine" (Proxy @RoutineDueDTO))
+    ]
+
+instance ToJSON IntakeRequestPriorityDTO where toJSON = encodeFlat
+instance FromJSON IntakeRequestPriorityDTO where parseJSON = decodeFlat "IntakeRequestPriority"
+instance ToSchema IntakeRequestPriorityDTO where
+  declareNamedSchema = schemaFlat "IntakeRequestPriority"
+
+toDomainIntakeRequestPriority :: IntakeRequestPriorityDTO -> IntakeRequestPriority
+toDomainIntakeRequestPriority (EmergencyDTO m) = Emergency (toDomainMustBeSeenBy m)
+toDomainIntakeRequestPriority (UrgentDTO m)    = Urgent (toDomainMustBeSeenBy m)
+toDomainIntakeRequestPriority (RoutineDTO d)   = Routine (toDomainRoutineDue d)
+
+fromDomainIntakeRequestPriority :: IntakeRequestPriority -> IntakeRequestPriorityDTO
+fromDomainIntakeRequestPriority (Emergency m) = EmergencyDTO (fromDomainMustBeSeenBy m)
+fromDomainIntakeRequestPriority (Urgent m)    = UrgentDTO (fromDomainMustBeSeenBy m)
+fromDomainIntakeRequestPriority (Routine d)   = RoutineDTO (fromDomainRoutineDue d)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- INTAKE REQUEST STAGES
+-- Each stage embeds the one before it; on the wire the embedded stage's
+-- keys join the stage's own.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data SubmittedIntakeRequestDTO = SubmittedIntakeRequestDTO
+  { id        :: IntakeRequestIdDTO
+  , patientId :: PatientIdDTO
+  , narrative :: Text
+  , createdAt :: UTCTime
+  }
+  deriving (Show, Eq)
+
+instance Flat SubmittedIntakeRequestDTO where
+  flatten s =
+    [ "id" .= s.id, "patientId" .= s.patientId, "narrative" .= s.narrative
+    , "createdAt" .= s.createdAt ]
+  unflatten o = SubmittedIntakeRequestDTO
+    <$> o .: "id" <*> o .: "patientId" <*> o .: "narrative" <*> o .: "createdAt"
+  shape _ = mconcat <$> sequence
+    [ field "id" (Proxy @IntakeRequestIdDTO)
+    , field "patientId" (Proxy @PatientIdDTO)
+    , field "narrative" (Proxy @Text)
+    , field "createdAt" (Proxy @UTCTime)
+    ]
+
+instance ToJSON SubmittedIntakeRequestDTO where toJSON = encodeFlat
+instance FromJSON SubmittedIntakeRequestDTO where parseJSON = decodeFlat "SubmittedIntakeRequest"
+instance ToSchema SubmittedIntakeRequestDTO where
+  declareNamedSchema = schemaFlat "SubmittedIntakeRequest"
+
+toDomainSubmittedIntakeRequest :: SubmittedIntakeRequestDTO -> SubmittedIntakeRequest
+toDomainSubmittedIntakeRequest s = SubmittedIntakeRequest
+  { id        = toDomainIntakeRequestId s.id
+  , patientId = toDomainPatientId s.patientId
+  , narrative = s.narrative
+  , createdAt = s.createdAt
+  }
+
+fromDomainSubmittedIntakeRequest :: SubmittedIntakeRequest -> SubmittedIntakeRequestDTO
+fromDomainSubmittedIntakeRequest s = SubmittedIntakeRequestDTO
+  { id        = fromDomainIntakeRequestId s.id
+  , patientId = fromDomainPatientId s.patientId
+  , narrative = s.narrative
+  , createdAt = s.createdAt
+  }
+
+data RejectedIntakeRequestDTO = RejectedIntakeRequestDTO
+  { submitted       :: SubmittedIntakeRequestDTO
+  , rejectedAt      :: UTCTime
+  , rejectionReason :: Text
+  }
+  deriving (Show, Eq)
+
+instance Flat RejectedIntakeRequestDTO where
+  flatten r =
+    flatten r.submitted <> ["rejectedAt" .= r.rejectedAt, "rejectionReason" .= r.rejectionReason]
+  unflatten o = RejectedIntakeRequestDTO
+    <$> unflatten o <*> o .: "rejectedAt" <*> o .: "rejectionReason"
+  shape _ = mconcat <$> sequence
+    [ shape (Proxy @SubmittedIntakeRequestDTO)
+    , field "rejectedAt" (Proxy @UTCTime)
+    , field "rejectionReason" (Proxy @Text)
+    ]
+
+instance ToJSON RejectedIntakeRequestDTO where toJSON = encodeFlat
+instance FromJSON RejectedIntakeRequestDTO where parseJSON = decodeFlat "RejectedIntakeRequest"
+instance ToSchema RejectedIntakeRequestDTO where
+  declareNamedSchema = schemaFlat "RejectedIntakeRequest"
+
+toDomainRejectedIntakeRequest :: RejectedIntakeRequestDTO -> RejectedIntakeRequest
+toDomainRejectedIntakeRequest r = RejectedIntakeRequest
+  { submitted       = toDomainSubmittedIntakeRequest r.submitted
+  , rejectedAt      = r.rejectedAt
+  , rejectionReason = r.rejectionReason
+  }
+
+fromDomainRejectedIntakeRequest :: RejectedIntakeRequest -> RejectedIntakeRequestDTO
+fromDomainRejectedIntakeRequest r = RejectedIntakeRequestDTO
+  { submitted       = fromDomainSubmittedIntakeRequest r.submitted
+  , rejectedAt      = r.rejectedAt
+  , rejectionReason = r.rejectionReason
+  }
+
+data TriagedIntakeRequestDTO = TriagedIntakeRequestDTO
+  { submitted           :: SubmittedIntakeRequestDTO
+  , healthcareServiceId :: HealthcareServiceIdDTO
+  , priority            :: IntakeRequestPriorityDTO
+  , doctorRequirement   :: DoctorRequirementDTO
+  , triagedAt           :: UTCTime
+  }
+  deriving (Show, Eq)
+
+instance Flat TriagedIntakeRequestDTO where
+  flatten t = flatten t.submitted <>
+    [ "healthcareServiceId" .= t.healthcareServiceId
+    , "priority" .= t.priority
+    , "doctorRequirement" .= t.doctorRequirement
+    , "triagedAt" .= t.triagedAt
+    ]
+  unflatten o = TriagedIntakeRequestDTO
+    <$> unflatten o <*> o .: "healthcareServiceId" <*> o .: "priority"
+    <*> o .: "doctorRequirement" <*> o .: "triagedAt"
+  shape _ = mconcat <$> sequence
+    [ shape (Proxy @SubmittedIntakeRequestDTO)
+    , field "healthcareServiceId" (Proxy @HealthcareServiceIdDTO)
+    , field "priority" (Proxy @IntakeRequestPriorityDTO)
+    , field "doctorRequirement" (Proxy @DoctorRequirementDTO)
+    , field "triagedAt" (Proxy @UTCTime)
+    ]
+
+instance ToJSON TriagedIntakeRequestDTO where toJSON = encodeFlat
+instance FromJSON TriagedIntakeRequestDTO where parseJSON = decodeFlat "TriagedIntakeRequest"
+instance ToSchema TriagedIntakeRequestDTO where
+  declareNamedSchema = schemaFlat "TriagedIntakeRequest"
+
+toDomainTriagedIntakeRequest :: TriagedIntakeRequestDTO -> TriagedIntakeRequest
+toDomainTriagedIntakeRequest t = TriagedIntakeRequest
+  { submitted           = toDomainSubmittedIntakeRequest t.submitted
+  , healthcareServiceId = toDomainHealthcareServiceId t.healthcareServiceId
+  , priority            = toDomainIntakeRequestPriority t.priority
+  , doctorRequirement   = toDomainDoctorRequirement t.doctorRequirement
+  , triagedAt           = t.triagedAt
+  }
+
+fromDomainTriagedIntakeRequest :: TriagedIntakeRequest -> TriagedIntakeRequestDTO
+fromDomainTriagedIntakeRequest t = TriagedIntakeRequestDTO
+  { submitted           = fromDomainSubmittedIntakeRequest t.submitted
+  , healthcareServiceId = fromDomainHealthcareServiceId t.healthcareServiceId
+  , priority            = fromDomainIntakeRequestPriority t.priority
+  , doctorRequirement   = fromDomainDoctorRequirement t.doctorRequirement
+  , triagedAt           = t.triagedAt
+  }
+
+data AppointedIntakeRequestDTO = AppointedIntakeRequestDTO
+  { triaged  :: TriagedIntakeRequestDTO
+  , doctorId :: DoctorIdDTO
+  , start    :: UTCTime
+  , duration :: DurationDTO
+  }
+  deriving (Show, Eq)
+
+instance Flat AppointedIntakeRequestDTO where
+  flatten a = flatten a.triaged <>
+    ["doctorId" .= a.doctorId, "start" .= a.start, "duration" .= a.duration]
+  unflatten o = AppointedIntakeRequestDTO
+    <$> unflatten o <*> o .: "doctorId" <*> o .: "start" <*> o .: "duration"
+  shape _ = mconcat <$> sequence
+    [ shape (Proxy @TriagedIntakeRequestDTO)
+    , field "doctorId" (Proxy @DoctorIdDTO)
+    , field "start" (Proxy @UTCTime)
+    , field "duration" (Proxy @DurationDTO)
+    ]
+
+instance ToJSON AppointedIntakeRequestDTO where toJSON = encodeFlat
+instance FromJSON AppointedIntakeRequestDTO where parseJSON = decodeFlat "AppointedIntakeRequest"
+instance ToSchema AppointedIntakeRequestDTO where
+  declareNamedSchema = schemaFlat "AppointedIntakeRequest"
+
+toDomainAppointedIntakeRequest :: AppointedIntakeRequestDTO -> AppointedIntakeRequest
+toDomainAppointedIntakeRequest a = AppointedIntakeRequest
+  { triaged  = toDomainTriagedIntakeRequest a.triaged
+  , doctorId = toDomainDoctorId a.doctorId
+  , start    = a.start
+  , duration = toDomainDuration a.duration
+  }
+
+fromDomainAppointedIntakeRequest :: AppointedIntakeRequest -> AppointedIntakeRequestDTO
+fromDomainAppointedIntakeRequest a = AppointedIntakeRequestDTO
+  { triaged  = fromDomainTriagedIntakeRequest a.triaged
+  , doctorId = fromDomainDoctorId a.doctorId
+  , start    = a.start
+  , duration = fromDomainDuration a.duration
+  }
+
+-- Each case carries a stage. Standalone it is a flat case object; as
+-- WithdrawnIntakeRequest's field its stage's keys join the enclosing object
+-- and the field keeps only {"type": <case>}.
+data WithdrawnFromDTO
+  = FromSubmittedDTO SubmittedIntakeRequestDTO
+  | FromAcceptedDTO  TriagedIntakeRequestDTO
+  deriving (Show, Eq)
+
+withdrawnFromTag :: WithdrawnFromDTO -> Text
+withdrawnFromTag (FromSubmittedDTO _) = "fromSubmitted"
+withdrawnFromTag (FromAcceptedDTO _)  = "fromAccepted"
+
+withdrawnFromStage :: WithdrawnFromDTO -> [Pair]
+withdrawnFromStage (FromSubmittedDTO s) = flatten s
+withdrawnFromStage (FromAcceptedDTO t)  = flatten t
+
+-- The stage, read from the object its keys were flattened into.
+withdrawnFromStageOf :: Text -> Object -> Parser WithdrawnFromDTO
+withdrawnFromStageOf t o = case t of
+  "fromSubmitted" -> FromSubmittedDTO <$> unflatten o
+  "fromAccepted"  -> FromAcceptedDTO <$> unflatten o
+  _               -> unknownTag "WithdrawnFrom" t
+
+withdrawnFromStageShapes :: Decl [(Text, Shape)]
+withdrawnFromStageShapes = sequence
+  [ (,) "fromSubmitted" <$> shape (Proxy @SubmittedIntakeRequestDTO)
+  , (,) "fromAccepted" <$> shape (Proxy @TriagedIntakeRequestDTO)
+  ]
+
+instance Flat WithdrawnFromDTO where
+  flatten f = tagKey (withdrawnFromTag f) : withdrawnFromStage f
+  unflatten o = readTag o >>= \t -> withdrawnFromStageOf t o
+  shape _ = sumShape
+    [ ("fromSubmitted", shape (Proxy @SubmittedIntakeRequestDTO))
+    , ("fromAccepted", shape (Proxy @TriagedIntakeRequestDTO))
+    ]
+
+instance ToJSON WithdrawnFromDTO where toJSON = encodeFlat
+instance FromJSON WithdrawnFromDTO where parseJSON = decodeFlat "WithdrawnFrom"
+instance ToSchema WithdrawnFromDTO where declareNamedSchema = schemaFlat "WithdrawnFrom"
+
+toDomainWithdrawnFrom :: WithdrawnFromDTO -> WithdrawnFrom
+toDomainWithdrawnFrom (FromSubmittedDTO s) = FromSubmitted (toDomainSubmittedIntakeRequest s)
+toDomainWithdrawnFrom (FromAcceptedDTO t)  = FromAccepted (toDomainTriagedIntakeRequest t)
+
+fromDomainWithdrawnFrom :: WithdrawnFrom -> WithdrawnFromDTO
+fromDomainWithdrawnFrom (FromSubmitted s) = FromSubmittedDTO (fromDomainSubmittedIntakeRequest s)
+fromDomainWithdrawnFrom (FromAccepted t)  = FromAcceptedDTO (fromDomainTriagedIntakeRequest t)
+
+data WithdrawnIntakeRequestDTO = WithdrawnIntakeRequestDTO
+  { withdrawnFrom  :: WithdrawnFromDTO
+  , withdrawnAt    :: UTCTime
+  , withdrawalNote :: Maybe Text
+  }
+  deriving (Show, Eq)
+
+instance Flat WithdrawnIntakeRequestDTO where
+  flatten w =
+    ("withdrawnFrom" .= object [tagKey (withdrawnFromTag w.withdrawnFrom)])
+      : withdrawnFromStage w.withdrawnFrom
+      <> ["withdrawnAt" .= w.withdrawnAt, "withdrawalNote" .= w.withdrawalNote]
+  unflatten o = do
+    from <- o .: "withdrawnFrom" >>= withObject "withdrawnFrom" onlyTag
+    WithdrawnIntakeRequestDTO
+      <$> withdrawnFromStageOf from o <*> o .: "withdrawnAt" <*> o .: "withdrawalNote"
+    where
+      onlyTag f = do
+        unless (KeyMap.keys f == ["type"]) $ fail "withdrawnFrom: only \"type\" is allowed"
+        readTag f
+  shape _ = do
+    stages <- withdrawnFromStageShapes
+    let stageUnion = unionShape "Keys of the stage it was withdrawn from, by withdrawnFrom.type. " stages
+        from = Shape [("withdrawnFrom", fromTag)] ["withdrawnFrom"] Nothing
+        fromTag = Inline (shapeSchema (Shape [("type", tagSchema (map fst stages))] ["type"] Nothing))
+    own <- mconcat <$> sequence
+      [ field "withdrawnAt" (Proxy @UTCTime), maybeField "withdrawalNote" (Proxy @Text) ]
+    pure (from <> stageUnion <> own)
+
+instance ToJSON WithdrawnIntakeRequestDTO where toJSON = encodeFlat
+instance FromJSON WithdrawnIntakeRequestDTO where parseJSON = decodeFlat "WithdrawnIntakeRequest"
+instance ToSchema WithdrawnIntakeRequestDTO where
+  declareNamedSchema = schemaFlat "WithdrawnIntakeRequest"
+
+toDomainWithdrawnIntakeRequest :: WithdrawnIntakeRequestDTO -> WithdrawnIntakeRequest
+toDomainWithdrawnIntakeRequest w = WithdrawnIntakeRequest
+  { withdrawnFrom  = toDomainWithdrawnFrom w.withdrawnFrom
+  , withdrawnAt    = w.withdrawnAt
+  , withdrawalNote = w.withdrawalNote
+  }
+
+fromDomainWithdrawnIntakeRequest :: WithdrawnIntakeRequest -> WithdrawnIntakeRequestDTO
+fromDomainWithdrawnIntakeRequest w = WithdrawnIntakeRequestDTO
+  { withdrawnFrom  = fromDomainWithdrawnFrom w.withdrawnFrom
+  , withdrawnAt    = w.withdrawnAt
+  , withdrawalNote = w.withdrawalNote
+  }
+
+data StaleIntakeRequestDTO = StaleIntakeRequestDTO
+  { triaged :: TriagedIntakeRequestDTO
+  , staleAt :: UTCTime
+  }
+  deriving (Show, Eq)
+
+instance Flat StaleIntakeRequestDTO where
+  flatten s = flatten s.triaged <> ["staleAt" .= s.staleAt]
+  unflatten o = StaleIntakeRequestDTO <$> unflatten o <*> o .: "staleAt"
+  shape _ = mconcat <$> sequence
+    [ shape (Proxy @TriagedIntakeRequestDTO), field "staleAt" (Proxy @UTCTime) ]
+
+instance ToJSON StaleIntakeRequestDTO where toJSON = encodeFlat
+instance FromJSON StaleIntakeRequestDTO where parseJSON = decodeFlat "StaleIntakeRequest"
+instance ToSchema StaleIntakeRequestDTO where declareNamedSchema = schemaFlat "StaleIntakeRequest"
+
+toDomainStaleIntakeRequest :: StaleIntakeRequestDTO -> StaleIntakeRequest
+toDomainStaleIntakeRequest s = StaleIntakeRequest
+  { triaged = toDomainTriagedIntakeRequest s.triaged, staleAt = s.staleAt }
+
+fromDomainStaleIntakeRequest :: StaleIntakeRequest -> StaleIntakeRequestDTO
+fromDomainStaleIntakeRequest s = StaleIntakeRequestDTO
+  { triaged = fromDomainTriagedIntakeRequest s.triaged, staleAt = s.staleAt }
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CLOSE REASON
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data CancellationDTO = CancellationDTO
+  { cancelledBy      :: AppointmentPartyDTO
+  , cancelledAt      :: UTCTime
+  , cancellationNote :: Maybe Text
+  }
+  deriving (Show, Eq)
+
+instance Flat CancellationDTO where
+  flatten c =
+    [ "cancelledBy" .= c.cancelledBy, "cancelledAt" .= c.cancelledAt
+    , "cancellationNote" .= c.cancellationNote ]
+  unflatten o = CancellationDTO
+    <$> o .: "cancelledBy" <*> o .: "cancelledAt" <*> o .: "cancellationNote"
+  shape _ = mconcat <$> sequence
+    [ field "cancelledBy" (Proxy @AppointmentPartyDTO)
+    , field "cancelledAt" (Proxy @UTCTime)
+    , maybeField "cancellationNote" (Proxy @Text)
+    ]
+
+instance ToJSON CancellationDTO where toJSON = encodeFlat
+instance FromJSON CancellationDTO where parseJSON = decodeFlat "Cancellation"
+instance ToSchema CancellationDTO where declareNamedSchema = schemaFlat "Cancellation"
+
+toDomainCancellation :: CancellationDTO -> Cancellation
+toDomainCancellation c = Cancellation
+  { cancelledBy      = toDomainAppointmentParty c.cancelledBy
+  , cancelledAt      = c.cancelledAt
+  , cancellationNote = c.cancellationNote
+  }
+
+fromDomainCancellation :: Cancellation -> CancellationDTO
+fromDomainCancellation c = CancellationDTO
+  { cancelledBy      = fromDomainAppointmentParty c.cancelledBy
+  , cancelledAt      = c.cancelledAt
+  , cancellationNote = c.cancellationNote
+  }
+
+newtype AbsenceDTO = AbsenceDTO
+  { absentParty :: AppointmentPartyDTO
+  }
+  deriving (Show, Eq)
+
+instance Flat AbsenceDTO where
+  flatten a = ["absentParty" .= a.absentParty]
+  unflatten o = AbsenceDTO <$> o .: "absentParty"
+  shape _ = field "absentParty" (Proxy @AppointmentPartyDTO)
+
+instance ToJSON AbsenceDTO where toJSON = encodeFlat
+instance FromJSON AbsenceDTO where parseJSON = decodeFlat "Absence"
+instance ToSchema AbsenceDTO where declareNamedSchema = schemaFlat "Absence"
+
+toDomainAbsence :: AbsenceDTO -> Absence
+toDomainAbsence a = Absence { absentParty = toDomainAppointmentParty a.absentParty }
+
+fromDomainAbsence :: Absence -> AbsenceDTO
+fromDomainAbsence a = AbsenceDTO { absentParty = fromDomainAppointmentParty a.absentParty }
+
+data CloseReasonDTO
+  = CompletedDTO
+  | CancelledDTO CancellationDTO
+  | NoShowDTO    AbsenceDTO
+  deriving (Show, Eq)
+
+instance Flat CloseReasonDTO where
+  flatten CompletedDTO     = [tagKey "completed"]
+  flatten (CancelledDTO c) = tagKey "cancelled" : flatten c
+  flatten (NoShowDTO a)    = tagKey "noShow" : flatten a
+  unflatten o = readTag o >>= \t -> case t of
+    "completed" -> pure CompletedDTO
+    "cancelled" -> CancelledDTO <$> unflatten o
+    "noShow"    -> NoShowDTO <$> unflatten o
+    _           -> unknownTag "CloseReason" t
+  shape _ = sumShape
+    [ ("completed", pure mempty)
+    , ("cancelled", shape (Proxy @CancellationDTO))
+    , ("noShow", shape (Proxy @AbsenceDTO))
+    ]
+
+instance ToJSON CloseReasonDTO where toJSON = encodeFlat
+instance FromJSON CloseReasonDTO where parseJSON = decodeFlat "CloseReason"
+instance ToSchema CloseReasonDTO where declareNamedSchema = schemaFlat "CloseReason"
+
+toDomainCloseReason :: CloseReasonDTO -> CloseReason
+toDomainCloseReason CompletedDTO     = Completed
+toDomainCloseReason (CancelledDTO c) = Cancelled (toDomainCancellation c)
+toDomainCloseReason (NoShowDTO a)    = NoShow (toDomainAbsence a)
+
+fromDomainCloseReason :: CloseReason -> CloseReasonDTO
+fromDomainCloseReason Completed     = CompletedDTO
+fromDomainCloseReason (Cancelled c) = CancelledDTO (fromDomainCancellation c)
+fromDomainCloseReason (NoShow a)    = NoShowDTO (fromDomainAbsence a)
+
+data ClosedIntakeRequestDTO = ClosedIntakeRequestDTO
+  { appointed   :: AppointedIntakeRequestDTO
+  , closeReason :: CloseReasonDTO
+  }
+  deriving (Show, Eq)
+
+instance Flat ClosedIntakeRequestDTO where
+  flatten c = flatten c.appointed <> ["closeReason" .= c.closeReason]
+  unflatten o = ClosedIntakeRequestDTO <$> unflatten o <*> o .: "closeReason"
+  shape _ = mconcat <$> sequence
+    [ shape (Proxy @AppointedIntakeRequestDTO), field "closeReason" (Proxy @CloseReasonDTO) ]
+
+instance ToJSON ClosedIntakeRequestDTO where toJSON = encodeFlat
+instance FromJSON ClosedIntakeRequestDTO where parseJSON = decodeFlat "ClosedIntakeRequest"
+instance ToSchema ClosedIntakeRequestDTO where declareNamedSchema = schemaFlat "ClosedIntakeRequest"
+
+toDomainClosedIntakeRequest :: ClosedIntakeRequestDTO -> ClosedIntakeRequest
+toDomainClosedIntakeRequest c = ClosedIntakeRequest
+  { appointed = toDomainAppointedIntakeRequest c.appointed
+  , closeReason = toDomainCloseReason c.closeReason
+  }
+
+fromDomainClosedIntakeRequest :: ClosedIntakeRequest -> ClosedIntakeRequestDTO
+fromDomainClosedIntakeRequest c = ClosedIntakeRequestDTO
+  { appointed = fromDomainAppointedIntakeRequest c.appointed
+  , closeReason = fromDomainCloseReason c.closeReason
+  }
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- INTAKE REQUEST
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data IntakeRequestDTO
+  = SubmittedDTO SubmittedIntakeRequestDTO
+  | RejectedDTO  RejectedIntakeRequestDTO
+  | AcceptedDTO  TriagedIntakeRequestDTO
+  | AppointedDTO AppointedIntakeRequestDTO
+  | WithdrawnDTO WithdrawnIntakeRequestDTO
+  | StaleDTO     StaleIntakeRequestDTO
+  | ClosedDTO    ClosedIntakeRequestDTO
+  deriving (Show, Eq)
+
+instance Flat IntakeRequestDTO where
+  flatten (SubmittedDTO s) = tagKey "submitted" : flatten s
+  flatten (RejectedDTO r)  = tagKey "rejected" : flatten r
+  flatten (AcceptedDTO t)  = tagKey "accepted" : flatten t
+  flatten (AppointedDTO a) = tagKey "appointed" : flatten a
+  flatten (WithdrawnDTO w) = tagKey "withdrawn" : flatten w
+  flatten (StaleDTO s)     = tagKey "stale" : flatten s
+  flatten (ClosedDTO c)    = tagKey "closed" : flatten c
+  unflatten o = readTag o >>= \t -> case t of
+    "submitted" -> SubmittedDTO <$> unflatten o
+    "rejected"  -> RejectedDTO <$> unflatten o
+    "accepted"  -> AcceptedDTO <$> unflatten o
+    "appointed" -> AppointedDTO <$> unflatten o
+    "withdrawn" -> WithdrawnDTO <$> unflatten o
+    "stale"     -> StaleDTO <$> unflatten o
+    "closed"    -> ClosedDTO <$> unflatten o
+    _           -> unknownTag "IntakeRequest" t
+  shape _ = sumShape
+    [ ("submitted", shape (Proxy @SubmittedIntakeRequestDTO))
+    , ("rejected", shape (Proxy @RejectedIntakeRequestDTO))
+    , ("accepted", shape (Proxy @TriagedIntakeRequestDTO))
+    , ("appointed", shape (Proxy @AppointedIntakeRequestDTO))
+    , ("withdrawn", shape (Proxy @WithdrawnIntakeRequestDTO))
+    , ("stale", shape (Proxy @StaleIntakeRequestDTO))
+    , ("closed", shape (Proxy @ClosedIntakeRequestDTO))
+    ]
+
+instance ToJSON IntakeRequestDTO where toJSON = encodeFlat
+instance FromJSON IntakeRequestDTO where parseJSON = decodeFlat "IntakeRequest"
+instance ToSchema IntakeRequestDTO where declareNamedSchema = schemaFlat "IntakeRequest"
+
+toDomainIntakeRequest :: IntakeRequestDTO -> IntakeRequest
+toDomainIntakeRequest (SubmittedDTO s) = Submitted (toDomainSubmittedIntakeRequest s)
+toDomainIntakeRequest (RejectedDTO r)  = Rejected (toDomainRejectedIntakeRequest r)
+toDomainIntakeRequest (AcceptedDTO t)  = Accepted (toDomainTriagedIntakeRequest t)
+toDomainIntakeRequest (AppointedDTO a) = Appointed (toDomainAppointedIntakeRequest a)
+toDomainIntakeRequest (WithdrawnDTO w) = Withdrawn (toDomainWithdrawnIntakeRequest w)
+toDomainIntakeRequest (StaleDTO s)     = Stale (toDomainStaleIntakeRequest s)
+toDomainIntakeRequest (ClosedDTO c)    = Closed (toDomainClosedIntakeRequest c)
+
+fromDomainIntakeRequest :: IntakeRequest -> IntakeRequestDTO
+fromDomainIntakeRequest (Submitted s) = SubmittedDTO (fromDomainSubmittedIntakeRequest s)
+fromDomainIntakeRequest (Rejected r)  = RejectedDTO (fromDomainRejectedIntakeRequest r)
+fromDomainIntakeRequest (Accepted t)  = AcceptedDTO (fromDomainTriagedIntakeRequest t)
+fromDomainIntakeRequest (Appointed a) = AppointedDTO (fromDomainAppointedIntakeRequest a)
+fromDomainIntakeRequest (Withdrawn w) = WithdrawnDTO (fromDomainWithdrawnIntakeRequest w)
+fromDomainIntakeRequest (Stale s)     = StaleDTO (fromDomainStaleIntakeRequest s)
+fromDomainIntakeRequest (Closed c)    = ClosedDTO (fromDomainClosedIntakeRequest c)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SLOT / DOCTOR CALENDAR
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data AvailableSlotDTO = AvailableSlotDTO
+  { id                  :: SlotIdDTO
+  , doctorId            :: DoctorIdDTO
+  , healthcareServiceId :: HealthcareServiceIdDTO
+  , start               :: UTCTime
+  , duration            :: DurationDTO
+  }
+  deriving (Show, Eq)
+
+instance Flat AvailableSlotDTO where
+  flatten s =
+    [ "id" .= s.id, "doctorId" .= s.doctorId, "healthcareServiceId" .= s.healthcareServiceId
+    , "start" .= s.start, "duration" .= s.duration ]
+  unflatten o = AvailableSlotDTO
+    <$> o .: "id" <*> o .: "doctorId" <*> o .: "healthcareServiceId"
+    <*> o .: "start" <*> o .: "duration"
+  shape _ = mconcat <$> sequence
+    [ field "id" (Proxy @SlotIdDTO)
+    , field "doctorId" (Proxy @DoctorIdDTO)
+    , field "healthcareServiceId" (Proxy @HealthcareServiceIdDTO)
+    , field "start" (Proxy @UTCTime)
+    , field "duration" (Proxy @DurationDTO)
+    ]
+
+instance ToJSON AvailableSlotDTO where toJSON = encodeFlat
+instance FromJSON AvailableSlotDTO where parseJSON = decodeFlat "AvailableSlot"
+instance ToSchema AvailableSlotDTO where declareNamedSchema = schemaFlat "AvailableSlot"
+
+toDomainAvailableSlot :: AvailableSlotDTO -> AvailableSlot
+toDomainAvailableSlot s = AvailableSlot
+  { id                  = toDomainSlotId s.id
+  , doctorId            = toDomainDoctorId s.doctorId
+  , healthcareServiceId = toDomainHealthcareServiceId s.healthcareServiceId
+  , start               = s.start
+  , duration            = toDomainDuration s.duration
+  }
+
+fromDomainAvailableSlot :: AvailableSlot -> AvailableSlotDTO
+fromDomainAvailableSlot s = AvailableSlotDTO
+  { id                  = fromDomainSlotId s.id
+  , doctorId            = fromDomainDoctorId s.doctorId
+  , healthcareServiceId = fromDomainHealthcareServiceId s.healthcareServiceId
+  , start               = s.start
+  , duration            = fromDomainDuration s.duration
+  }
+
+data DoctorCalendarEntryDTO
+  = SlotDTO        AvailableSlotDTO
+  | AppointmentDTO AppointedIntakeRequestDTO
+  deriving (Show, Eq)
+
+instance Flat DoctorCalendarEntryDTO where
+  flatten (SlotDTO s)        = tagKey "slot" : flatten s
+  flatten (AppointmentDTO a) = tagKey "appointment" : flatten a
+  unflatten o = readTag o >>= \t -> case t of
+    "slot"        -> SlotDTO <$> unflatten o
+    "appointment" -> AppointmentDTO <$> unflatten o
+    _             -> unknownTag "DoctorCalendarEntry" t
+  shape _ = sumShape
+    [ ("slot", shape (Proxy @AvailableSlotDTO))
+    , ("appointment", shape (Proxy @AppointedIntakeRequestDTO))
+    ]
+
+instance ToJSON DoctorCalendarEntryDTO where toJSON = encodeFlat
+instance FromJSON DoctorCalendarEntryDTO where parseJSON = decodeFlat "DoctorCalendarEntry"
+instance ToSchema DoctorCalendarEntryDTO where declareNamedSchema = schemaFlat "DoctorCalendarEntry"
+
+toDomainDoctorCalendarEntry :: DoctorCalendarEntryDTO -> DoctorCalendarEntry
+toDomainDoctorCalendarEntry (SlotDTO s)        = Slot (toDomainAvailableSlot s)
+toDomainDoctorCalendarEntry (AppointmentDTO a) = Appointment (toDomainAppointedIntakeRequest a)
+
+fromDomainDoctorCalendarEntry :: DoctorCalendarEntry -> DoctorCalendarEntryDTO
+fromDomainDoctorCalendarEntry (Slot s)        = SlotDTO (fromDomainAvailableSlot s)
+fromDomainDoctorCalendarEntry (Appointment a) = AppointmentDTO (fromDomainAppointedIntakeRequest a)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- REQUEST BODIES
+-- One per Service function that takes caller-supplied facts, holding exactly
+-- those facts, keyed by the Domain.hs field each lands in. Times the server
+-- records are supplied by the handler, never here.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- createDoctor
+newtype CreateDoctorRequest = CreateDoctorRequest
+  { name :: Text
+  }
+  deriving (Show, Eq)
+
+instance Flat CreateDoctorRequest where
+  flatten r = ["name" .= r.name]
+  unflatten o = CreateDoctorRequest <$> o .: "name"
+  shape _ = field "name" (Proxy @Text)
+
+instance ToJSON CreateDoctorRequest where toJSON = encodeFlat
+instance FromJSON CreateDoctorRequest where parseJSON = decodeFlat "CreateDoctorRequest"
+instance ToSchema CreateDoctorRequest where declareNamedSchema = schemaFlat "CreateDoctorRequest"
+
+-- createPatient
+newtype CreatePatientRequest = CreatePatientRequest
+  { name :: Text
+  }
+  deriving (Show, Eq)
+
+instance Flat CreatePatientRequest where
+  flatten r = ["name" .= r.name]
+  unflatten o = CreatePatientRequest <$> o .: "name"
+  shape _ = field "name" (Proxy @Text)
+
+instance ToJSON CreatePatientRequest where toJSON = encodeFlat
+instance FromJSON CreatePatientRequest where parseJSON = decodeFlat "CreatePatientRequest"
+instance ToSchema CreatePatientRequest where declareNamedSchema = schemaFlat "CreatePatientRequest"
+
+-- createHealthcareService
 data CreateHealthcareServiceRequest = CreateHealthcareServiceRequest
   { name     :: Text
   , duration :: DurationDTO
   }
   deriving (Show, Eq)
 
-instance ToJSON CreateHealthcareServiceRequest where
-  toJSON dto = object ["name" .= dto.name, "duration" .= dto.duration]
+instance Flat CreateHealthcareServiceRequest where
+  flatten r = ["name" .= r.name, "duration" .= r.duration]
+  unflatten o = CreateHealthcareServiceRequest <$> o .: "name" <*> o .: "duration"
+  shape _ = mconcat <$> sequence
+    [ field "name" (Proxy @Text), field "duration" (Proxy @DurationDTO) ]
 
+instance ToJSON CreateHealthcareServiceRequest where toJSON = encodeFlat
 instance FromJSON CreateHealthcareServiceRequest where
-  parseJSON = withObject "CreateHealthcareServiceRequest" $ \v ->
-    CreateHealthcareServiceRequest <$> v .: "name" <*> v .: "duration"
-
+  parseJSON = decodeFlat "CreateHealthcareServiceRequest"
 instance ToSchema CreateHealthcareServiceRequest where
-  declareNamedSchema _ = do
-    nameRef     <- declareSchemaRef (Proxy :: Proxy Text)
-    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
-    pure $ objectSchema "CreateHealthcareServiceRequest"
-      [("name", nameRef), ("duration", durationRef)]
-      ["name", "duration"]
+  declareNamedSchema = schemaFlat "CreateHealthcareServiceRequest"
 
--- ═══════════════════════════════════════════════════════════════════════
--- SLOT
--- Same duration-as-tagged-DurationDTO shape as Healthcare Service above,
--- nested under "duration" rather than a flat durationMinutes number. No
--- decode failure of its own (same reasoning as Healthcare Service), so
--- toDomainAvailableSlot is total.
--- ═══════════════════════════════════════════════════════════════════════
-
-data AvailableSlotDTO = AvailableSlotDTO
-  { id                  :: UUID
-  , doctorId            :: UUID
-  , healthcareServiceId :: UUID
-  , start               :: UTCTime
-  , duration            :: DurationDTO
-  }
-  deriving (Show, Eq)
-
-instance ToJSON AvailableSlotDTO where
-  toJSON dto = object
-    [ "id" .= UUID.toText dto.id
-    , "doctorId" .= UUID.toText dto.doctorId
-    , "healthcareServiceId" .= UUID.toText dto.healthcareServiceId
-    , "start" .= dto.start
-    , "duration" .= dto.duration
-    ]
-
-instance FromJSON AvailableSlotDTO where
-  parseJSON = withObject "AvailableSlotDTO" $ \v -> do
-    idText                  <- v .: "id"
-    doctorIdText            <- v .: "doctorId"
-    healthcareServiceIdText <- v .: "healthcareServiceId"
-    uid                     <- parseUUIDField idText
-    did                     <- parseUUIDField doctorIdText
-    hsid                    <- parseUUIDField healthcareServiceIdText
-    AvailableSlotDTO uid did hsid <$> v .: "start" <*> v .: "duration"
-
-instance ToSchema AvailableSlotDTO where
-  declareNamedSchema _ = do
-    uuidRef     <- declareSchemaRef (Proxy :: Proxy UUID)
-    utcRef      <- declareSchemaRef (Proxy :: Proxy UTCTime)
-    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
-    pure $ objectSchema "AvailableSlotDTO"
-      [ ("id", uuidRef), ("doctorId", uuidRef), ("healthcareServiceId", uuidRef)
-      , ("start", utcRef), ("duration", durationRef)
-      ]
-      ["id", "doctorId", "healthcareServiceId", "start", "duration"]
-
--- Response-only: no request carries a slot — matching takes a slot's id
--- (stored-facts-by-reference), and slots are created by addAvailableSlot.
-fromDomainAvailableSlot :: AvailableSlot -> AvailableSlotDTO
-fromDomainAvailableSlot s =
-  let SlotId sid              = s.id
-      DoctorId did             = s.doctorId
-      HealthcareServiceId hsid = s.healthcareServiceId
-  in AvailableSlotDTO
-       { id = sid, doctorId = did, healthcareServiceId = hsid
-       , start = s.start, duration = fromDomainDuration s.duration
-       }
-
--- ═══════════════════════════════════════════════════════════════════════
--- SLOT CREATE REQUEST
--- Request-body DTO, per servant-implementation.md section 5. No "id" (the
--- server mints the SlotId, as for every create* endpoint) and no
--- "duration": a slot's duration is always its HealthcareService's, which
--- Service.createAvailableSlot fetches (stored-facts-by-reference).
--- ═══════════════════════════════════════════════════════════════════════
-
-data CreateAvailableSlotRequest = CreateAvailableSlotRequest
-  { doctorId            :: UUID
-  , healthcareServiceId :: UUID
-  , start               :: UTCTime
-  }
-  deriving (Show, Eq)
-
-instance ToJSON CreateAvailableSlotRequest where
-  toJSON dto = object
-    [ "doctorId" .= UUID.toText dto.doctorId
-    , "healthcareServiceId" .= UUID.toText dto.healthcareServiceId
-    , "start" .= dto.start
-    ]
-
-instance FromJSON CreateAvailableSlotRequest where
-  parseJSON = withObject "CreateAvailableSlotRequest" $ \v -> do
-    doctorIdText            <- v .: "doctorId"
-    healthcareServiceIdText <- v .: "healthcareServiceId"
-    did                     <- parseUUIDField doctorIdText
-    hsid                    <- parseUUIDField healthcareServiceIdText
-    CreateAvailableSlotRequest did hsid <$> v .: "start"
-
-instance ToSchema CreateAvailableSlotRequest where
-  declareNamedSchema _ = do
-    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
-    utcRef  <- declareSchemaRef (Proxy :: Proxy UTCTime)
-    pure $ objectSchema "CreateAvailableSlotRequest"
-      [("doctorId", uuidRef), ("healthcareServiceId", uuidRef), ("start", utcRef)]
-      ["doctorId", "healthcareServiceId", "start"]
-
--- ═══════════════════════════════════════════════════════════════════════
--- APPOINTMENT PARTY
--- A flat two-case enum, no embedded data at all — mirrored here as a
--- nullary two-constructor sum type (not a single DTO record with a bare
--- "type" field and nothing else), the more idiomatic aeson encoding for a
--- no-payload Haskell enum: it lets ToJSON/FromJSON pattern-match on the
--- constructor directly instead of every caller re-checking a string. No
--- invariant beyond the two cases themselves, so toDomain/fromDomain are
--- both total.
--- ═══════════════════════════════════════════════════════════════════════
-
-data AppointmentPartyDTO
-  = ByDoctorDTO
-  | ByPatientDTO
-  deriving (Show, Eq)
-
-instance ToJSON AppointmentPartyDTO where
-  toJSON ByDoctorDTO  = object ["type" .= ("byDoctor" :: Text)]
-  toJSON ByPatientDTO = object ["type" .= ("byPatient" :: Text)]
-
-instance FromJSON AppointmentPartyDTO where
-  parseJSON = withObject "AppointmentPartyDTO" $ \v -> do
-    tag <- v .: "type"
-    case (tag :: Text) of
-      "byDoctor"  -> pure ByDoctorDTO
-      "byPatient" -> pure ByPatientDTO
-      other       -> fail ("unrecognized AppointmentParty type: " ++ show other)
-
-instance ToSchema AppointmentPartyDTO where
-  declareNamedSchema _ = pure $
-    taggedSchema "AppointmentPartyDTO" ["byDoctor", "byPatient"] [] []
-
-toDomainAppointmentParty :: AppointmentPartyDTO -> AppointmentParty
-toDomainAppointmentParty ByDoctorDTO  = ByDoctor
-toDomainAppointmentParty ByPatientDTO = ByPatient
-
-fromDomainAppointmentParty :: AppointmentParty -> AppointmentPartyDTO
-fromDomainAppointmentParty ByDoctor  = ByDoctorDTO
-fromDomainAppointmentParty ByPatient = ByPatientDTO
-
--- ═══════════════════════════════════════════════════════════════════════
--- ROUTINE DUE
--- Mirrors Domain.hs's RoutineDue shape exactly, including its positional
--- (non-record) fields — RoutineWithin's Domain-level constructor is
--- SEALED (not exported; only mkRoutineWithin's from <= to invariant can
--- produce one), so RoutineWithinDTO's decode direction is the one real
--- decode-failure case in this section: toDomainRoutineDue must go through
--- mkRoutineWithin like every other caller, never construct RoutineWithin
--- directly, and its Nothing case surfaces as InvalidRoutineWithinRange.
--- The "from"/"to" wire keys are shared verbatim by RoutineNotBefore (its
--- one earliest-bound field) and RoutineNotAfter (its one latest-bound
--- field) — same fact, same key, per tagged-flat-serialization, even
--- though each case only carries one of the two.
--- ═══════════════════════════════════════════════════════════════════════
-
-data RoutineDueDTO
-  = RoutineAnytimeDTO
-  | RoutineNotBeforeDTO UTCTime
-  | RoutineNotAfterDTO  UTCTime
-  | RoutineWithinDTO    UTCTime UTCTime
-  deriving (Show, Eq)
-
-instance ToJSON RoutineDueDTO where
-  toJSON RoutineAnytimeDTO          = object ["type" .= ("routineAnytime" :: Text)]
-  toJSON (RoutineNotBeforeDTO from) = object ["type" .= ("routineNotBefore" :: Text), "from" .= from]
-  toJSON (RoutineNotAfterDTO  to)   = object ["type" .= ("routineNotAfter" :: Text), "to" .= to]
-  toJSON (RoutineWithinDTO from to) = object
-    ["type" .= ("routineWithin" :: Text), "from" .= from, "to" .= to]
-
-instance FromJSON RoutineDueDTO where
-  parseJSON = withObject "RoutineDueDTO" $ \v -> do
-    tag <- v .: "type"
-    case (tag :: Text) of
-      "routineAnytime"   -> pure RoutineAnytimeDTO
-      "routineNotBefore" -> RoutineNotBeforeDTO <$> v .: "from"
-      "routineNotAfter"  -> RoutineNotAfterDTO  <$> v .: "to"
-      "routineWithin"    -> RoutineWithinDTO    <$> v .: "from" <*> v .: "to"
-      other              -> fail ("unrecognized RoutineDue type: " ++ show other)
-
-instance ToSchema RoutineDueDTO where
-  declareNamedSchema _ = do
-    utcRef <- declareSchemaRef (Proxy :: Proxy UTCTime)
-    pure $ taggedSchema "RoutineDueDTO"
-      ["routineAnytime", "routineNotBefore", "routineNotAfter", "routineWithin"]
-      [("from", utcRef), ("to", utcRef)]
-      []
-
-toDomainRoutineDue :: RoutineDueDTO -> Either TransportError RoutineDue
-toDomainRoutineDue RoutineAnytimeDTO        = Right RoutineAnytime
-toDomainRoutineDue (RoutineNotBeforeDTO lo) = Right (RoutineNotBefore lo)
-toDomainRoutineDue (RoutineNotAfterDTO  hi) = Right (RoutineNotAfter hi)
-toDomainRoutineDue (RoutineWithinDTO lo hi) =
-  maybe (Left (InvalidRoutineWithinRange lo hi)) Right (mkRoutineWithin lo hi)
-
--- routineWithinBounds is the read-only accessor for RoutineWithin's
--- hidden fields (same reasoning as Persistence.hs's encodePriority) —
--- RoutineWithin's constructor is not in scope here, so this is the only
--- way to read one back out for encoding.
-fromDomainRoutineDue :: RoutineDue -> RoutineDueDTO
-fromDomainRoutineDue due = case routineWithinBounds due of
-  Just (from, to) -> RoutineWithinDTO from to
-  Nothing         -> case due of
-    RoutineAnytime      -> RoutineAnytimeDTO
-    RoutineNotBefore lo -> RoutineNotBeforeDTO lo
-    RoutineNotAfter  hi -> RoutineNotAfterDTO hi
-    _                   -> RoutineAnytimeDTO  -- unreachable: routineWithinBounds covers RoutineWithin
-
--- ═══════════════════════════════════════════════════════════════════════
--- CLOSE REASON
--- Three cases, Cancelled/NoShow each embedding AppointmentPartyDTO under
--- the shared "by" key — reuses toDomainAppointmentParty/
--- fromDomainAppointmentParty rather than re-encoding AppointmentParty
--- inline. Cancelled's trailing Maybe Text (its free-text note) is encoded
--- via aeson's own ToJSON (Maybe a) instance: Nothing becomes a JSON
--- `null`, not an omitted key — the "note" key is always present in a
--- cancelled object, only its value is optional, so parseJSON below reads
--- it with plain (.:), which requires the key to exist (it always does,
--- since our own encoder always emits it) but accepts null via aeson's
--- FromJSON (Maybe a) instance.
---
--- No decode failure of its own: AppointmentPartyDTO's toDomain is total
--- (verified above), and neither the "completed" nor "noShow" cases carry
--- anything else that could fail, so toDomainCloseReason returns
--- CloseReason directly, not Either.
--- ═══════════════════════════════════════════════════════════════════════
-
-data CloseReasonDTO
-  = CompletedDTO
-  | CancelledDTO AppointmentPartyDTO UTCTime (Maybe Text)
-  | NoShowDTO    AppointmentPartyDTO
-  deriving (Show, Eq)
-
-instance ToJSON CloseReasonDTO where
-  toJSON CompletedDTO = object ["type" .= ("completed" :: Text)]
-  toJSON (CancelledDTO by at note) = object
-    [ "type" .= ("cancelled" :: Text)
-    , "by" .= by
-    , "cancelledAt" .= at
-    , "note" .= note
-    ]
-  toJSON (NoShowDTO by) = object ["type" .= ("noShow" :: Text), "by" .= by]
-
-instance FromJSON CloseReasonDTO where
-  parseJSON = withObject "CloseReasonDTO" $ \v -> do
-    tag <- v .: "type"
-    case (tag :: Text) of
-      "completed" -> pure CompletedDTO
-      "cancelled" -> CancelledDTO <$> v .: "by" <*> v .: "cancelledAt" <*> v .: "note"
-      "noShow"    -> NoShowDTO <$> v .: "by"
-      other       -> fail ("unrecognized CloseReason type: " ++ show other)
-
-instance ToSchema CloseReasonDTO where
-  declareNamedSchema _ = do
-    partyRef <- declareSchemaRef (Proxy :: Proxy AppointmentPartyDTO)
-    utcRef   <- declareSchemaRef (Proxy :: Proxy UTCTime)
-    noteRef  <- declareSchemaRef (Proxy :: Proxy Text)
-    pure $ taggedSchema "CloseReasonDTO"
-      ["completed", "cancelled", "noShow"]
-      [("by", partyRef), ("cancelledAt", utcRef), ("note", noteRef)]
-      []
-
-toDomainCloseReason :: CloseReasonDTO -> CloseReason
-toDomainCloseReason CompletedDTO                = Completed
-toDomainCloseReason (CancelledDTO by at note)   = Cancelled (toDomainAppointmentParty by) at note
-toDomainCloseReason (NoShowDTO by)              = NoShow (toDomainAppointmentParty by)
-
-fromDomainCloseReason :: CloseReason -> CloseReasonDTO
-fromDomainCloseReason Completed                = CompletedDTO
-fromDomainCloseReason (Cancelled party at note) = CancelledDTO (fromDomainAppointmentParty party) at note
-fromDomainCloseReason (NoShow party)            = NoShowDTO (fromDomainAppointmentParty party)
-
--- ═══════════════════════════════════════════════════════════════════════
--- CLOSE REASON REQUEST
--- Request-body DTO, per servant-implementation.md section 5's already-
--- settled design — mirrors CloseReasonDTO's three cases minus Cancelled's
--- timestamp: the handler supplies it via getCurrentTime, never accepted
--- from the body, same caller-supplied-facts-only convention as every
--- other request DTO. A separate type from CloseReasonDTO, not
--- CloseReasonDTO with cancelledAt loosened to optional — CloseReasonDTO's
--- existing FromJSON correctly requires cancelledAt for a fully-formed
--- response value, and since both directions would share one instance,
--- loosening it for the request direction would weaken the response-
--- parsing guarantee too. Reuses toDomainAppointmentParty rather than
--- re-encoding AppointmentParty inline, same reuse discipline as
--- CloseReasonDTO itself. closeReasonFromRequest (not toDomainCloseReason
--- — deliberately a different name, since this one takes the caller-
--- supplied UTCTime as a second argument rather than converting a
--- self-contained DTO) is total: no invariant on any of these three cases
--- to fail against, same as toDomainCloseReason's own totality.
--- ═══════════════════════════════════════════════════════════════════════
-
-data CloseReasonRequestDTO
-  = CompletedRequestDTO
-  | CancelledRequestDTO AppointmentPartyDTO (Maybe Text)
-  | NoShowRequestDTO     AppointmentPartyDTO
-  deriving (Show, Eq)
-
-instance ToJSON CloseReasonRequestDTO where
-  toJSON CompletedRequestDTO = object ["type" .= ("completed" :: Text)]
-  toJSON (CancelledRequestDTO by note) = object
-    [ "type" .= ("cancelled" :: Text)
-    , "by" .= by
-    , "note" .= note
-    ]
-  toJSON (NoShowRequestDTO by) = object ["type" .= ("noShow" :: Text), "by" .= by]
-
-instance FromJSON CloseReasonRequestDTO where
-  parseJSON = withObject "CloseReasonRequestDTO" $ \v -> do
-    tag <- v .: "type"
-    case (tag :: Text) of
-      "completed" -> pure CompletedRequestDTO
-      "cancelled" -> CancelledRequestDTO <$> v .: "by" <*> v .: "note"
-      "noShow"    -> NoShowRequestDTO <$> v .: "by"
-      other       -> fail ("unrecognized CloseReasonRequest type: " ++ show other)
-
-instance ToSchema CloseReasonRequestDTO where
-  declareNamedSchema _ = do
-    partyRef <- declareSchemaRef (Proxy :: Proxy AppointmentPartyDTO)
-    noteRef  <- declareSchemaRef (Proxy :: Proxy Text)
-    pure $ taggedSchema "CloseReasonRequestDTO"
-      ["completed", "cancelled", "noShow"]
-      [("by", partyRef), ("note", noteRef)]
-      []
-
-closeReasonFromRequest :: CloseReasonRequestDTO -> UTCTime -> CloseReason
-closeReasonFromRequest CompletedRequestDTO          _  = Completed
-closeReasonFromRequest (CancelledRequestDTO p note) at = Cancelled (toDomainAppointmentParty p) at note
-closeReasonFromRequest (NoShowRequestDTO p)         _  = NoShow (toDomainAppointmentParty p)
-
--- ═══════════════════════════════════════════════════════════════════════
--- INTAKE REQUEST PRIORITY
--- EmergencyDue/UrgentDue are both newtypes wrapping a bare positional
--- UTCTime (verified against Domain.hs, not assumed) — unwrapped here via
--- pattern match, same as any other newtype field. All three cases share
--- the "due" key even though its shape differs: a flat timestamp for
--- Emergency/Urgent, a nested tagged RoutineDueDTO object for Routine —
--- expected, not an inconsistency, since RoutineDue is itself a
--- multi-shape variant unlike EmergencyDue/UrgentDue.
---
--- Emergency/Urgent are individually total, but Routine's case propagates
--- toDomainRoutineDue's Either TransportError (RoutineWithin's from > to
--- failure), which makes toDomainIntakeRequestPriority as a whole
--- Either TransportError, not total.
--- ═══════════════════════════════════════════════════════════════════════
-
-data IntakeRequestPriorityDTO
-  = EmergencyDTO UTCTime
-  | UrgentDTO    UTCTime
-  | RoutineDTO   RoutineDueDTO
-  deriving (Show, Eq)
-
-instance ToJSON IntakeRequestPriorityDTO where
-  toJSON (EmergencyDTO due) = object ["type" .= ("emergency" :: Text), "due" .= due]
-  toJSON (UrgentDTO due)    = object ["type" .= ("urgent" :: Text), "due" .= due]
-  toJSON (RoutineDTO due)   = object ["type" .= ("routine" :: Text), "due" .= due]
-
-instance FromJSON IntakeRequestPriorityDTO where
-  parseJSON = withObject "IntakeRequestPriorityDTO" $ \v -> do
-    tag <- v .: "type"
-    case (tag :: Text) of
-      "emergency" -> EmergencyDTO <$> v .: "due"
-      "urgent"    -> UrgentDTO    <$> v .: "due"
-      "routine"   -> RoutineDTO   <$> v .: "due"
-      other       -> fail ("unrecognized IntakeRequestPriority type: " ++ show other)
-
-instance ToSchema IntakeRequestPriorityDTO where
-  declareNamedSchema _ = pure $
-    taggedSchema "IntakeRequestPriorityDTO"
-      ["emergency", "urgent", "routine"]
-      [("due", Inline anySchema)]
-      ["due"]
-
-toDomainIntakeRequestPriority :: IntakeRequestPriorityDTO -> Either TransportError IntakeRequestPriority
-toDomainIntakeRequestPriority (EmergencyDTO due) = Right (Emergency (EmergencyDue due))
-toDomainIntakeRequestPriority (UrgentDTO due)    = Right (Urgent (UrgentDue due))
-toDomainIntakeRequestPriority (RoutineDTO due)   = Routine <$> toDomainRoutineDue due
-
-fromDomainIntakeRequestPriority :: IntakeRequestPriority -> IntakeRequestPriorityDTO
-fromDomainIntakeRequestPriority (Emergency (EmergencyDue due)) = EmergencyDTO due
-fromDomainIntakeRequestPriority (Urgent (UrgentDue due))       = UrgentDTO due
-fromDomainIntakeRequestPriority (Routine due)                  = RoutineDTO (fromDomainRoutineDue due)
-
--- ═══════════════════════════════════════════════════════════════════════
--- DOCTOR REQUIREMENT
--- Two cases, verified against Domain.hs (AnyDoctor | SpecificDoctor
--- DoctorId), no embedded invariant — same pattern as AppointmentPartyDTO/
--- CloseReasonDTO. No decode failure possible beyond the UUID-string
--- parse already handled at the JSON-parse boundary (parseUUIDField, same
--- as every other UUID field in this module), so both directions are
--- total.
--- ═══════════════════════════════════════════════════════════════════════
-
-data DoctorRequirementDTO
-  = AnyDoctorDTO
-  | SpecificDoctorDTO UUID
-  deriving (Show, Eq)
-
-instance ToJSON DoctorRequirementDTO where
-  toJSON AnyDoctorDTO = object ["type" .= ("anyDoctor" :: Text)]
-  toJSON (SpecificDoctorDTO did) = object
-    ["type" .= ("specificDoctor" :: Text), "doctorId" .= UUID.toText did]
-
-instance FromJSON DoctorRequirementDTO where
-  parseJSON = withObject "DoctorRequirementDTO" $ \v -> do
-    tag <- v .: "type"
-    case (tag :: Text) of
-      "anyDoctor"      -> pure AnyDoctorDTO
-      "specificDoctor" -> do
-        didText <- v .: "doctorId"
-        SpecificDoctorDTO <$> parseUUIDField didText
-      other -> fail ("unrecognized DoctorRequirement type: " ++ show other)
-
-instance ToSchema DoctorRequirementDTO where
-  declareNamedSchema _ = do
-    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
-    pure $ taggedSchema "DoctorRequirementDTO"
-      ["anyDoctor", "specificDoctor"]
-      [("doctorId", uuidRef)]
-      []
-
-toDomainDoctorRequirement :: DoctorRequirementDTO -> DoctorRequirement
-toDomainDoctorRequirement AnyDoctorDTO          = AnyDoctor
-toDomainDoctorRequirement (SpecificDoctorDTO did) = SpecificDoctor (DoctorId did)
-
-fromDomainDoctorRequirement :: DoctorRequirement -> DoctorRequirementDTO
-fromDomainDoctorRequirement AnyDoctor = AnyDoctorDTO
-fromDomainDoctorRequirement (SpecificDoctor did) =
-  let DoctorId d = did
-  in SpecificDoctorDTO d
-
--- ═══════════════════════════════════════════════════════════════════════
--- APPOINTED INTAKE REQUEST
--- AppointedIntakeRequest is a Domain type in its own right, not just an
--- IntakeRequest sub-case — it's also returned standalone by
--- Service.fetchAppointedIntakeRequests and needed standalone below by
--- CalendarEntryDTO. Flat record, the exact field set IntakeRequestDTO's
--- "appointed" tag already flattens (id, patientId, narrative,
--- createdAt, healthcareServiceId, priority, doctorRequirement,
--- triagedAt, doctorId, start, duration), but with NO discriminator tag
--- of its own at the top level — unlike IntakeRequest's six/seven cases,
--- there is only one shape here.
---
--- submittedFields/toDomainSubmitted and triagedFields/toDomainTriaged
--- live here (rather than in the Intake Request section below) because
--- they are now shared by two callers: AppointedIntakeRequestDTO's own
--- conversions, and IntakeRequestDTO's Submitted/Rejected/Accepted/
--- Withdrawn* cases below, which still use them directly (only the
--- Appointed/Closed cases route through AppointedIntakeRequestDTO).
--- submittedFields/triagedFields exist only on the fromDomain side (a
--- tuple, since neither IntakeRequestDTO's nor AppointedIntakeRequestDTO's
--- cases are one flat row admitting record update — mirrors
--- Persistence.hs's fromDomainSubmitted/fromDomainTriaged chain, which
--- uses record update instead since IntakeRequestRow is one flat row);
--- toDomainSubmitted/toDomainTriaged play the equivalent role on the
--- toDomain side, taking the already-flattened DTO fields as plain
--- arguments since those are already individually available from the
--- incoming pattern match.
---
--- toDomainAppointedIntakeRequest returns Either TransportError,
--- propagating toDomainTriaged's priority failure — the one failure mode
--- IntakeRequestDTO's own "appointed"/"closed" cases already propagate.
--- (Duration no longer contributes a failure here — toDomainDuration is
--- total, see DURATION above.) fromDomainAppointedIntakeRequest is total
--- (same as everything else on this side).
--- ═══════════════════════════════════════════════════════════════════════
-
-submittedFields :: SubmittedIntakeRequest -> (UUID, UUID, Text, UTCTime)
-submittedFields s =
-  let IntakeRequestId rid = s.id
-      PatientId pid       = s.patientId
-  in (rid, pid, s.narrative, s.createdAt)
-
-triagedFields
-  :: TriagedIntakeRequest
-  -> (UUID, UUID, Text, UTCTime, UUID, IntakeRequestPriorityDTO, DoctorRequirementDTO, UTCTime)
-triagedFields t =
-  let (rid, pid, narr, created) = submittedFields t.submitted
-      HealthcareServiceId svcId      = t.healthcareServiceId
-  in ( rid, pid, narr, created, svcId, fromDomainIntakeRequestPriority t.priority
-     , fromDomainDoctorRequirement t.doctorRequirement, t.triagedAt )
-
-toDomainSubmitted :: UUID -> UUID -> Text -> UTCTime -> SubmittedIntakeRequest
-toDomainSubmitted rid pid narr =
-  SubmittedIntakeRequest (IntakeRequestId rid) (PatientId pid) narr
-
-toDomainTriaged
-  :: UUID -> UUID -> Text -> UTCTime
-  -> UUID -> IntakeRequestPriorityDTO -> DoctorRequirementDTO -> UTCTime
-  -> Either TransportError TriagedIntakeRequest
-toDomainTriaged rid pid narr created svcId prio dreq triagedTime =
-  (\p -> TriagedIntakeRequest
-    (toDomainSubmitted rid pid narr created) (HealthcareServiceId svcId) p
-    (toDomainDoctorRequirement dreq) triagedTime)
-  <$> toDomainIntakeRequestPriority prio
-
-data AppointedIntakeRequestDTO = AppointedIntakeRequestDTO
-  { id                  :: UUID
-  , patientId           :: UUID
-  , narrative           :: Text
-  , createdAt           :: UTCTime
-  , healthcareServiceId :: UUID
-  , priority            :: IntakeRequestPriorityDTO
-  , doctorRequirement   :: DoctorRequirementDTO
-  , triagedAt            :: UTCTime
-  , doctorId            :: UUID
-  , start               :: UTCTime
-  , duration            :: DurationDTO
-  }
-  deriving (Show, Eq)
-
-instance ToJSON AppointedIntakeRequestDTO where
-  toJSON dto = object
-    [ "id" .= UUID.toText dto.id
-    , "patientId" .= UUID.toText dto.patientId
-    , "narrative" .= dto.narrative
-    , "createdAt" .= dto.createdAt
-    , "healthcareServiceId" .= UUID.toText dto.healthcareServiceId
-    , "priority" .= dto.priority
-    , "doctorRequirement" .= dto.doctorRequirement
-    , "triagedAt" .= dto.triagedAt
-    , "doctorId" .= UUID.toText dto.doctorId
-    , "start" .= dto.start
-    , "duration" .= dto.duration
-    ]
-
-instance FromJSON AppointedIntakeRequestDTO where
-  parseJSON = withObject "AppointedIntakeRequestDTO" $ \v -> do
-    rid         <- v .: "id" >>= parseUUIDField
-    pid         <- v .: "patientId" >>= parseUUIDField
-    narr        <- v .: "narrative"
-    created     <- v .: "createdAt"
-    svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
-    prio        <- v .: "priority"
-    dreq        <- v .: "doctorRequirement"
-    triagedTime <- v .: "triagedAt"
-    did         <- v .: "doctorId" >>= parseUUIDField
-    start'      <- v .: "start"
-    dur         <- v .: "duration"
-    pure (AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did start' dur)
-
-instance ToSchema AppointedIntakeRequestDTO where
-  declareNamedSchema _ = do
-    uuidRef     <- declareSchemaRef (Proxy :: Proxy UUID)
-    textRef     <- declareSchemaRef (Proxy :: Proxy Text)
-    utcRef      <- declareSchemaRef (Proxy :: Proxy UTCTime)
-    reqRef      <- declareSchemaRef (Proxy :: Proxy DoctorRequirementDTO)
-    prioRef     <- declareSchemaRef (Proxy :: Proxy IntakeRequestPriorityDTO)
-    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
-    pure $ objectSchema "AppointedIntakeRequestDTO"
-      [ ("id", uuidRef), ("patientId", uuidRef), ("narrative", textRef)
-      , ("createdAt", utcRef)
-      , ("healthcareServiceId", uuidRef), ("priority", prioRef), ("doctorRequirement", reqRef)
-      , ("triagedAt", utcRef), ("doctorId", uuidRef), ("start", utcRef)
-      , ("duration", durationRef)
-      ]
-      [ "id", "patientId", "narrative", "createdAt"
-      , "healthcareServiceId", "priority", "doctorRequirement", "triagedAt", "doctorId", "start"
-      , "duration"
-      ]
-
-toDomainAppointedIntakeRequest :: AppointedIntakeRequestDTO -> Either TransportError AppointedIntakeRequest
-toDomainAppointedIntakeRequest dto =
-  (\triagedReq -> AppointedIntakeRequest triagedReq (DoctorId dto.doctorId) dto.start
-    (toDomainDuration dto.duration))
-  <$> toDomainTriaged
-        dto.id dto.patientId dto.narrative dto.createdAt
-        dto.healthcareServiceId dto.priority dto.doctorRequirement dto.triagedAt
-
-fromDomainAppointedIntakeRequest :: AppointedIntakeRequest -> AppointedIntakeRequestDTO
-fromDomainAppointedIntakeRequest a =
-  let (rid, pid, narr, created, svcId, prio, dreq, triagedTime) = triagedFields a.triaged
-      DoctorId did = a.doctorId
-  in AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did a.start
-       (fromDomainDuration a.duration)
-
--- ═══════════════════════════════════════════════════════════════════════
--- INTAKE REQUEST
--- Eight tags, not seven: WithdrawnIntakeRequest's two sub-cases
--- (WithdrawnFromSubmitted/WithdrawnFromAccepted) get their own top-level
--- "type" tags rather than a shared "withdrawn" tag plus a
--- nullable/conditional field distinguishing them — the same
--- no-field-stands-in-for-which-case principle tagged-flat-serialization
--- already applies to IntakeRequest's own seven states applies one level
--- deeper here too.
---
--- Every field list below verified against Domain.hs's actual embedding
--- chain (SubmittedIntakeRequest -> TriagedIntakeRequest ->
--- AppointedIntakeRequest), not assumed:
---   submitted: id, patientId, narrative, createdAt
---   rejected:  + rejectedAt, rejectionReason :: Text (NOT Maybe Text —
---              unlike Cancelled's/Withdrawn's own free-text notes, a
---              rejection reason is mandatory in Domain.hs)
---   accepted:  submitted's fields + healthcareServiceId, priority,
---              triagedAt
---   appointed: accepted's fields + doctorId, start,
---              duration :: DurationDTO (matching every other DTO's
---              tagged-enum convention) — same field set as
---              AppointedIntakeRequestDTO above, verbatim
---   withdrawnFromSubmitted: submitted's fields + withdrawnAt,
---              withdrawalNote :: Maybe Text
---   withdrawnFromAccepted:  accepted's fields + withdrawnAt,
---              withdrawalNote :: Maybe Text
---   stale:     accepted's fields + staleAt :: UTCTime — Stale embeds a
---              full TriagedIntakeRequest, same as Accepted, so its DTO
---              fields are accepted's exactly, plus the one new timestamp.
---   closed:    appointed's fields + closeReason
---
--- toDomainIntakeRequest/fromDomainIntakeRequest's Appointed/Closed cases
--- build on top of toDomainAppointedIntakeRequest/
--- fromDomainAppointedIntakeRequest above rather than repeating the
--- triaged+duration flattening inline a second time — this is the same
--- flattening logic, reused, not duplicated. The other six cases
--- (Submitted/Rejected/Accepted/WithdrawnFromSubmitted/
--- WithdrawnFromAccepted/Stale) still use submittedFields/triagedFields/
--- toDomainSubmitted/toDomainTriaged directly, since they don't go
--- through AppointedIntakeRequest at all. The wire shape for "appointed"/
--- "closed" is unchanged by this — only the Haskell-side composition
--- moved; the ToJSON/FromJSON instances below (which fully determine the
--- wire format) are untouched.
---
--- toDomainIntakeRequest propagates every failure mode from the pieces it
--- composes: toDomainIntakeRequestPriority's InvalidRoutineWithinRange
--- (every case carrying a priority). DoctorRequirementDTO and
--- DurationDTO both introduce no failure of their own (verified above in
--- their own sections), so neither contributes anything to propagate. No
--- NEW TransportError constructor is needed for this
--- flattening/reassembly step itself — Domain.hs has no invariant
--- spanning these embedded pieces beyond what Priority/Duration already
--- enforce (SubmittedIntakeRequest/TriagedIntakeRequest/
--- AppointedIntakeRequest/WithdrawnIntakeRequest/IntakeRequest are all
--- "constructor open — no invariant to protect" per Domain.hs's own
--- header comments), so nothing new can fail here that isn't already
--- covered by the existing constructors.
---
--- fromDomainIntakeRequest is total: every piece it calls
--- (fromDomainDoctorRequirement, fromDomainIntakeRequestPriority,
--- fromDomainCloseReason, fromDomainAppointedIntakeRequest,
--- fromDomainDuration, UUID.toText) is total.
--- ═══════════════════════════════════════════════════════════════════════
-
-data IntakeRequestDTO
-  = SubmittedDTO
-      { id                :: UUID
-      , patientId         :: UUID
-      , narrative         :: Text
-      , createdAt         :: UTCTime
-      }
-  | RejectedDTO
-      { id                :: UUID
-      , patientId         :: UUID
-      , narrative         :: Text
-      , createdAt         :: UTCTime
-      , rejectedAt        :: UTCTime
-      , rejectionReason   :: Text
-      }
-  | AcceptedDTO
-      { id                  :: UUID
-      , patientId           :: UUID
-      , narrative           :: Text
-      , createdAt           :: UTCTime
-      , healthcareServiceId :: UUID
-      , priority            :: IntakeRequestPriorityDTO
-      , doctorRequirement   :: DoctorRequirementDTO
-      , triagedAt           :: UTCTime
-      }
-  | AppointedDTO
-      { id                  :: UUID
-      , patientId           :: UUID
-      , narrative           :: Text
-      , createdAt           :: UTCTime
-      , healthcareServiceId :: UUID
-      , priority            :: IntakeRequestPriorityDTO
-      , doctorRequirement   :: DoctorRequirementDTO
-      , triagedAt           :: UTCTime
-      , doctorId            :: UUID
-      , start               :: UTCTime
-      , duration            :: DurationDTO
-      }
-  | WithdrawnFromSubmittedDTO
-      { id                :: UUID
-      , patientId         :: UUID
-      , narrative         :: Text
-      , createdAt         :: UTCTime
-      , withdrawnAt       :: UTCTime
-      , withdrawalNote    :: Maybe Text
-      }
-  | WithdrawnFromAcceptedDTO
-      { id                  :: UUID
-      , patientId           :: UUID
-      , narrative           :: Text
-      , createdAt           :: UTCTime
-      , healthcareServiceId :: UUID
-      , priority            :: IntakeRequestPriorityDTO
-      , doctorRequirement   :: DoctorRequirementDTO
-      , triagedAt           :: UTCTime
-      , withdrawnAt         :: UTCTime
-      , withdrawalNote      :: Maybe Text
-      }
-  | StaleDTO
-      { id                  :: UUID
-      , patientId           :: UUID
-      , narrative           :: Text
-      , createdAt           :: UTCTime
-      , healthcareServiceId :: UUID
-      , priority            :: IntakeRequestPriorityDTO
-      , doctorRequirement   :: DoctorRequirementDTO
-      , triagedAt           :: UTCTime
-      , staleAt             :: UTCTime
-      }
-  | ClosedDTO
-      { id                  :: UUID
-      , patientId           :: UUID
-      , narrative           :: Text
-      , createdAt           :: UTCTime
-      , healthcareServiceId :: UUID
-      , priority            :: IntakeRequestPriorityDTO
-      , doctorRequirement   :: DoctorRequirementDTO
-      , triagedAt           :: UTCTime
-      , doctorId            :: UUID
-      , start               :: UTCTime
-      , duration            :: DurationDTO
-      , closeReason         :: CloseReasonDTO
-      }
-  deriving (Show, Eq)
-
-instance ToJSON IntakeRequestDTO where
-  toJSON (SubmittedDTO rid pid narr created) = object
-    [ "type" .= ("submitted" :: Text)
-    , "id" .= UUID.toText rid
-    , "patientId" .= UUID.toText pid
-    , "narrative" .= narr
-    , "createdAt" .= created
-    ]
-  toJSON (RejectedDTO rid pid narr created rejectedTime reason) = object
-    [ "type" .= ("rejected" :: Text)
-    , "id" .= UUID.toText rid
-    , "patientId" .= UUID.toText pid
-    , "narrative" .= narr
-    , "createdAt" .= created
-    , "rejectedAt" .= rejectedTime
-    , "rejectionReason" .= reason
-    ]
-  toJSON (AcceptedDTO rid pid narr created svcId prio dreq triagedTime) = object
-    [ "type" .= ("accepted" :: Text)
-    , "id" .= UUID.toText rid
-    , "patientId" .= UUID.toText pid
-    , "narrative" .= narr
-    , "createdAt" .= created
-    , "healthcareServiceId" .= UUID.toText svcId
-    , "priority" .= prio
-    , "doctorRequirement" .= dreq
-    , "triagedAt" .= triagedTime
-    ]
-  toJSON (AppointedDTO rid pid narr created svcId prio dreq triagedTime did start' dur) = object
-    [ "type" .= ("appointed" :: Text)
-    , "id" .= UUID.toText rid
-    , "patientId" .= UUID.toText pid
-    , "narrative" .= narr
-    , "createdAt" .= created
-    , "healthcareServiceId" .= UUID.toText svcId
-    , "priority" .= prio
-    , "doctorRequirement" .= dreq
-    , "triagedAt" .= triagedTime
-    , "doctorId" .= UUID.toText did
-    , "start" .= start'
-    , "duration" .= dur
-    ]
-  toJSON (WithdrawnFromSubmittedDTO rid pid narr created withdrawnTime note) = object
-    [ "type" .= ("withdrawnFromSubmitted" :: Text)
-    , "id" .= UUID.toText rid
-    , "patientId" .= UUID.toText pid
-    , "narrative" .= narr
-    , "createdAt" .= created
-    , "withdrawnAt" .= withdrawnTime
-    , "withdrawalNote" .= note
-    ]
-  toJSON (WithdrawnFromAcceptedDTO rid pid narr created svcId prio dreq triagedTime withdrawnTime note) = object
-    [ "type" .= ("withdrawnFromAccepted" :: Text)
-    , "id" .= UUID.toText rid
-    , "patientId" .= UUID.toText pid
-    , "narrative" .= narr
-    , "createdAt" .= created
-    , "healthcareServiceId" .= UUID.toText svcId
-    , "priority" .= prio
-    , "doctorRequirement" .= dreq
-    , "triagedAt" .= triagedTime
-    , "withdrawnAt" .= withdrawnTime
-    , "withdrawalNote" .= note
-    ]
-  toJSON (StaleDTO rid pid narr created svcId prio dreq triagedTime staleTime) = object
-    [ "type" .= ("stale" :: Text)
-    , "id" .= UUID.toText rid
-    , "patientId" .= UUID.toText pid
-    , "narrative" .= narr
-    , "createdAt" .= created
-    , "healthcareServiceId" .= UUID.toText svcId
-    , "priority" .= prio
-    , "doctorRequirement" .= dreq
-    , "triagedAt" .= triagedTime
-    , "staleAt" .= staleTime
-    ]
-  toJSON (ClosedDTO rid pid narr created svcId prio dreq triagedTime did start' dur reason) = object
-    [ "type" .= ("closed" :: Text)
-    , "id" .= UUID.toText rid
-    , "patientId" .= UUID.toText pid
-    , "narrative" .= narr
-    , "createdAt" .= created
-    , "healthcareServiceId" .= UUID.toText svcId
-    , "priority" .= prio
-    , "doctorRequirement" .= dreq
-    , "triagedAt" .= triagedTime
-    , "doctorId" .= UUID.toText did
-    , "start" .= start'
-    , "duration" .= dur
-    , "closeReason" .= reason
-    ]
-
-instance FromJSON IntakeRequestDTO where
-  parseJSON = withObject "IntakeRequestDTO" $ \v -> do
-    tag <- v .: "type"
-    case (tag :: Text) of
-      "submitted" -> do
-        rid     <- v .: "id" >>= parseUUIDField
-        pid     <- v .: "patientId" >>= parseUUIDField
-        narr    <- v .: "narrative"
-        created <- v .: "createdAt"
-        pure (SubmittedDTO rid pid narr created)
-      "rejected" -> do
-        rid          <- v .: "id" >>= parseUUIDField
-        pid          <- v .: "patientId" >>= parseUUIDField
-        narr         <- v .: "narrative"
-        created      <- v .: "createdAt"
-        rejectedTime <- v .: "rejectedAt"
-        reason       <- v .: "rejectionReason"
-        pure (RejectedDTO rid pid narr created rejectedTime reason)
-      "accepted" -> do
-        rid         <- v .: "id" >>= parseUUIDField
-        pid         <- v .: "patientId" >>= parseUUIDField
-        narr        <- v .: "narrative"
-        created     <- v .: "createdAt"
-        svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
-        prio        <- v .: "priority"
-        dreq        <- v .: "doctorRequirement"
-        triagedTime <- v .: "triagedAt"
-        pure (AcceptedDTO rid pid narr created svcId prio dreq triagedTime)
-      "appointed" -> do
-        rid         <- v .: "id" >>= parseUUIDField
-        pid         <- v .: "patientId" >>= parseUUIDField
-        narr        <- v .: "narrative"
-        created     <- v .: "createdAt"
-        svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
-        prio        <- v .: "priority"
-        dreq        <- v .: "doctorRequirement"
-        triagedTime <- v .: "triagedAt"
-        did         <- v .: "doctorId" >>= parseUUIDField
-        start'      <- v .: "start"
-        dur         <- v .: "duration"
-        pure (AppointedDTO rid pid narr created svcId prio dreq triagedTime did start' dur)
-      "withdrawnFromSubmitted" -> do
-        rid           <- v .: "id" >>= parseUUIDField
-        pid           <- v .: "patientId" >>= parseUUIDField
-        narr          <- v .: "narrative"
-        created       <- v .: "createdAt"
-        withdrawnTime <- v .: "withdrawnAt"
-        note          <- v .: "withdrawalNote"
-        pure (WithdrawnFromSubmittedDTO rid pid narr created withdrawnTime note)
-      "withdrawnFromAccepted" -> do
-        rid           <- v .: "id" >>= parseUUIDField
-        pid           <- v .: "patientId" >>= parseUUIDField
-        narr          <- v .: "narrative"
-        created       <- v .: "createdAt"
-        svcId         <- v .: "healthcareServiceId" >>= parseUUIDField
-        prio          <- v .: "priority"
-        dreq          <- v .: "doctorRequirement"
-        triagedTime   <- v .: "triagedAt"
-        withdrawnTime <- v .: "withdrawnAt"
-        note          <- v .: "withdrawalNote"
-        pure (WithdrawnFromAcceptedDTO rid pid narr created svcId prio dreq triagedTime withdrawnTime note)
-      "stale" -> do
-        rid         <- v .: "id" >>= parseUUIDField
-        pid         <- v .: "patientId" >>= parseUUIDField
-        narr        <- v .: "narrative"
-        created     <- v .: "createdAt"
-        svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
-        prio        <- v .: "priority"
-        dreq        <- v .: "doctorRequirement"
-        triagedTime <- v .: "triagedAt"
-        staleTime   <- v .: "staleAt"
-        pure (StaleDTO rid pid narr created svcId prio dreq triagedTime staleTime)
-      "closed" -> do
-        rid         <- v .: "id" >>= parseUUIDField
-        pid         <- v .: "patientId" >>= parseUUIDField
-        narr        <- v .: "narrative"
-        created     <- v .: "createdAt"
-        svcId       <- v .: "healthcareServiceId" >>= parseUUIDField
-        prio        <- v .: "priority"
-        dreq        <- v .: "doctorRequirement"
-        triagedTime <- v .: "triagedAt"
-        did         <- v .: "doctorId" >>= parseUUIDField
-        start'      <- v .: "start"
-        dur         <- v .: "duration"
-        reason      <- v .: "closeReason"
-        pure (ClosedDTO rid pid narr created svcId prio dreq triagedTime did start' dur reason)
-      other -> fail ("unrecognized IntakeRequest type: " ++ show other)
-
--- Union of all eight cases' fields — required is the intersection
--- present in literally every case (id/patientId/narrative/
--- createdAt, verified against the field-list comment
--- at the top of this section), everything else is case-specific and
--- left optional. See taggedSchema's own comment (SWAGGER SCHEMA
--- HELPERS) for why this flattened-union shape, not oneOf, is the
--- accurate Swagger 2.0 description of a tagged-flat-serialization sum.
-instance ToSchema IntakeRequestDTO where
-  declareNamedSchema _ = do
-    uuidRef        <- declareSchemaRef (Proxy :: Proxy UUID)
-    textRef        <- declareSchemaRef (Proxy :: Proxy Text)
-    utcRef         <- declareSchemaRef (Proxy :: Proxy UTCTime)
-    reqRef         <- declareSchemaRef (Proxy :: Proxy DoctorRequirementDTO)
-    prioRef        <- declareSchemaRef (Proxy :: Proxy IntakeRequestPriorityDTO)
-    durationRef    <- declareSchemaRef (Proxy :: Proxy DurationDTO)
-    closeReasonRef <- declareSchemaRef (Proxy :: Proxy CloseReasonDTO)
-    pure $ taggedSchema "IntakeRequestDTO"
-      [ "submitted", "rejected", "accepted", "appointed"
-      , "withdrawnFromSubmitted", "withdrawnFromAccepted", "stale", "closed"
-      ]
-      [ ("id", uuidRef), ("patientId", uuidRef), ("narrative", textRef)
-      , ("createdAt", utcRef)
-      , ("rejectedAt", utcRef), ("rejectionReason", textRef)
-      , ("healthcareServiceId", uuidRef), ("priority", prioRef), ("doctorRequirement", reqRef)
-      , ("triagedAt", utcRef)
-      , ("doctorId", uuidRef), ("start", utcRef), ("duration", durationRef)
-      , ("withdrawnAt", utcRef), ("withdrawalNote", textRef)
-      , ("staleAt", utcRef)
-      , ("closeReason", closeReasonRef)
-      ]
-      ["id", "patientId", "narrative", "createdAt"]
-
-toDomainIntakeRequest :: IntakeRequestDTO -> Either TransportError IntakeRequest
-toDomainIntakeRequest (SubmittedDTO rid pid narr created) =
-  Right (Submitted (toDomainSubmitted rid pid narr created))
-toDomainIntakeRequest (RejectedDTO rid pid narr created rejectedTime reason) =
-  Right (Rejected (toDomainSubmitted rid pid narr created) rejectedTime reason)
-toDomainIntakeRequest (AcceptedDTO rid pid narr created svcId prio dreq triagedTime) =
-  Accepted <$> toDomainTriaged rid pid narr created svcId prio dreq triagedTime
-toDomainIntakeRequest (AppointedDTO rid pid narr created svcId prio dreq triagedTime did start' dur) =
-  Appointed <$> toDomainAppointedIntakeRequest
-    (AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did start' dur)
-toDomainIntakeRequest (WithdrawnFromSubmittedDTO rid pid narr created withdrawnTime note) =
-  Right
-    (Withdrawn
-      (WithdrawnFromSubmitted (toDomainSubmitted rid pid narr created) withdrawnTime note))
-toDomainIntakeRequest
-  (WithdrawnFromAcceptedDTO rid pid narr created svcId prio dreq triagedTime withdrawnTime note) = do
-  triagedReq <- toDomainTriaged rid pid narr created svcId prio dreq triagedTime
-  Right (Withdrawn (WithdrawnFromAccepted triagedReq withdrawnTime note))
-toDomainIntakeRequest (StaleDTO rid pid narr created svcId prio dreq triagedTime staleTime) =
-  (`Stale` staleTime) <$> toDomainTriaged rid pid narr created svcId prio dreq triagedTime
-toDomainIntakeRequest (ClosedDTO rid pid narr created svcId prio dreq triagedTime did start' dur reason) =
-  (\appointed -> Closed appointed (toDomainCloseReason reason))
-  <$> toDomainAppointedIntakeRequest
-        (AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did start' dur)
-
-fromDomainIntakeRequest :: IntakeRequest -> IntakeRequestDTO
-fromDomainIntakeRequest (Submitted s) =
-  let (rid, pid, narr, created) = submittedFields s
-  in SubmittedDTO rid pid narr created
-fromDomainIntakeRequest (Rejected s rejectedTime reason) =
-  let (rid, pid, narr, created) = submittedFields s
-  in RejectedDTO rid pid narr created rejectedTime reason
-fromDomainIntakeRequest (Accepted t) =
-  let (rid, pid, narr, created, svcId, prio, dreq, triagedTime) = triagedFields t
-  in AcceptedDTO rid pid narr created svcId prio dreq triagedTime
-fromDomainIntakeRequest (Appointed a) =
-  let AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did start' dur =
-        fromDomainAppointedIntakeRequest a
-  in AppointedDTO rid pid narr created svcId prio dreq triagedTime did start' dur
-fromDomainIntakeRequest (Withdrawn (WithdrawnFromSubmitted s withdrawnTime note)) =
-  let (rid, pid, narr, created) = submittedFields s
-  in WithdrawnFromSubmittedDTO rid pid narr created withdrawnTime note
-fromDomainIntakeRequest (Withdrawn (WithdrawnFromAccepted t withdrawnTime note)) =
-  let (rid, pid, narr, created, svcId, prio, dreq, triagedTime) = triagedFields t
-  in WithdrawnFromAcceptedDTO rid pid narr created svcId prio dreq triagedTime withdrawnTime note
-fromDomainIntakeRequest (Stale t staleTime) =
-  let (rid, pid, narr, created, svcId, prio, dreq, triagedTime) = triagedFields t
-  in StaleDTO rid pid narr created svcId prio dreq triagedTime staleTime
-fromDomainIntakeRequest (Closed a reason) =
-  let AppointedIntakeRequestDTO rid pid narr created svcId prio dreq triagedTime did start' dur =
-        fromDomainAppointedIntakeRequest a
-  in ClosedDTO rid pid narr created svcId prio dreq triagedTime did start' dur
-       (fromDomainCloseReason reason)
-
--- ═══════════════════════════════════════════════════════════════════════
--- INTAKE REQUEST REQUESTS (SUBMIT / ACCEPT / REJECT)
--- Request-body DTOs, per servant-implementation.md section 5 — every
--- UTCTime a Service.hs mutation needs (submitIntakeRequest's createdAt,
--- acceptSubmittedIntakeRequest's triagedAt, rejectSubmittedIntakeRequest's
--- rejectedAt) is caller-supplied-facts-only excluded: the API layer's
--- handler calls getCurrentTime itself, never accepts a client-supplied
--- timestamp in any of these three bodies. Reuses DoctorRequirementDTO/
--- IntakeRequestPriorityDTO directly rather than bespoke inline shapes,
--- same reuse discipline as every other DTO composing an already-defined
--- case. None of these three have a toDomain/fromDomain pair of their own
--- — same reasoning as CreateDoctorRequest/CreatePatientRequest above:
--- there is no single Domain type on the other side to convert to/from,
--- since submitIntakeRequest/acceptSubmittedIntakeRequest/
--- rejectSubmittedIntakeRequest each take several separate arguments, not
--- one Domain value.
--- ═══════════════════════════════════════════════════════════════════════
-
+-- submitIntakeRequest (createdAt is supplied by the handler)
 data SubmitIntakeRequestRequest = SubmitIntakeRequestRequest
-  { patientId :: UUID
+  { patientId :: PatientIdDTO
   , narrative :: Text
   }
   deriving (Show, Eq)
 
-instance ToJSON SubmitIntakeRequestRequest where
-  toJSON dto = object
-    [ "patientId" .= UUID.toText dto.patientId
-    , "narrative" .= dto.narrative
-    ]
+instance Flat SubmitIntakeRequestRequest where
+  flatten r = ["patientId" .= r.patientId, "narrative" .= r.narrative]
+  unflatten o = SubmitIntakeRequestRequest <$> o .: "patientId" <*> o .: "narrative"
+  shape _ = mconcat <$> sequence
+    [ field "patientId" (Proxy @PatientIdDTO), field "narrative" (Proxy @Text) ]
 
-instance FromJSON SubmitIntakeRequestRequest where
-  parseJSON = withObject "SubmitIntakeRequestRequest" $ \v -> do
-    patientIdText <- v .: "patientId"
-    pid           <- parseUUIDField patientIdText
-    SubmitIntakeRequestRequest pid <$> v .: "narrative"
-
+instance ToJSON SubmitIntakeRequestRequest where toJSON = encodeFlat
+instance FromJSON SubmitIntakeRequestRequest where parseJSON = decodeFlat "SubmitIntakeRequestRequest"
 instance ToSchema SubmitIntakeRequestRequest where
-  declareNamedSchema _ = do
-    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
-    textRef <- declareSchemaRef (Proxy :: Proxy Text)
-    pure $ objectSchema "SubmitIntakeRequestRequest"
-      [("patientId", uuidRef), ("narrative", textRef)]
-      ["patientId", "narrative"]
+  declareNamedSchema = schemaFlat "SubmitIntakeRequestRequest"
 
-data AcceptIntakeRequestRequest = AcceptIntakeRequestRequest
-  { healthcareServiceId :: UUID
+-- acceptSubmittedIntakeRequest (triagedAt is supplied by the handler)
+data AcceptSubmittedIntakeRequestRequest = AcceptSubmittedIntakeRequestRequest
+  { healthcareServiceId :: HealthcareServiceIdDTO
   , priority            :: IntakeRequestPriorityDTO
   , doctorRequirement   :: DoctorRequirementDTO
   }
   deriving (Show, Eq)
 
-instance ToJSON AcceptIntakeRequestRequest where
-  toJSON dto = object
-    [ "healthcareServiceId" .= UUID.toText dto.healthcareServiceId
-    , "priority" .= dto.priority
-    , "doctorRequirement" .= dto.doctorRequirement
+instance Flat AcceptSubmittedIntakeRequestRequest where
+  flatten r =
+    [ "healthcareServiceId" .= r.healthcareServiceId, "priority" .= r.priority
+    , "doctorRequirement" .= r.doctorRequirement ]
+  unflatten o = AcceptSubmittedIntakeRequestRequest
+    <$> o .: "healthcareServiceId" <*> o .: "priority" <*> o .: "doctorRequirement"
+  shape _ = mconcat <$> sequence
+    [ field "healthcareServiceId" (Proxy @HealthcareServiceIdDTO)
+    , field "priority" (Proxy @IntakeRequestPriorityDTO)
+    , field "doctorRequirement" (Proxy @DoctorRequirementDTO)
     ]
 
-instance FromJSON AcceptIntakeRequestRequest where
-  parseJSON = withObject "AcceptIntakeRequestRequest" $ \v -> do
-    svcIdText <- v .: "healthcareServiceId"
-    svcId     <- parseUUIDField svcIdText
-    AcceptIntakeRequestRequest svcId <$> v .: "priority" <*> v .: "doctorRequirement"
+instance ToJSON AcceptSubmittedIntakeRequestRequest where toJSON = encodeFlat
+instance FromJSON AcceptSubmittedIntakeRequestRequest where
+  parseJSON = decodeFlat "AcceptSubmittedIntakeRequestRequest"
+instance ToSchema AcceptSubmittedIntakeRequestRequest where
+  declareNamedSchema = schemaFlat "AcceptSubmittedIntakeRequestRequest"
 
-instance ToSchema AcceptIntakeRequestRequest where
-  declareNamedSchema _ = do
-    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
-    prioRef <- declareSchemaRef (Proxy :: Proxy IntakeRequestPriorityDTO)
-    reqRef  <- declareSchemaRef (Proxy :: Proxy DoctorRequirementDTO)
-    pure $ objectSchema "AcceptIntakeRequestRequest"
-      [("healthcareServiceId", uuidRef), ("priority", prioRef), ("doctorRequirement", reqRef)]
-      ["healthcareServiceId", "priority", "doctorRequirement"]
-
--- Field named rejectionReason, not the shorter reason -- matches
--- IntakeRequestDTO's own RejectedDTO.rejectionReason for the identical
--- fact (the request DTO's rejectionReason becomes, verbatim, the
--- response DTO's rejectionReason once Service.hs runs), and avoids a
--- genuine -Wname-shadowing collision a bare "reason" field would
--- introduce: DuplicateRecordFields makes any field name a module-wide
--- selector, and Transport.hs's own RejectedDTO/ClosedDTO (de)serializers
--- already use "reason" as a local pattern-bound variable name in several
--- places (not a field -- just a locally chosen name), which a new
--- same-named top-level selector would then shadow.
-newtype RejectIntakeRequestRequest = RejectIntakeRequestRequest
+-- rejectSubmittedIntakeRequest (rejectedAt is supplied by the handler)
+newtype RejectSubmittedIntakeRequestRequest = RejectSubmittedIntakeRequestRequest
   { rejectionReason :: Text
   }
   deriving (Show, Eq)
 
-instance ToJSON RejectIntakeRequestRequest where
-  toJSON dto = object ["rejectionReason" .= dto.rejectionReason]
+instance Flat RejectSubmittedIntakeRequestRequest where
+  flatten r = ["rejectionReason" .= r.rejectionReason]
+  unflatten o = RejectSubmittedIntakeRequestRequest <$> o .: "rejectionReason"
+  shape _ = field "rejectionReason" (Proxy @Text)
 
-instance FromJSON RejectIntakeRequestRequest where
-  parseJSON = withObject "RejectIntakeRequestRequest" $ \v ->
-    RejectIntakeRequestRequest <$> v .: "rejectionReason"
+instance ToJSON RejectSubmittedIntakeRequestRequest where toJSON = encodeFlat
+instance FromJSON RejectSubmittedIntakeRequestRequest where
+  parseJSON = decodeFlat "RejectSubmittedIntakeRequestRequest"
+instance ToSchema RejectSubmittedIntakeRequestRequest where
+  declareNamedSchema = schemaFlat "RejectSubmittedIntakeRequestRequest"
 
-instance ToSchema RejectIntakeRequestRequest where
-  declareNamedSchema _ = do
-    textRef <- declareSchemaRef (Proxy :: Proxy Text)
-    pure $ objectSchema "RejectIntakeRequestRequest" [("rejectionReason", textRef)] ["rejectionReason"]
-
--- Only the slot's id, never the slot's fields: the appointment copies the
--- stored slot's doctor/start/duration, which the client is not
--- authoritative about. Service.matchAcceptedIntakeRequestToSlot fetches
--- the slot itself.
-newtype MatchIntakeRequestRequest = MatchIntakeRequestRequest
-  { slotId :: UUID
+-- matchAcceptedIntakeRequestToSlot: the slot's id lands in no field, so it
+-- takes its ID type's name.
+newtype MatchAcceptedIntakeRequestToSlotRequest = MatchAcceptedIntakeRequestToSlotRequest
+  { slotId :: SlotIdDTO
   }
   deriving (Show, Eq)
 
-instance ToJSON MatchIntakeRequestRequest where
-  toJSON dto = object ["slotId" .= UUID.toText dto.slotId]
+instance Flat MatchAcceptedIntakeRequestToSlotRequest where
+  flatten r = ["slotId" .= r.slotId]
+  unflatten o = MatchAcceptedIntakeRequestToSlotRequest <$> o .: "slotId"
+  shape _ = field "slotId" (Proxy @SlotIdDTO)
 
-instance FromJSON MatchIntakeRequestRequest where
-  parseJSON = withObject "MatchIntakeRequestRequest" $ \v -> do
-    slotIdText <- v .: "slotId"
-    MatchIntakeRequestRequest <$> parseUUIDField slotIdText
+instance ToJSON MatchAcceptedIntakeRequestToSlotRequest where toJSON = encodeFlat
+instance FromJSON MatchAcceptedIntakeRequestToSlotRequest where
+  parseJSON = decodeFlat "MatchAcceptedIntakeRequestToSlotRequest"
+instance ToSchema MatchAcceptedIntakeRequestToSlotRequest where
+  declareNamedSchema = schemaFlat "MatchAcceptedIntakeRequestToSlotRequest"
 
-instance ToSchema MatchIntakeRequestRequest where
-  declareNamedSchema _ = do
-    uuidRef <- declareSchemaRef (Proxy :: Proxy UUID)
-    pure $ objectSchema "MatchIntakeRequestRequest" [("slotId", uuidRef)] ["slotId"]
-
--- ═══════════════════════════════════════════════════════════════════════
--- CALENDAR ENTRY
--- Domain.hs's CalendarEntry has two cases, Slot AvailableSlot |
--- Appointment AppointedIntakeRequest.
---
--- AvailableSlotDTO's fields (id, doctorId, healthcareServiceId, start,
--- duration) are a strict subset of AppointedIntakeRequestDTO's fields —
--- neither carries its own discriminator today, and without one,
--- a naive "try parsing as a slot, else an appointment" FromJSON would
--- always successfully (mis)parse actual appointment JSON as a slot too,
--- since every key a slot needs is also present on an appointment. This
--- is a genuine decode-ambiguity risk, not just a style-consistency
--- argument, so CalendarEntryDTO adds its own "type": "slot" /
--- "type": "appointment" wrapper, flattened per tagged-flat-serialization
--- (never a nested "contents" wrapper) rather than nesting the embedded
--- DTO under its own key.
---
--- FromJSON reuses AvailableSlotDTO's/AppointedIntakeRequestDTO's own
--- parseJSON directly on the same underlying value once the tag selects
--- which one applies — safe because neither embedded FromJSON instance
--- looks for a "type" key, so the extra key already present is simply
--- ignored, and no field list is re-typed a second time. ToJSON is not
--- symmetrically reused this way (it duplicates the embedded DTO's field
--- list instead of merging JSON values) to avoid introducing this file's
--- only raw-Aeson-Object-merging code path for a single two-constructor
--- type; every other ToJSON instance here builds an object literal from
--- scratch the same way.
--- ═══════════════════════════════════════════════════════════════════════
-
-data CalendarEntryDTO
-  = SlotEntryDTO        AvailableSlotDTO
-  | AppointmentEntryDTO AppointedIntakeRequestDTO
+-- withdrawIntakeRequest (withdrawnAt is supplied by the handler)
+newtype WithdrawIntakeRequestRequest = WithdrawIntakeRequestRequest
+  { withdrawalNote :: Maybe Text
+  }
   deriving (Show, Eq)
 
-instance ToJSON CalendarEntryDTO where
-  toJSON (SlotEntryDTO slot) = object
-    [ "type" .= ("slot" :: Text)
-    , "id" .= UUID.toText slot.id
-    , "doctorId" .= UUID.toText slot.doctorId
-    , "healthcareServiceId" .= UUID.toText slot.healthcareServiceId
-    , "start" .= slot.start
-    , "duration" .= slot.duration
+instance Flat WithdrawIntakeRequestRequest where
+  flatten r = ["withdrawalNote" .= r.withdrawalNote]
+  unflatten o = WithdrawIntakeRequestRequest <$> o .: "withdrawalNote"
+  shape _ = maybeField "withdrawalNote" (Proxy @Text)
+
+instance ToJSON WithdrawIntakeRequestRequest where toJSON = encodeFlat
+instance FromJSON WithdrawIntakeRequestRequest where
+  parseJSON = decodeFlat "WithdrawIntakeRequestRequest"
+instance ToSchema WithdrawIntakeRequestRequest where
+  declareNamedSchema = schemaFlat "WithdrawIntakeRequestRequest"
+
+-- closeAppointedIntakeRequest: the caller supplies the CloseReason whole,
+-- except the cancellation's time, which the server records.
+newtype CloseAppointedIntakeRequestRequest = CloseAppointedIntakeRequestRequest
+  { closeReason :: CloseReasonRequest
+  }
+  deriving (Show, Eq)
+
+instance Flat CloseAppointedIntakeRequestRequest where
+  flatten r = ["closeReason" .= r.closeReason]
+  unflatten o = CloseAppointedIntakeRequestRequest <$> o .: "closeReason"
+  shape _ = field "closeReason" (Proxy @CloseReasonRequest)
+
+instance ToJSON CloseAppointedIntakeRequestRequest where toJSON = encodeFlat
+instance FromJSON CloseAppointedIntakeRequestRequest where
+  parseJSON = decodeFlat "CloseAppointedIntakeRequestRequest"
+instance ToSchema CloseAppointedIntakeRequestRequest where
+  declareNamedSchema = schemaFlat "CloseAppointedIntakeRequestRequest"
+
+-- CloseReason without cancelledAt.
+data CloseReasonRequest
+  = CompletedRequest
+  | CancelledRequest CancellationRequest
+  | NoShowRequest    AbsenceDTO
+  deriving (Show, Eq)
+
+instance Flat CloseReasonRequest where
+  flatten CompletedRequest     = [tagKey "completed"]
+  flatten (CancelledRequest c) = tagKey "cancelled" : flatten c
+  flatten (NoShowRequest a)    = tagKey "noShow" : flatten a
+  unflatten o = readTag o >>= \t -> case t of
+    "completed" -> pure CompletedRequest
+    "cancelled" -> CancelledRequest <$> unflatten o
+    "noShow"    -> NoShowRequest <$> unflatten o
+    _           -> unknownTag "CloseReasonRequest" t
+  shape _ = sumShape
+    [ ("completed", pure mempty)
+    , ("cancelled", shape (Proxy @CancellationRequest))
+    , ("noShow", shape (Proxy @AbsenceDTO))
     ]
-  toJSON (AppointmentEntryDTO appt) = object
-    [ "type" .= ("appointment" :: Text)
-    , "id" .= UUID.toText appt.id
-    , "patientId" .= UUID.toText appt.patientId
-    , "narrative" .= appt.narrative
-    , "createdAt" .= appt.createdAt
-    , "healthcareServiceId" .= UUID.toText appt.healthcareServiceId
-    , "priority" .= appt.priority
-    , "doctorRequirement" .= appt.doctorRequirement
-    , "triagedAt" .= appt.triagedAt
-    , "doctorId" .= UUID.toText appt.doctorId
-    , "start" .= appt.start
-    , "duration" .= appt.duration
+
+instance ToJSON CloseReasonRequest where toJSON = encodeFlat
+instance FromJSON CloseReasonRequest where parseJSON = decodeFlat "CloseReasonRequest"
+instance ToSchema CloseReasonRequest where declareNamedSchema = schemaFlat "CloseReasonRequest"
+
+-- Cancellation without cancelledAt.
+data CancellationRequest = CancellationRequest
+  { cancelledBy      :: AppointmentPartyDTO
+  , cancellationNote :: Maybe Text
+  }
+  deriving (Show, Eq)
+
+instance Flat CancellationRequest where
+  flatten c = ["cancelledBy" .= c.cancelledBy, "cancellationNote" .= c.cancellationNote]
+  unflatten o = CancellationRequest <$> o .: "cancelledBy" <*> o .: "cancellationNote"
+  shape _ = mconcat <$> sequence
+    [ field "cancelledBy" (Proxy @AppointmentPartyDTO)
+    , maybeField "cancellationNote" (Proxy @Text)
     ]
 
-instance FromJSON CalendarEntryDTO where
-  parseJSON v = do
-    tag <- withObject "CalendarEntryDTO" (.: "type") v
-    case (tag :: Text) of
-      "slot"        -> SlotEntryDTO        <$> parseJSON v
-      "appointment" -> AppointmentEntryDTO <$> parseJSON v
-      other         -> fail ("unrecognized CalendarEntry type: " ++ show other)
+instance ToJSON CancellationRequest where toJSON = encodeFlat
+instance FromJSON CancellationRequest where parseJSON = decodeFlat "CancellationRequest"
+instance ToSchema CancellationRequest where declareNamedSchema = schemaFlat "CancellationRequest"
 
--- Union of both cases' fields — required is the intersection genuinely
--- present in both (id/doctorId/healthcareServiceId/start/duration: every
--- one of AvailableSlotDTO's five fields is also present on
--- AppointedIntakeRequestDTO's eleven, verified against both DTOs'
--- own field lists above), the remaining six appointment-only fields
--- left optional. Same flattened-union reasoning as taggedSchema's own
--- comment (SWAGGER SCHEMA HELPERS).
-instance ToSchema CalendarEntryDTO where
-  declareNamedSchema _ = do
-    uuidRef     <- declareSchemaRef (Proxy :: Proxy UUID)
-    textRef     <- declareSchemaRef (Proxy :: Proxy Text)
-    utcRef      <- declareSchemaRef (Proxy :: Proxy UTCTime)
-    reqRef      <- declareSchemaRef (Proxy :: Proxy DoctorRequirementDTO)
-    prioRef     <- declareSchemaRef (Proxy :: Proxy IntakeRequestPriorityDTO)
-    durationRef <- declareSchemaRef (Proxy :: Proxy DurationDTO)
-    pure $ taggedSchema "CalendarEntryDTO"
-      ["slot", "appointment"]
-      [ ("id", uuidRef), ("doctorId", uuidRef), ("healthcareServiceId", uuidRef)
-      , ("start", utcRef), ("duration", durationRef)
-      , ("patientId", uuidRef), ("narrative", textRef)
-      , ("createdAt", utcRef)
-      , ("priority", prioRef), ("doctorRequirement", reqRef), ("triagedAt", utcRef)
-      ]
-      ["id", "doctorId", "healthcareServiceId", "start", "duration"]
+-- The CloseReason, once the handler has the time the cancellation was
+-- recorded.
+toDomainCloseReasonRequest :: UTCTime -> CloseReasonRequest -> CloseReason
+toDomainCloseReasonRequest _ CompletedRequest = Completed
+toDomainCloseReasonRequest cancelledAt (CancelledRequest c) = Cancelled Cancellation
+  { cancelledBy      = toDomainAppointmentParty c.cancelledBy
+  , cancelledAt
+  , cancellationNote = c.cancellationNote
+  }
+toDomainCloseReasonRequest _ (NoShowRequest a) = NoShow (toDomainAbsence a)
 
-fromDomainCalendarEntry :: CalendarEntry -> CalendarEntryDTO
-fromDomainCalendarEntry (Slot s)        = SlotEntryDTO (fromDomainAvailableSlot s)
-fromDomainCalendarEntry (Appointment a) = AppointmentEntryDTO (fromDomainAppointedIntakeRequest a)
+-- createAvailableSlot
+data CreateAvailableSlotRequest = CreateAvailableSlotRequest
+  { doctorId            :: DoctorIdDTO
+  , healthcareServiceId :: HealthcareServiceIdDTO
+  , start               :: UTCTime
+  }
+  deriving (Show, Eq)
+
+instance Flat CreateAvailableSlotRequest where
+  flatten r =
+    [ "doctorId" .= r.doctorId, "healthcareServiceId" .= r.healthcareServiceId
+    , "start" .= r.start ]
+  unflatten o = CreateAvailableSlotRequest
+    <$> o .: "doctorId" <*> o .: "healthcareServiceId" <*> o .: "start"
+  shape _ = mconcat <$> sequence
+    [ field "doctorId" (Proxy @DoctorIdDTO)
+    , field "healthcareServiceId" (Proxy @HealthcareServiceIdDTO)
+    , field "start" (Proxy @UTCTime)
+    ]
+
+instance ToJSON CreateAvailableSlotRequest where toJSON = encodeFlat
+instance FromJSON CreateAvailableSlotRequest where
+  parseJSON = decodeFlat "CreateAvailableSlotRequest"
+instance ToSchema CreateAvailableSlotRequest where
+  declareNamedSchema = schemaFlat "CreateAvailableSlotRequest"

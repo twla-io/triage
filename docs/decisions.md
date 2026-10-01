@@ -817,6 +817,26 @@ Per expected state: every state comes after Submitted, so accept/reject only eve
 
 **Still open:** a DB test that fails when a state's CHECK misses a column. Deferred until the schema's columns are renamed after `Domain.hs`'s named values, so it's written once, against the final names.
 
+## Every stored value is named in Domain.hs (2026-09-28)
+
+**Found:** `triage-db-codegen` named tables and columns itself (`rejected_at`, `cancelled_at`, `tier`, `slots`, …), because `Domain.hs` gave many stored values no name: positional payloads (`Rejected SubmittedIntakeRequest UTCTime Text`, `Stale TriagedIntakeRequest UTCTime`, `Cancelled AppointmentParty UTCTime (Maybe Text)`, `EmergencyDue UTCTime`, `RoutineWithin UTCTime UTCTime`) and fields stored under other names. So the skill restated the model as a second specification, and it drifted from `Domain.hs` several times (`appointments`, `BookedSlot`, reassignment, a dropped CHECK).
+
+**Decided:** `Domain.hs` names every stored value; the skill holds only generic mapping rules and project conventions, and no fact about a specific type.
+- Each lifecycle case's payload is one stage record embedding the stage it followed: `RejectedIntakeRequest { submitted, rejectedAt, rejectionReason }`, `StaleIntakeRequest { triaged, staleAt }`, `ClosedIntakeRequest { appointed, closeReason }`. Not record syntax on `IntakeRequest`'s constructors, whose selectors would be partial.
+- `WithdrawnIntakeRequest { withdrawnFrom, withdrawnAt, withdrawalNote }`, with `WithdrawnFrom = FromSubmitted SubmittedIntakeRequest | FromAccepted TriagedIntakeRequest`: the withdrawal's facts stated once. Rejected: one record per case, which declared them twice.
+- `CloseReason = Completed | Cancelled Cancellation | NoShow Absence`, with `Cancellation { cancelledBy, cancelledAt, cancellationNote }` and `Absence { absentParty }`. Who cancelled and who was absent are separate facts; the meaning of the latter is an open question below.
+- `AppointmentParty = DoctorParty | PatientParty` (was `ByDoctor | ByPatient`): fits both fields, and the stored value is the constructor name, with no "drop the `By`" exception.
+- `MustBeSeenBy` replaces `EmergencyDue` and `UrgentDue`: the same fact in both tiers. A routine window is a different fact, so it keeps its own names. Rejected: two deadline columns (the tier would be stored twice).
+- `RoutineWithin RoutineWindow`, sealed via `mkRoutineWindow` (replacing `mkRoutineWithin`/`routineWithinBounds`). Its values are read through the named accessors `routineNotBefore`/`routineNotAfter`, not record fields (record update would bypass the check) and not a positional pair (2026-09-30: a pair let two layers match values to names by order only). Their names equal the values of `RoutineNotBefore`/`RoutineNotAfter`, so they share storage.
+- `CalendarEntry` → `DoctorCalendarEntry`: names whose calendar, and pairs with `DoctorCalendar`.
+
+**Naming rules** (stated generically in `triage-db-codegen`):
+1. A value is named by its record field, or by its constructor if the constructor has exactly one field.
+2. A column is its value's name in snake_case; within one table, values with the same name share a column, so the same name is used only for the same fact. A table's own sum type is discriminated by `state`.
+3. A table is named after the collection its rows form: the Domain collection type if there is one (`DoctorCalendar` → `doctor_calendar`), otherwise the row type pluralized (`AvailableSlot` → `available_slots`).
+
+**Cost:** every layer changes (Persistence, Service, Transport, Api, frontend types), regenerated through their skills on branch `named-domain-values`.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
@@ -839,7 +859,7 @@ Per expected state: every state comes after Submitted, so accept/reject only eve
   identifier in informal use today. Domain.hs is unchanged for now — do
   not modify it as part of this task.
 - `NoShow`'s `AppointmentParty` (added 2026-09-28): does it mean the party
-  who didn't turn up (`NoShow ByPatient` — the patient was absent), a
+  who didn't turn up (`absentParty = PatientParty` — the patient was absent), a
   different fact from `Cancelled`'s party (who cancelled)? And does a
   no-show need an optional note, as a cancellation has? Neither was ever
   decided: the CloseReason entry above justifies only `Cancelled`'s and
@@ -847,6 +867,12 @@ Per expected state: every state comes after Submitted, so accept/reject only eve
   Domain.hs; the model treats the two parties as separate facts pending
   this answer. No time is proposed — a no-show happens at the
   appointment's own `start`.
+- Recorded time vs. event time (added 2026-09-30): every timestamp
+  (`createdAt`, `triagedAt`, `rejectedAt`, `withdrawnAt`, `staleAt`,
+  `cancelledAt`) is the server's time when the action is recorded. Does
+  the practice need the time an event actually happened — e.g. a patient
+  who phoned on Monday to cancel, entered on Tuesday? If yes, it is one
+  deliberate change to all such times together, not a per-field exception.
 
 Do not resolve these speculatively in code. Validate with the domain expert
 first, per the workflow discipline in CLAUDE.md.

@@ -5,306 +5,159 @@ description: Generate the database schema and Persistence-layer module from tria
 
 # triage-db-codegen
 
-`Domain.hs` is the single source of truth. The database schema and the Persistence module are both **derived** from it — read `Domain.hs` first, every time, rather than working from memory of a previous generation (including this skill's own worked examples, which have already gone stale once before and will again).
+Derive `migrations/` and `src/Persistence.hs` from `src/Domain.hs`.
 
-This skill encodes specific decisions already made for `triage`, not a menu of strategies. Apply these rules directly; don't offer alternatives.
+`Domain.hs` is the only specification: every type, name, case and transition comes from it. This skill says only **how** a kind of Haskell construct is stored and read back, plus project conventions `Domain.hs` can't express. It names no Domain type; `e.g.` marks an illustration, never a requirement.
 
-**Rules are identified by name, not number.** Numbers below are positional only. Always cross-reference by name (e.g. `nullability-as-discriminator`), never by number.
+- Read `Domain.hs` fresh every time. Existing SQL and Haskell are output to check against these rules, never examples to copy.
+- These are decisions already made: apply them, don't offer alternatives. Reasons are in `docs/decisions.md`.
+- If `Domain.hs` leaves something a rule needs undetermined (a value without a name, two readings of a name), stop and ask. The fix belongs in `Domain.hs`, not in an invented convention.
+- Rules apply to existing code. After a rule or `Domain.hs` changes, check every table and function against every rule, comments included.
+- Write SQL to `migrations/` at the repo root, numbered sequentially.
 
-| Name | One-line summary |
-|---|---|
-| `discriminator-column-tables` | Sum types → one table, discriminator column, nullable payload columns |
-| `nullability-as-discriminator` | Presence/absence sum types → nullable column(s) alone, no redundant discriminator |
-| `ord-ranking-check` | Only add SQL-level rank encoding if something actually sorts in SQL |
-| `join-tables-not-arrays` | Multi-valued fields → join tables, never array columns |
-| `fail-loudly-on-decode` | Decode errors are explicit, never clamped/defaulted |
-| `atomic-multi-table-write` | Multi-table writes enforced by transaction discipline, not a trigger |
-| `id-types-plain` | ID newtypes need no helper functions |
-| `minimal-types-minimal-tables` | Don't add speculative columns beyond what `Domain.hs` has |
-| `sealed-type-replay` | Reconstruct sealed types by replaying through their exported smart constructors — live for `RoutineWithin` and `DoctorCalendar` |
-| `no-delete-on-consumption` | Intake requests are never deleted or flagged matched; "waiting" is `state = 'accepted'` |
-| `deleted-on-match` | Slots have no post-match existence; a matched slot's row is deleted, not flagged |
-| `sealed-value-decomposition` | Extracting fields from an already-held sealed value needs a read-only `Domain.hs` accessor — replay doesn't apply |
-| `uniqueness-races-are-outcomes` | A write whose success depends on a row's observed shape staying put needs affected-rows detection, never a caught exception |
-| `updates-follow-domain-transitions` | Updates follow the transition rules defined in `Domain.hs`: a case change A → B only if Domain defines it, guarded on `state = 'A'` |
-| `state-guard-is-freshness` | The state guard on a transition write also proves freshness, because no transition leads back to an earlier case and every UPDATE changes the case. If `Domain.hs` breaks either, stop and ask — don't add a version on your own |
-| `cross-table-invariants-need-a-shadow-table` | An invariant spanning two tables needs a trigger-maintained shadow table with one EXCLUDE constraint — the one deliberate, contained exception to `uniqueness-races-are-outcomes` |
+## Names
 
-## Architecture this skill fits into
+### `names-come-from-domain`
+1. **Values.** A value is named by its record field, or by its constructor if the constructor has exactly one field; a sealed type's values, by its exported read-only accessors. A value takes the innermost name above it. An ID newtype is not a name: it is the value itself, and gives the foreign key; a column holding one ends in `_id` (unless its name already does).
+2. **Columns.** A column is its value's name in snake_case. Records nested in a row are flattened into it, with no prefix. Within one table, values with the same name share one column. `Domain.hs` uses the same name only for the same fact.
+3. **Tables.** A table is named after the collection its rows form. If `Domain.hs` has a type whose elements are exactly these rows, the table takes its name in snake_case. Otherwise it takes the row type's name, pluralized.
+4. **Stored enumeration values** are constructor names in snake_case.
+5. **Conventions:** a table's own sum type is discriminated by a column named `state`; Postgres objects the schema adds (constraints, triggers, functions) are named `<table>_<purpose>`.
 
-```
-Domain        — pure, sealed types, smart constructors, zero awareness of JSON/DB/anything external
-Transport     — DTOs for wire formats (JSON), toDomain/fromDomain at the boundary (separate skill, not this one)
-Persistence   — Row types matching storage shape, toDomain/fromDomain at the boundary (this skill)
-```
+**Check:** every table and column name traces back to a `Domain.hs` name through these five points.
 
-`Domain.hs` has no serialization of any kind — no `ToJSON`/`FromJSON`, no `Generic` deriving for that purpose. Nothing in this skill should assume otherwise or reintroduce that coupling.
+## Storage
 
-## A note on churn in this file
+### Representations
+- Newtype over `UUID` → `UUID`; the `id` field is the primary key, and a value of another entity's ID type is a foreign key to that entity's table.
+- `UTCTime` → `TIMESTAMPTZ`; `Text` → `TEXT`; `Maybe a` → nullable.
+- An enumeration of amounts of time (a type with a conversion to `NominalDiffTime`) → `SMALLINT` whole minutes, with `CHECK (col IN (…))` over its values.
+- Any other enumeration (only nullary constructors) → `TEXT` with `CHECK (col IN (…))`.
+- An enumeration derives `Enum, Bounded` in `Domain.hs`; its stored values, its `CHECK (col IN (…))` and its decoder are all listed from `[minBound .. maxBound]`. One that doesn't is a gap in `Domain.hs`: stop and ask.
+- A sum type with fields can't derive `Enum, Bounded`: its stored values are listed from its constructors by hand, and its encoder is a total `case`, so `-Wall` flags a new constructor until the lists are updated.
 
-`Domain.hs` has changed twice already since this skill was first written: once removing the offer/decline waitlist mechanism, and again removing `Slot`/`BookedSlot` as a sum type entirely (`AvailableSlot` is now the only slot type, with no post-match existence at all — see `deleted-on-match`). Rules in this file have been retired, added, and had their live cases change as a result (`sealed-type-replay` lost its first live case, `BookedSlot`, and later gained `RoutineWithin` and `DoctorCalendar`; `atomic-multi-table-write` no longer means "keep two FKs in sync" the way it once did). This is expected, not a sign of instability — re-read `Domain.hs` fresh every time rather than trusting that a rule's original justification still holds.
+### `minimal-types-minimal-tables`
+A table has exactly the columns its Domain type's values give it. Nothing speculative.
 
-**A rule applies to existing code, not only to new code.** When a rule here is added or changed, or when `Persistence.hs` is regenerated or migrated (e.g. one type folded into another), check every existing function against every rule — don't carry a function over in its old shape. Accept and reject stayed unguarded because the guard rules were introduced after they were written, and the Appointment→IntakeRequest fold then carried them over unchanged.
+### `join-tables-not-arrays`
+A multi-valued field (`Set a`, `[a]`) becomes a join table with foreign keys, never an array column.
 
-## `discriminator-column-tables` (Rule 1) — Sum types become one table, a discriminator column, and nullable state-specific columns
+### `discriminator-column-tables`
+An entity is a type carrying its own ID newtype as `id`, directly or through an embedded stage. An entity that is a sum type (its cases being stages of one identity) becomes **one** table: a `state` column plus every case's values as nullable columns. A column required in every case is `NOT NULL` in the table itself. The stage types are its cases, not entities of their own. A nested sum type gets a discriminator column, named after the field that holds it, only when its cases can't be told apart by which columns are set (`nullability-as-discriminator`).
 
-For every multi-constructor domain type without a separate status field, generate **one table**, not one table per constructor. The live case in the current domain:
+**Derive:** build a table of constructors × columns, marking each cell *required*, *NULL* or *optional*:
+- a column of an embedded stage is *required*;
+- a column of a stage the constructor doesn't contain is *NULL*;
+- a column is *optional* only if it is a `Maybe` field, or belongs to a nested sum type (with its own CHECK, or needing none);
+- *NULL* wins over *optional*: a column is optional only inside a stage the constructor contains;
+- a nested discriminator column is *required* wherever the stage holding its field is present.
 
-- `IntakeRequest` (`Submitted | Rejected | Accepted | Appointed | Withdrawn | Stale | Closed`) -> `intake_requests`, `state IN ('submitted', 'rejected', 'accepted', 'appointed', 'withdrawn', 'stale', 'closed')`.
+Write one named CHECK per constructor, `state <> 'x' OR (…)`, naming every non-optional column except those `NOT NULL` in the table. Postgres requires every CHECK on a table to hold, so each must be an implication. A case whose payload records which stage it came from gets one CHECK per inner constructor. A nested sum type gets one CHECK over its discriminator and fields; one whose every combination is valid needs no CHECK, and its columns are *optional*. A nested type's CHECK constrains rows where its stage is present; the per-state CHECKs make its columns NULL elsewhere.
 
-This single table supersedes what used to be a two-table split, `healthcare_requests` (`Submitted | Triaged`) plus `appointments` (`Open | Closed`) — once `Appointment` was confirmed permanently 1:1 with its request and folded into `IntakeRequest` as one sum type, the two tables collapsed into one discriminator (six-valued at the time; seven since `Stale` was added) instead of two two-valued ones. See `docs/decisions.md`'s "Persistence schema: discriminator column over side-tables" entry for the reasoning.
+These CHECKs are the backstop for writes that bypass `Persistence.hs`.
 
-`Slot` is **not** a case of this rule — `AvailableSlot` is the only slot type, so there's nothing to discriminate. See `deleted-on-match`.
+**Check:** a DB test reads the table's real columns from `information_schema`, fails on any column missing from its classification table, and, for every constructor, requires a stray value in each NULL column and a missing value in each required column to be rejected.
 
-Write **one `CHECK` constraint per valid constructor shape**, derived mechanically from the constructors themselves — every combination of which nullable columns are set must correspond to exactly one constructor. `migrations/0001_init.sql` is the current instance; the rules here are meant to be enough to derive it. When generating SQL, derive it fresh from `Domain.hs` and write it to `migrations/` at the repo root, numbered sequentially.
+### `nullability-as-discriminator`
+A nested sum type whose cases each set a different combination of required columns gets no discriminator column. Which columns are set tells the case; an extra column would only repeat that, and could contradict it. The type's CHECK lists each case's combination. An inner case is identified by the combination of columns it sets; a case that sets none, by none of its siblings' columns being set. CHECKs and decoding use the same combination. If two cases set the same columns, it needs a discriminator (`discriminator-column-tables`).
 
-Enumeration-like fields are stored as `TEXT` with a `CHECK` listing their values — each constructor's name in lower snake_case: `tier IN ('emergency', 'urgent', 'routine')`, `close_reason IN ('completed', 'cancelled', 'no_show')`, and `closed_by_party IN ('doctor', 'patient')` (`AppointmentParty`'s `ByDoctor`/`ByPatient` without the `By`).
+### `ord-ranking-check`
+An `Ord` instance is evaluated in memory. Add a rank column only when a query must `ORDER BY` it.
 
-This isn't redundant with `Domain.hs`'s own type-level guarantee — it's a backstop against backdoor writes (manual SQL, bad migrations, anything bypassing the generated Persistence module) that the type system can no longer see once data has left Haskell.
+### `cross-table-invariants-need-a-shadow-table`
+Only a sealed type's invariant becomes a constraint.
+- **Single value:** an invariant a sealed type declares over one value becomes a `CHECK`.
+- **Collection:** one declared over a collection of stored rows (a sealed collection type) becomes an `EXCLUDE` or `UNIQUE` constraint. A check in Service is never enough.
+- **Across two tables:** when the collection's rows live in two tables, a trigger-maintained shadow table, named after the collection type, holds one row per element. Its columns are fixed by convention:
+  - the key the invariant groups by, named as that value;
+  - `during`, the element's extent (e.g. a `TSTZRANGE`);
+  - `source`, the element type's constructor that the row came from;
+  - one unique foreign key per source table, named after that table's ID type in snake_case (`ON DELETE CASCADE` where the source row can be deleted).
 
-## `nullability-as-discriminator` (Rule 2) — Presence/absence sum types encode via nullability alone — no redundant discriminator
+  A CHECK ties `source` to exactly one key, and the invariant is the constraint. The table has no primary key (its unique foreign keys identify a row) and no foreign key on the grouping key (the source rows carry it). An `EXCLUDE` mixing `=` on a scalar with `&&` needs `btree_gist`.
 
-Where a sum type's cases differ *solely* by the presence or absence of a payload, a single nullable column — or a small fixed set of them — already carries full information about which case applies. Adding a parallel `TEXT` discriminator column next to it duplicates information the nullability pattern already states.
+The triggers must keep the shadow table equal to the collection. A source row belongs to the collection while its case's payload is the element constructor's field type; a later stage that only embeds it does not. A trigger watches updates only where the source table is updated; it has no column list, so a new column can't be missed. Domain time intervals are half-open, `[start, end)`, which is `tstzrange`'s default.
 
-Two live cases:
+**Check:** a DB test writes a violating row directly, bypassing Domain, and expects the database to reject it.
 
-- **`DoctorRequirement` (`AnyDoctor | SpecificDoctor DoctorId`)**: `required_doctor_id UUID NULL REFERENCES doctors(id)`, the requirement triage decided (`TriagedIntakeRequest.doctorRequirement`). `NULL` means `AnyDoctor`; a set value means `SpecificDoctor`. It must be `NULL` before triage (`CHECK (healthcare_service_id IS NOT NULL OR required_doctor_id IS NULL)`).
-- **`RoutineDue` (`RoutineAnytime | RoutineNotBefore UTCTime | RoutineNotAfter UTCTime | RoutineWithin UTCTime UTCTime`)**: two nullable columns, `due_not_before` / `due_not_after`, give exactly 2² = 4 nullability combinations — a genuine bijection:
+## Row lifetime
 
-  | `due_not_before` | `due_not_after` | case |
-  |---|---|---|
-  | NULL | NULL | `RoutineAnytime` |
-  | set | NULL | `RoutineNotBefore` |
-  | NULL | set | `RoutineNotAfter` |
-  | set | set | `RoutineWithin` |
+### `no-delete-on-consumption`
+A value that its next stage embeds whole is never deleted. The transition updates its row in place. No row is flagged as "used"; the current stage is the discriminator.
 
-  `EmergencyDue`/`UrgentDue` reuse `due_not_after` (structurally identical to `RoutineNotAfter`) rather than getting their own columns.
+### `deleted-on-match`
+A value that a transition consumes without any Domain type keeping it (its facts are copied, not embedded) is deleted by that transition. The write takes the consumed value as an argument, as the Domain function does, and deletes it before writing the successor, which may take over its extent. Nothing recreates it, and nothing records its past existence.
 
-A third case as of this revision: **`CloseReason`'s `Cancelled AppointmentParty UTCTime`** carries a cancellation timestamp that only `Cancelled` has (`Completed` has none, `NoShow` has a party but no timestamp). `cancelled_at` is a single nullable column, populated only when `close_reason = 'cancelled'`, `NULL` otherwise — the same presence/absence pattern, just with one column instead of a pair.
+## Writes
 
-When a new nullable field is proposed, check first whether it's actually encoding a presence/absence sum type per this rule before reaching for a separate discriminator column.
+### `updates-follow-domain-transitions`
+An `UPDATE` may change a row's case from A to B only if `Domain.hs` defines A → B, as a function or constructor. It is guarded with `WHERE id = ? AND state = 'A'`, one source case per write, never `state IN (…)`. Each entity table gets one insert; a sum-typed entity is inserted only in its entry case.
 
-## `ord-ranking-check` (Rule 3) — Check `Ord`-bearing types against their derived ranking only if something actually sorts by it at the SQL level
+- **Finding A:** A is the case whose *whole* payload is exactly the transition's input type.
+  - A constructor that embeds an earlier stage is not that stage.
+  - Look through a wrapper to each inner constructor.
+- **Terminal cases:** a case whose payload nothing consumes is terminal.
+- **Field access** never defines a transition.
+- **Stop and ask** if two non-terminal cases share a payload type.
 
-`IntakeRequestPriority` and `RoutineDue` both derive `Ord` with non-trivial rankings, but **ordering happens exclusively in `Domain.hs`** — `matchByPriority`'s `sortOn priority` runs in memory over already-decoded values, fetched via a plain (unordered) query. No integer tier-rank column exists in this schema, and none should be added, unless a future query genuinely needs `ORDER BY` on priority at the SQL level.
+Derive the transition table fresh from `Domain.hs` each time; don't keep a copy.
 
-## `join-tables-not-arrays` (Rule 4) — Multi-valued fields become join tables, never array columns
+### `uniqueness-races-are-outcomes`
+A write that succeeds only if a row still has the shape the caller saw (it still exists, or it is still in the same case) detects a lost race from the affected-row count of a conditional statement. It reports the result as an outcome, never as a caught `SqlError`. Each distinct way a write can fail that the caller can act on gets its own outcome constructor: one per guarded row that can lose a race, and one for an `EXCLUDE` violation. A write with a single guard and nothing else returns `ClaimOutcome` (`Claimed` | `AlreadyClaimed`). Before adding a `UNIQUE` constraint, decide whether it prevents duplicates or guards a race. If it guards a race, it needs this treatment and a named outcome in Service. The one exception is an `EXCLUDE` violation (`23P01`), which has no affected-rows equivalent: the write that can trigger one catches exactly that code and rethrows anything else. Catch it only where a legitimate write can cause it (a new element). A successor that takes over a consumed element's extent cannot; its violation is a bug and propagates.
 
-No domain field currently needs this rule. Kept for if/when a future `Set a`/`[a]` field appears: such a field becomes a separate join table with real foreign key constraints, never a native array column, even though Postgres supports them.
-
-## `fail-loudly-on-decode` (Rule 5) — Decoding fails loudly, never clamps or coerces silently
-
-Any function reading a column value back into a domain type must produce an explicit error on anything that doesn't correspond to a valid domain value.
-
-```haskell
-data DecodeError = InvalidDuration Int | InvalidTier Text | InvalidState Text | ...
-  deriving (Show, Eq)
-
-decodeDuration :: Int -> Either DecodeError Duration
-decodeDuration 15 = Right QuarterOfAnHour
-decodeDuration 30 = Right HalfAnHour
-decodeDuration 60 = Right OneHour
-decodeDuration n  = Left (InvalidDuration n)
-```
-
-This matters specifically because of `discriminator-column-tables`'s threat model: a `CHECK` constraint defends against backdoor writes at insert time, but anything that somehow still gets through must surface as a decode failure when read back — not get silently coerced into a default that hides the corruption. Where `Domain.hs` itself exposes a smart constructor for the value being decoded (e.g. `mkRoutineWithin`), the decode function must go through it rather than constructing the value directly.
-
-Two named error constructors worth calling out specifically, both defensive rather than expected to ever fire: `InvalidPriorityShape` (an emergency/urgent tier row with a `due_not_before` set, or missing its `due_not_after` — structurally impossible per the CHECK constraint, checked anyway as the last line of defense) and `InvalidTriagedRowShape` (a row in a triaged state — `'accepted'`, `'stale'`, or triage-bearing `'withdrawn'` — missing one of its required triage columns — same category of "should be impossible, read is the last line of defense").
-
-## `atomic-multi-table-write` (Rule 6) — Multi-table writes are enforced by transaction discipline, not a trigger
-
-This rule's *mechanism* has changed twice now as the domain model evolved — worth noting the pattern, not just the current mechanism, since it will likely happen again.
-
-**Current mechanism: matching is an atomic delete-and-update.** `persistMatchedIntakeRequest` deletes the matched `slots` row **and** updates the `intake_requests` row's `state` from `'accepted'` to `'appointed'` (hard-copying `appointed_doctor_id`/`start_time`/`duration_minutes` into that same row, in the same `UPDATE`) — both within one transaction (`withTransaction`). A crash between the two steps would otherwise leave either a phantom available slot for an already-matched request, or an appointed request whose slot was never actually claimed. There is no `appointments` table to insert into anymore — `Appointment` folded into `IntakeRequest` (see `no-delete-on-consumption`), so matching updates the request's own existing row rather than inserting a new row anywhere.
-
-**Prior mechanisms, briefly** (full reasoning for each transition is in `docs/decisions.md`'s "Matching is atomic delete-and-update, not insert-and-delete" entry, not repeated here): originally, `slots.appointment_id` and `appointments.slot_id` were two independent columns in two different tables that had to stay in agreement — a cross-table *consistency* problem, solved by writing both in one transaction. Once `Slot` lost its post-match existence (`deleted-on-match`), that became an atomic *insert-and-delete*: insert the (still-separate) `appointments` row, delete the matched `slots` row. Once `Appointment` folded into `IntakeRequest`, the insert became an update on the request's own row instead — today's delete-and-update.
-
-Same standard throughout all three mechanisms: whatever `Persistence.hs` function performs a genuinely multi-table write like this must hold one `Connection` for the whole operation via `withTransaction`, not check out separate connections per statement. No trigger — this is enforced by the shape of the function itself (see `SKILL.md`'s Persistence module section on where `withTransaction` boundaries live).
-
-**Note on reassignment — resolved, not just flagged.** An earlier version of this rule flagged an open question here: `persistReassignedIntakeRequest` was a single-table `UPDATE` with no corresponding delete of the new slot's `slots` row, and it was unclear whether that was intentional or a gap. It was a gap — a real bug, not a design choice — and the resolution wasn't to fix that function but to remove it. `reassignIntakeRequestSlot`/`persistReassignedIntakeRequest`/`reassignAppointedIntakeRequestSlot` no longer exist. Rescheduling is now a close (`persistClosedIntakeRequestIfAppointed`, single-table) followed by a new request that is matched through `persistMatchedIntakeRequest`, the one multi-table write this rule covers (see `docs/decisions.md`'s "Reclaim removed; displacing a patient is Closed + a new IntakeRequest" entry). No new multi-table function was added.
-
-## `id-types-plain` (Rule 7) — ID types need no special handling
-
-Domain ID newtypes (`DoctorId`, `PatientId`, `HealthcareServiceId`, `IntakeRequestId`, `SlotId`) are not sealed — their constructors are exported. Extract the underlying `UUID` with plain pattern matching; no helper function or typeclass is needed. This is the complete list per `Domain.hs`'s current ID-wrappers export section — `AppointmentId` no longer exists (`Appointment` folded into `IntakeRequest`, which reuses `IntakeRequestId` throughout its lifecycle rather than minting a second identity).
-
-## `minimal-types-minimal-tables` (Rule 8) — Minimal domain types get minimal tables
-
-`Doctor` and `Patient` are deliberately minimal in `Domain.hs` (`id` and `name` only). Their tables must match — do not add columns speculatively. If `Domain.hs` gains a field, the table gains the matching column; not before.
-
-## `sealed-type-replay` (Rule 9) — Reconstructing a sealed type from storage replays through its exported smart constructor, never a new raw constructor
-
-When a sealed type is read back from storage, decode it by passing the stored pieces through the same exported function that guards it in memory — never by adding an unchecked constructor for `Persistence.hs` to use. If the smart constructor refuses, the stored data violates the invariant: fail loudly with a `DecodeError` (`fail-loudly-on-decode`).
-
-Two live cases:
-
-- **`RoutineWithin`** — `decodeRoutineDue` rebuilds it via `mkRoutineWithin`; a stored window with from > to returns `InvalidWithin`.
-- **`DoctorCalendar`** — `fetchDoctorCalendar` rebuilds it from the doctor's stored slots and appointed requests via `mkDoctorCalendar`; overlapping stored entries return `OverlappingCalendarEntries`.
-
-History: the rule's first live case was `BookedSlot`, replayed through `satisfyHealthcareRequest`'s `matches` gate. `BookedSlot` was removed by the `Slot` redesign.
-
-## `sealed-value-decomposition` — Extracting fields from an already-held sealed value needs a read-only `Domain.hs` accessor; `sealed-type-replay` doesn't apply
-
-This is a different problem from `sealed-type-replay`, even though both involve a sealed constructor, and it's worth being precise about the distinction rather than reaching for replay out of habit whenever a sealed type is involved:
-
-- `sealed-type-replay` is about **reconstruction**: building a sealed value *from storage*, where you don't yet have the value and need to produce one via its smart constructor (`mkRoutineWithin`, `mkDoctorCalendar`).
-- `sealed-value-decomposition` is about **decomposition**: you already have a fully-valid sealed value in memory (e.g. a `RoutineDue` that's actually a `RoutineWithin`) and need to pull its fields back out to encode it for storage. There is no gate to replay through here — nothing to construct, nothing to prove — the value already exists and is already valid. Replay-through-a-function is simply the wrong tool for this direction.
-
-The live case: `RoutineDue`'s `RoutineWithin` constructor is not exported (`RoutineDue (RoutineAnytime, RoutineNotBefore, RoutineNotAfter)` — `RoutineWithin` deliberately excluded, protecting `mkRoutineWithin`'s `from <= to` invariant at construction time). `encodePriority` needs `RoutineWithin`'s two `UTCTime` fields to populate `due_not_before`/`due_not_after` when writing a `Routine (RoutineWithin lo hi)` value — but can't pattern-match on it from outside `Domain.hs`.
-
-The fix, and the only correct one: a **read-only accessor in `Domain.hs` itself**, added deliberately and validated (not fabricated silently in `Persistence.hs`, and not achieved by exporting the constructor, which would reopen the construction-time invariant to every caller):
-
-```haskell
--- Read-only extraction over an already-valid value — cannot construct or
--- fabricate a RoutineWithin, so this does not reopen mkRoutineWithin's
--- from <= to invariant. Exists so downstream layers (e.g. Persistence) can
--- encode an in-memory RoutineDue without needing RoutineWithin's
--- constructor exported.
-routineWithinBounds :: RoutineDue -> Maybe (UTCTime, UTCTime)
-routineWithinBounds (RoutineWithin from to) = Just (from, to)
-routineWithinBounds _                       = Nothing
-```
-
-This surfaced during real `Persistence.hs` generation (Claude Code correctly refused to fabricate an extraction path and flagged it instead), was routed to the domain-modeling discussion rather than patched around, and came back as this accessor. That's the correct path any time this pattern recurs: a sealed constructor that needs its fields read back out for encoding is a `Domain.hs` gap, not a `Persistence.hs` problem to solve by any other means (no `unsafeCoerce`, no re-deriving the value's shape by other means, no exporting the constructor "just for this one case").
-
-## `no-delete-on-consumption` (Rule 10) — A row's mere existence is *not* the discriminator for intake requests; they are never deleted on consumption
-
-`intake_requests` rows are **never deleted**. This principle is unchanged by the `Appointment` fold — only its mechanism changed, described below.
-
-`state` itself is the only discriminator this needs, for legality and freshness alike (`state-guard-is-freshness`): matching moves a row from `'accepted'` to `'appointed'` in place (`claimAcceptedIntakeRequest`'s `UPDATE ... WHERE state = 'accepted'`), never by deleting and reinserting, and never via a separate `matched`-flag column alongside `state`.
-
-"Currently waiting" used to be a **derived** anti-join condition, back when `healthcare_requests` and `appointments` were two separate tables — a triaged request with no corresponding `appointments` row. With `Appointment` folded into `IntakeRequest`, that derivation is gone: "the waitlist" is now a **plain filter**, no join at all:
-
-```sql
-SELECT *
-FROM intake_requests
-WHERE state = 'accepted';
-```
-
-See `fetchIntakeWaitlist` in `Persistence.hs` — this is the actual current query, not an illustrative simplification of it.
-
-One further correction, not just a join removed: an earlier version of this rule described a failed `reassignSlot` or a closed appointment as something re-triage "reuses the same row" for. That behavior no longer holds. Per `docs/decisions.md`'s "IntakeRequest: Appointment folded..." entry, `Rejected`/`Withdrawn`/`Closed` are all permanently terminal — a patient who needs to be seen again after a terminal case becomes a **brand new** `IntakeRequest` with a new `IntakeRequestId`, never a transition back out of a terminal row. Displacement or rescheduling from an appointment is the same: the appointment is `Closed (Cancelled …)` and a new request follows (see `docs/decisions.md`, 2026-09-28). No link from the new request to the old one is modeled, deliberately — don't add lineage columns.
-
-This rule is the deliberate mirror image of `deleted-on-match` — the same "does the schema honor what `Domain.hs` actually asserts about a thing's persistence" discipline, applied to two aggregates that turned out to need opposite answers. Don't let the two rules' existence talk you into treating them as interchangeable, or into assuming one implies the other for a third aggregate — check `Domain.hs`'s own wording each time.
-
-## `deleted-on-match` — Slots have no post-match existence; a matched slot's row is deleted, not flagged
-
-`Domain.hs`'s own comment on `AvailableSlot`: *"a slot has no existence independent of matching: it is available until claimed, then fully absorbed into the appointment."* `AppointedIntakeRequest` hard-copies `DoctorId`/`UTCTime`/`Duration` directly rather than referencing a slot by ID — so once matched, nothing in the domain model ever again asks "what slot was this."
-
-Consequence for the schema: `slots` has **no `state` column and no request/appointment reference** — every row means exactly one thing, "available, not yet matched." The moment `matchIntakeRequestToSlot` matches a slot, `Persistence.hs` deletes that row as part of the same transaction that updates the `intake_requests` row (`atomic-multi-table-write`). There is no separate reassignment-specific match path — rescheduling closes the appointment and matches a new request through this same path; see `docs/decisions.md`'s "Reclaim removed; displacing a patient is Closed + a new IntakeRequest" entry.
-
-Two things this deliberately does **not** do, both real decisions rather than oversights:
-
-- **No automatic recreation of a vacated slot on cancellation.** When an appointment is closed (a cancelled or rescheduled one included), the old time does not automatically reappear as a fresh `AvailableSlot`. If the vacated time should become bookable again, that's a separate, explicit call to the normal slot-creation operation — not something closing triggers as a side effect. This mirrors `Domain.hs`'s own refusal to decide this (*"that's the caller's concern, not `Domain.hs`'s"*).
-- **No historical/audit record of a slot's existence after it's matched.** Once deleted, there is no row anywhere recording that a given doctor/time/duration slot ever existed and got booked — that fact now lives only inside the `intake_requests` row it became, with no back-reference. If audit/reporting on slot lifecycle is ever needed, it requires a separate mechanism (e.g. an append-only log) — it cannot be recovered from `slots` after the fact.
-
-The actual backstop against a double-booking making it all the way to two live commitments for the same doctor at the same time is **not** a same-table partial unique index — `intake_requests` has no open/closed-style state distinction that a `state = 'open'`-scoped index could hang off, the way an old, now-gone `appointments` table once had. It's `doctor_calendar`'s cross-table `EXCLUDE` constraint instead, which sees `slots` and `intake_requests(state = 'appointed')` together as one combined set of intervals — see `cross-table-invariants-need-a-shadow-table`.
-
-## `uniqueness-races-are-outcomes` — A write whose success depends on a row's observed shape staying put needs affected-rows detection, never a caught exception
-
-If a write's success depends on a row's observed shape — its existence, or its `state` — staying exactly as last observed, where a concurrent writer could change that shape before this write lands, the `Persistence.hs` function performing it must detect a lost race via the write's own affected-row count on a conditional statement (`DELETE ... WHERE id = ?`, `UPDATE ... WHERE state = ?`, checking `n > 0`), not by letting the database throw and catching/ignoring a `SqlError`. `deleted-on-match`'s `deleteSlot` (guarding a row's existence at delete time) was the first instance of this pattern; treat it as the template, not a one-off. A `UNIQUE` constraint enforcing a domain invariant is one way this kind of race can show up at the schema level (the matching guard there would be `INSERT ... WHERE NOT EXISTS (...)`) — but it isn't the only shape, and it isn't the current one: both live cases below are plain `state` guards on an `UPDATE`, with no `UNIQUE` constraint underneath either.
-
-When adding a new `UNIQUE` constraint anywhere in the schema, ask explicitly: is this hygiene (duplicate prevention on data that's never concurrently contested) or a race guard (two legitimate concurrent operations could both pass business-logic checks and only collide at the DB)? If the latter, it needs this treatment and a corresponding named outcome in whatever `Service.hs` function writes through it.
-
-The rule isn't limited to constraints literally named `UNIQUE` in the schema — `deleteSlot` (the original instance) guards a row's mere *existence* at delete time, not a `UNIQUE` violation, and `persistClosedIntakeRequestIfAppointed` (below) guards a *state* (`state = 'appointed'`) rather than either. What they share, and what actually triggers this rule, is: a write whose success depends on the row still being in the shape the caller last observed it in, where a concurrent writer could have changed that shape in between. Any such write needs the conditional-write-plus-affected-rows-check treatment, whether or not a `UNIQUE` constraint happens to be involved.
-
-**Live case:** `claimAcceptedIntakeRequest` in `Persistence.hs` guards `intake_requests`' `state = 'accepted'` this way for `persistMatchedIntakeRequest` — two concurrent waitlist-to-slot matches can both pick up the same triaged request (via two different slots' scans) before either commits; the conditional `UPDATE intake_requests SET state = 'appointed', ... WHERE id = ? AND state = 'accepted'`'s affected-row count, not a caught constraint-violation exception, is what tells `persistMatchedIntakeRequest` which one lost. (There is no `UNIQUE` constraint underneath this one at all — with `Appointment` folded into `IntakeRequest`, matching is an `UPDATE` on the request's own existing row, not an `INSERT` of a second row the way it was when `appointments` was a separate table; the `state` guard is what's checked here, which per `state-guard-is-freshness` also proves freshness.) This also interacts with `atomic-multi-table-write`: because the slot-delete and the request-update are two independent race checks inside the same operation, losing the *second* one after the *first* already succeeded requires rolling back the first, not just reporting the loss. `persistMatchedIntakeRequest` still uses `withTransaction` for this (not manual `begin`/`commit`/`rollback` — that would give up `withTransaction`'s blanket rollback-on-any-exception safety for the narrower "rolls back only on the paths I explicitly coded" behavior, reintroducing the exact risk `atomic-multi-table-write` exists to prevent). Instead, an internal, unexported exception type (`MatchAbort`) is thrown to unwind out of `withTransaction`'s action and trigger its own rollback, then caught immediately outside it and translated back into the corresponding `MatchPersistOutcome` — the exception never escapes the function, so it doesn't cross a module boundary and doesn't touch this file's "no exceptions for business errors" discipline.
-
-**Second live case:** `persistClosedIntakeRequestIfAppointed` guards a plain state-transition race, no `UNIQUE` constraint involved at all — `Service.closeAppointedIntakeRequest` fetches a request, confirms it's `Appointed`, then writes; between the fetch and the write, a concurrent second close on the same row could pass the same fetch-time check and silently overwrite which reason the request closed for. The `UPDATE` is conditioned on `state = 'appointed'` (`WHERE id = ? AND state = 'appointed'`), and `AlreadyClaimed` (zero rows affected) is reported by Service as the same `MovedOn` the initial fetch would have produced for an already closed request — the caller doesn't need to distinguish "already closed when I checked" from "closed by someone else a moment later." This is one instance of `updates-follow-domain-transitions`: every lifecycle transition is guarded this way, with no case-by-case choice about which races matter. Unlike `claimAcceptedIntakeRequest`, it needs no `23P01` catch — closing only ever transitions a row *out of* `'appointed'`, which `doctor_calendar`'s trigger handles as a plain delete, never something an `EXCLUDE` constraint could reject.
-
-## `updates-follow-domain-transitions` — Updates follow the transition rules defined in `Domain.hs`
-
-An `UPDATE` that changes a sum type's case from A to B (the discriminator column of a `discriminator-column-tables` table) is allowed only if `Domain.hs` defines a transition from A to B, and it must be conditioned on the source case — `WHERE id = ? AND state = 'A'` — reporting the affected-row count as `ClaimOutcome` (`uniqueness-races-are-outcomes`). No `Persistence.hs` function writes a case change `Domain.hs` doesn't define. This is derived, not judged: there is no "is this race worth guarding?" question, and no transition is exempt. A type proves a transition's source case only for the in-memory value; the guard re-asserts it for the stored row at the moment of the write.
-
-- **How to find A:** the source case of a transition is the case whose payload type is exactly the transition's input type — `SubmittedIntakeRequest` → Submitted, `TriagedIntakeRequest` → Accepted, `AppointedIntakeRequest` → Appointed. "Payload" means the constructor's *whole* field list: `Stale TriagedIntakeRequest UTCTime`'s payload is `(TriagedIntakeRequest, UTCTime)`, not `TriagedIntakeRequest`, so it is not Accepted. Where a constructor wraps another sum type (`Withdrawn WithdrawnIntakeRequest`), look through the wrapper: each of its cases (`WithdrawnFromSubmitted SubmittedIntakeRequest …`, `WithdrawnFromAccepted TriagedIntakeRequest …`) is a separate transition with its own source case. A case that merely *embeds* an earlier stage's value as history (e.g. `Closed AppointedIntakeRequest CloseReason`) is not that stage. A case whose payload no `Domain.hs` function or constructor consumes has no outgoing transition — it's terminal (Rejected, Withdrawn, Stale, Closed). This derivation depends on every non-terminal case having a distinct payload type; if `Domain.hs` ever breaks that, stop and ask, don't guess.
-- **One source case per write.** A target reachable from several cases gets one write per source, each guarding the case its caller observed — never `state IN (...)`.
-- **Creation isn't a transition.** An `INSERT` creates a row only in the entry case (`insertSubmittedIntakeRequest`, `'submitted'`).
-
-Derived transitions for `IntakeRequest` — re-derive this table from `Domain.hs` whenever it changes, rather than editing it by hand:
-
-| From → To | Defined in `Domain.hs` by | Guard | `Persistence.hs` function |
-|---|---|---|---|
-| Submitted → Accepted | `acceptIntakeRequest :: SubmittedIntakeRequest -> …` | `state = 'submitted'` | `persistTriagedIntakeRequest` |
-| Submitted → Rejected | `Rejected SubmittedIntakeRequest …` | `state = 'submitted'` | `persistRejectedIntakeRequest` |
-| Submitted → Withdrawn | `WithdrawnFromSubmitted SubmittedIntakeRequest …` | `state = 'submitted'` | none yet — guard it when written |
-| Accepted → Appointed | `matchIntakeRequestToSlot :: … -> TriagedIntakeRequest -> …` | `state = 'accepted'` | `claimAcceptedIntakeRequest` (in `persistMatchedIntakeRequest`) |
-| Accepted → Stale | `Stale TriagedIntakeRequest …` | `state = 'accepted'` | `persistStaleIntakeRequest` |
-| Accepted → Withdrawn | `WithdrawnFromAccepted TriagedIntakeRequest …` | `state = 'accepted'` | none yet — guard it when written |
-| Appointed → Closed | `Closed AppointedIntakeRequest …` | `state = 'appointed'` | `persistClosedIntakeRequestIfAppointed` |
-
-Every transition is a `Domain.hs` function or constructor. Field access alone never defines one — otherwise a `Stale` or `Closed` value could be unwrapped back to `Accepted`, which `Domain.hs` forbids. (Reclaim, Appointed → Accepted, once existed and was given a signature for this reason; it was removed on 2026-09-28, and no transition leads back to an earlier case.)
-
-**Why this is a named rule:** accept and reject were written with `WHERE id = ?` only and stayed that way until commit `819eae5`, while every transition written later was guarded. The old framing of `uniqueness-races-are-outcomes` asked which races were worth guarding; close was chosen, and accept/reject were never considered — though `Domain.hs` defined their source case all along.
-
-## `state-guard-is-freshness` — The state guard also proves the row is the one the caller read
-
-`updates-follow-domain-transitions` guards every transition write on its source case (`WHERE id = ? AND state = 'A'`), which makes the write *legal*. For `intake_requests` the same guard also makes it *fresh* — the row is the one the caller decided from — because of two properties of `Domain.hs`:
-
-1. **No transition leads back to an earlier case.** The transition table above has no cycle, so a row enters each case at most once.
-2. **Every `UPDATE` changes the case.** No write edits a row and leaves it in the same case, so a case's data is fixed when the row enters it.
-
-Together: if the write finds the case its caller read, nothing has written the row since. A zero-row write means it moved on — reported as a lost race (`ClaimOutcome`'s `AlreadyClaimed`), never retried.
-
-- **No version column.** Don't add `version`/`row_version` columns, triggers or `Versioned` wrappers "for safety" — they'd guard against something the model rules out.
-- **Check both properties whenever `Domain.hs` changes.** A transition back to an earlier case, or a write that keeps the case (an in-place edit such as re-triage), breaks the argument. Then stop and ask: a row version (a `BEFORE UPDATE` trigger bumping a counter, checked with `AND version = ?`) is the known answer, and it was used here while reclaim existed — see `docs/decisions.md`, "Row version for freshness" (2026-09-27) and "Row version removed" (2026-09-28).
-- **Tables that are never updated need nothing** — `slots` rows are only inserted and deleted; doctors, patients and services are never updated.
-
-## `cross-table-invariants-need-a-shadow-table` — An invariant spanning two tables needs a trigger-maintained shadow table with one EXCLUDE constraint
-
-Some invariants can't be expressed as a single-table `CHECK`/`UNIQUE`/`EXCLUDE` constraint because the rows that must not conflict live in two different tables. The live case: no two time intervals may overlap for the same doctor, where an interval is either a `slots` row (`AvailableSlot`) or an `intake_requests` row with `state = 'appointed'`. A single-table `EXCLUDE USING gist (doctor_id WITH =, during WITH &&)` declared on `slots` alone can't see appointed `intake_requests` rows, and vice versa — Postgres's `EXCLUDE` mechanism only ever sees one table at a time.
-
-**Rejected alternatives** (full reasoning in `docs/decisions.md`'s "Overlap prevention" entry — not repeated here): naive check-then-insert (races under `READ COMMITTED`, since two concurrent inserts can both see no overlap and both commit); `pg_advisory_xact_lock` keyed on doctor id (works and is cheaper, but is convention-enforced rather than schema-enforced — any write path that forgets to take the lock silently violates the invariant); `SELECT ... FOR UPDATE` (can't lock rows that don't exist yet, so it doesn't help two inserts racing into empty space); `SERIALIZABLE` isolation (closes the race, but shares the advisory lock's rejection reason — a transaction-level convention every writer must opt into, not a schema-enforced guarantee, on top of higher retry-on-conflict overhead).
-
-**Decided mechanism:** a trigger-maintained shadow table, `doctor_calendar`, carrying **one** `EXCLUDE USING gist (doctor_id WITH =, during WITH &&)` constraint that sees both sources at once. `AFTER INSERT` on `slots` (via `sync_slot_to_doctor_calendar`) and `AFTER INSERT OR UPDATE` on `intake_requests` (via `sync_intake_request_to_doctor_calendar`) keep it in sync; `slot_id`'s `ON DELETE CASCADE` handles slot removal without a second trigger. The table:
-
-```sql
-CREATE TABLE doctor_calendar (
-  doctor_id         UUID NOT NULL,
-  during            TSTZRANGE NOT NULL,          -- [start, start + duration), tstzrange's default [)
-  source            TEXT NOT NULL CHECK (source IN ('slot', 'appointment')),
-  slot_id           UUID UNIQUE REFERENCES slots(id) ON DELETE CASCADE,
-  intake_request_id UUID UNIQUE REFERENCES intake_requests(id),
-  CHECK (
-    (source = 'slot'        AND slot_id IS NOT NULL AND intake_request_id IS NULL) OR
-    (source = 'appointment' AND intake_request_id IS NOT NULL AND slot_id IS NULL)
-  ),
-  EXCLUDE USING gist (doctor_id WITH =, during WITH &&)   -- needs btree_gist
-);
-```
-
-What the triggers must keep true: inserting a slot adds its interval; an `intake_requests` insert or update adds (or replaces) the row's interval when the row is `'appointed'` and removes it when the row leaves `'appointed'`; deleting a slot removes its interval through the cascade. `migrations/0001_init.sql` is the current implementation of exactly this — derive it from the layout and these rules, don't copy it unchecked.
-
-**The invariant is declared in `Domain.hs`, enforced here.** `DoctorCalendar` (sealed; `mkDoctorCalendar`/`addAvailableSlot`) states the rule; this constraint is what makes it hold for stored data, since a `Domain.hs` value can't prove it matches what is stored. The mapping must stay exact: per doctor, both `slots` and appointed `intake_requests` count, and intervals are half-open — `Domain.hs`'s `[start, end)` is `tstzrange`'s default `[)`. General rule: an invariant `Domain.hs` declares over a *single* value maps to a `CHECK` (live case: `RoutineWithin`'s `from <= to`, sealed behind `mkRoutineWithin`, is `CHECK (due_not_before IS NULL OR due_not_after IS NULL OR due_not_before <= due_not_after)`); one it declares over a *collection* of stored rows (a sealed collection type such as `DoctorCalendar`) must map to an `EXCLUDE`/`UNIQUE` constraint — a pure check in Service alone is never enough. Either way, decoding still replays through the smart constructor (`sealed-type-replay`). `fetchDoctorCalendar` decodes stored entries through `mkDoctorCalendar` and fails loudly with `OverlappingCalendarEntries`, like `InvalidWithin` for `mkRoutineWithin`.
-
-**The deliberate, contained exception to `uniqueness-races-are-outcomes`:** that rule's "never a caught `SqlError`" discipline still holds everywhere else in `Persistence.hs` — it cannot hold here. An `EXCLUDE` violation has no affected-rows equivalent: there is no `WHERE` clause that expresses "does this range overlap any existing one," because that check only exists inside the GiST index Postgres itself maintains, not in any row's own observable shape. `insertAvailableSlot` and `claimAcceptedIntakeRequest` each catch `SqlError` and match on `sqlState == "23P01"` (`exclusion_violation`) as the one narrow, contained exception to `uniqueness-races-are-outcomes`, rethrowing anything else unchanged. Stated explicitly here as an exception *to* that rule — not a silent contradiction of it.
-
-**Accepted cost:** trigger maintenance surface. Any future column that changes what counts as "appointed" (a new way to enter or leave that state) needs `sync_intake_request_to_doctor_calendar` updated by hand — the trigger is not derived from `intake_requests`' schema automatically. Judged acceptable at 2-3 doctor scale; revisit if the schema around `intake_requests` churns often enough to make this a recurring source of missed updates.
-
-## The Persistence module
-
-All Persistence-layer code lives in a single module, `src/Persistence.hs` (module name `Persistence`) — mirroring `Domain.hs`'s own single-file convention. Do not create one file per aggregate; add new `Row` types and functions to this one file as the domain grows.
-
-Conventions established for this module, settled across the schema and Persistence-writing sessions, apply uniformly with no case-by-case exceptions:
-
-- **DB library: `postgresql-simple`.**
-- **Every function takes a plain `Connection`, never `ConnectionPool`, with no exceptions.** `ConnectionPool` (`type ConnectionPool = Pool Connection`, defined in `Persistence.hs`, `Pool` from `resource-pool`) exists only for whatever calls into this module from outside (`Service.hs`) to check out a `Connection` via `withResource` for a unit of work — including holding one connection across a whole `withTransaction` block spanning multiple `Persistence.hs` calls. A function that took `ConnectionPool` directly could only ever run as its own isolated unit of work, foreclosing composition into a larger transaction.
-- **Row↔domain mapping is written by hand, never derived.** `FromRow` instances are hand-written field-by-field (`SomeRow <$> field <*> field <*> ...`, one line per column, commented with the column name) rather than `Generic`-derived. Writes use explicit tuples/lists at the `execute` call site, never a shared `ToRow` instance — this keeps the column list and the value list visible together at every call site, at the cost of some repetition across functions writing the same row shape.
-- **`<$>`/`fmap` is the default** for a function with exactly one fallible sub-computation feeding pure construction. Reserve `do`-notation/`>>=` for genuinely multiple sequential fallible steps, or for chaining a fallible result into a further fallible computation (e.g. `decodeAppointed` chaining `decodeTriaged`'s result into `decodeDuration`).
-- **Decode failures return `Either DecodeError X`, never throw.** No exceptions for "this row didn't decode."
-- **Dedicated functions per domain operation, never a generic update dispatching on the value's shape.** E.g. `insertAvailableSlot`, or `insertSubmittedIntakeRequest`/`persistTriagedIntakeRequest` — named to mirror the `Domain.hs` verb that produced the value being persisted, one clear meaning per function, no runtime dispatch a reader has to trace into.
-- **Transaction boundaries live inside the function that needs them, not pushed up to the caller.** A function performing an operation requiring `atomic-multi-table-write` calls `withTransaction conn $ do { ... }` internally — the caller passes in a `Connection` and gets one atomic operation; it isn't responsible for remembering to wrap anything itself. This was a deliberate choice: "the business action already defines its transactional scope." Currently `persistMatchedIntakeRequest` is the only function doing this.
-- **ID generation** (`newIntakeRequestId`, `newSlotId`, etc.) lives in `Service.hs`, not here — minting a new ID is an orchestration decision, not a fetch or a store. `Persistence.hs` only ever receives an already-minted ID as an argument; it never generates one.
-
-For each domain aggregate with its own table(s), generate within `Persistence.hs`:
-
-1. A `Row` type whose fields match the table's columns exactly, using unprefixed field names (`DuplicateRecordFields` + `OverloadedRecordDot`, matching `Domain.hs`'s own style) rather than `row`-prefixed names.
-2. `toDomainX :: XRow -> Either DecodeError X` (suffixed per-aggregate, not bare `toDomain` — this is one flat module, not isolated per-aggregate examples, so names must not collide) — **but only where a decode failure is actually possible.** `Doctor`/`Patient` (`minimal-types-minimal-tables`) have no field that can fail to decode — no sum type, no enum, no invariant beyond what the field types already enforce — so their `toDomainX` functions are plain and total: `toDomainDoctor :: DoctorRow -> Doctor`, no `Either` wrapper. Don't blanket-wrap every `toDomainX` in `Either` out of habit; add it only where `fail-loudly-on-decode` actually has something to guard against.
-3. `fromDomainX :: X -> XRow` — split by constructor where the domain type is a sum type with meaningfully different producers (e.g. `fromDomainSubmitted`/`fromDomainTriaged`/`fromDomainAppointed`/`fromDomainClosed`), since the writing caller already knows which constructor it holds. Kept as one function only where the read direction has no such foreknowledge (e.g. `toDomainIntakeRequest` stays unified, branching on `state`, since a fetch doesn't know in advance what it will find).
-4. Fetch and store functions, mapping through `toDomainX`/`fromDomainX`. Store functions that change a sum type's case follow `updates-follow-domain-transitions`.
-5. A dedicated waitlist fetch, `fetchIntakeWaitlist`, implementing `no-delete-on-consumption`'s current `state = 'accepted'` filter.
-6. Atomic multi-table operations (matching) per `atomic-multi-table-write`, transaction boundary owned internally.
-
-See `references/persistence-pattern.md` for worked examples.
+### `state-guard-is-freshness`
+The state guard also proves the row is the one the caller read, because of two properties:
+1. no transition leads back to an earlier case;
+2. every `UPDATE` changes the case.
+
+So there are no version columns. Check both properties whenever `Domain.hs` changes. If either breaks, stop and ask: a row version is the known answer. Tables that are never updated need nothing.
+
+### `atomic-multi-table-write`
+A transition that writes more than one table runs in one `withTransaction`, owned by the function that performs it. If a later step loses its race after an earlier one succeeded, an internal, unexported exception rolls the transaction back and is caught just outside it. Don't use manual `BEGIN`/`ROLLBACK`.
+
+**Check:** a DB test makes the later step lose and asserts the earlier write was rolled back.
+
+## Reading
+
+### `reads-follow-cases`
+Generate the reads `Domain.hs` determines:
+- **by id:** one per entity table;
+- **all:** one per entity that is neither a sum type nor an element of a sealed collection (whose elements are read by time range);
+- **by case:** for each case of an entity's sum type, all rows in that case, decoded as the case's payload type. A terminal case (nothing leaves it) is read by time range only, over a timestamp its stage adds to every row, else over the timestamp of the nearest stage it embeds;
+- **the sealed collection's slice:** for judging a new element, the part the invariant needs: the element's grouping key, and entries whose extent overlaps the new element's. Rebuilt through its smart constructor (`sealed-type-replay`), from its source tables; its shadow table only enforces the invariant. Reading through the shadow table is a performance change, made only when measured. The whole collection is never read.
+- **the collection's elements:** for callers, since a sealed value is opaque: the elements whose extent overlaps a time range `[from, to)`, from its source tables in one snapshot, sorted by start.
+
+Read names, shared with `triage-service-codegen` (plurals are English plurals): by id `fetch<Entity>`; all `fetch<Entity>s`; by case `fetch<Case><Entity>s`; terminal range `fetch<Case><Entity>sBy<Field>`, two bounds, half-open `[from, to)`; the collection's slice `fetch<Collection>Overlapping`, taking the grouping key and the new element's extent; its elements `fetch<Element>sOverlapping`, taking the range.
+
+A narrower read (one owner, one service) exists only when a Service use case needs it, and is added then, through `triage-service-codegen`. It is named after the case it returns plus its filter, takes one parameter per value it narrows by, and decodes through the same case decoder.
+
+### `one-snapshot-per-read`
+A read built from several queries runs them in one `REPEATABLE READ` transaction.
+
+### `fail-loudly-on-decode`
+Decoding returns `Either DecodeError`, one constructor per kind of failure, and never defaults or coerces a value. Check shapes the CHECKs "make impossible" anyway.
+
+### `sealed-type-replay`
+Build a sealed type from storage only through its exported smart constructor. A refusal is a `DecodeError`.
+
+### `sealed-value-decomposition`
+Encoding a sealed value uses a read-only accessor that `Domain.hs` exports. If none exists, it's a gap in `Domain.hs`: stop and ask. Never export the constructor or its field names, and never work around it.
+
+### `id-types-plain`
+ID newtypes have exported constructors. Unwrap the `UUID` by pattern matching, with no helper functions.
+
+## `Persistence.hs` conventions
+- One module. Uses `postgresql-simple`.
+- **Connections:** every function takes a plain `Connection`. `type ConnectionPool = Pool Connection` is defined here for Service. Transactions live inside the function that needs one.
+- **Rows:** one `Row` type per table that Haskell reads (a shadow table gets none), with unprefixed field names (`DuplicateRecordFields`, `OverloadedRecordDot`). A row field and a `Domain.hs` accessor can share a name (both come from `Domain.hs`): refer to the accessor qualified (`Domain.<name>`) and don't bind locals with either name.
+  - `FromRow` is written by hand, one `field` per column, each commented with its column name.
+  - Writes pass explicit tuples at the `execute` call. There is no `ToRow`.
+- **Decoding:**
+  - `toDomain<Type>` returns `Either DecodeError` only where decoding can fail; otherwise it is total.
+  - `fromDomain<Stage>` is split per case of a sum type. The read direction is one function that branches on the discriminator.
+  - Prefer `<$>` for a single fallible step, and `do` for chained ones.
+- **Functions:** creation is `insert<Record>`; a transition is `persist<TargetRecord>`, one function per target stage, never a generic update over any case. When the value records its source case, the function takes that case's guarded statement from the value.
+- **IDs** are minted in Service, never here.
 
 ## When unsure
-
-If a rule above doesn't cover a case that comes up, prefer the option that mirrors `Domain.hs`'s own structure most directly, and flag the ambiguity to the user rather than inventing a convention silently. When adding a genuinely new rule, give it a name in this same style before writing content under it. When a rule's live case disappears because `Domain.hs` changed, say so explicitly in the rule itself (as `sealed-type-replay`'s History line does for `BookedSlot`) rather than deleting the rule or leaving it silently describing something no longer true.
+Prefer the option that mirrors `Domain.hs` most directly, and flag the ambiguity rather than inventing a convention. A new rule gets a kebab-case name before its text.

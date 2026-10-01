@@ -35,8 +35,9 @@ import qualified Persistence as P
 import qualified Service    as S
 
 import Domain
-import Persistence (ClaimOutcome (..), ConnectionPool, MatchPersistOutcome (..), SlotOverlap (..))
-import Service     (MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..), TransitionOutcome (..))
+import Persistence (ClaimOutcome (..), ConnectionPool)
+import Service     (MatchOutcome (..), PriorityMatchOutcome (..), ServiceError (..),
+                    SlotCreationOutcome (..), TransitionOutcome (..))
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- THROWAWAY DATABASE
@@ -70,7 +71,7 @@ withConnection conninfo = bracket (connectPostgreSQL (fromString conninfo)) clos
 emptyTables :: ConnectionPool -> IO ()
 emptyTables pool = withResource pool $ \c -> do
   _ <- execute_ c
-    "TRUNCATE doctor_calendar, slots, intake_requests, healthcare_services, patients, doctors CASCADE"
+    "TRUNCATE doctor_calendar, available_slots, intake_requests, healthcare_services, patients, doctors CASCADE"
   pure ()
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -139,6 +140,7 @@ stateOf pool rid = do
 -- SPEC
 -- ═══════════════════════════════════════════════════════════════════════════
 
+
 spec :: ConnectionPool -> Spec
 spec pool = do
   describe "round trips" $ do
@@ -183,26 +185,50 @@ spec pool = do
     it "a reject of an already accepted request writes nothing" $ do
       fx <- fixture pool
       t  <- accept pool fx AnyDoctor
-      withResource pool (\c -> P.persistRejectedIntakeRequest c t.submitted t0 "no")
-        `shouldReturn` AlreadyClaimed
+      let rejected = RejectedIntakeRequest { submitted = t.submitted, rejectedAt = t0, rejectionReason = "no" }
+      withResource pool (\c -> P.persistRejectedIntakeRequest c rejected) `shouldReturn` AlreadyClaimed
       stateOf pool t.submitted.id `shouldReturn` "accepted"
+
+  describe "withdraw" $ do
+    it "withdraws a submitted request" $ do
+      fx <- fixture pool
+      s  <- submit pool fx
+      S.withdrawIntakeRequest pool s.id t0 Nothing
+        `shouldReturn` Right (Transitioned (WithdrawnIntakeRequest (FromSubmitted s) t0 Nothing))
+      stateOf pool s.id `shouldReturn` "withdrawn"
+
+    it "withdraws an accepted request from where it is, with its triage" $ do
+      fx <- fixture pool
+      t  <- accept pool fx AnyDoctor
+      S.withdrawIntakeRequest pool t.submitted.id t0 (Just "feeling better")
+        `shouldReturn` Right (Transitioned (WithdrawnIntakeRequest (FromAccepted t) t0 (Just "feeling better")))
+      stored pool t.submitted.id
+        `shouldReturn` Withdrawn (WithdrawnIntakeRequest (FromAccepted t) t0 (Just "feeling better"))
+
+    it "withdrawing an appointed request reports it moved on" $ do
+      fx        <- fixture pool
+      (_, _, a) <- appoint pool fx t0
+      S.withdrawIntakeRequest pool a.triaged.submitted.id t0 Nothing
+        `shouldReturn` Right (MovedOn (Appointed a))
 
   describe "slots" $ do
     it "an overlapping slot is a conflict; a touching one is fine" $ do
       fx <- fixture pool
       _  <- slotAt pool fx t0
-      S.createAvailableSlot pool fx.doctor.id fx.service.id (minutes 15 t0) `shouldReturn` Right SlotConflict
+      S.createAvailableSlot pool fx.doctor.id fx.service.id (minutes 15 t0)
+        `shouldReturn` Right SlotOverlapsDoctorCalendar
       Right (SlotCreated _) <- S.createAvailableSlot pool fx.doctor.id fx.service.id (minutes 30 t0)
       pure ()
 
     it "the database rejects an overlap even when the Domain check is bypassed" $ do
       fx      <- fixture pool
       _       <- slotAt pool fx t0
-      otherId <- S.newSlotId
+      otherId <- SlotId <$> nextRandom
       let overlapping = AvailableSlot
             { id = otherId, doctorId = fx.doctor.id, healthcareServiceId = fx.service.id
             , start = minutes 15 t0, duration = HalfAnHour }
-      withResource pool (\c -> P.insertAvailableSlot c overlapping) `shouldReturn` Left SlotOverlap
+      withResource pool (\c -> P.insertAvailableSlot c overlapping)
+        `shouldReturn` P.SlotOverlapsDoctorCalendar
 
     it "the new slot takes its duration from the service" $ do
       fx   <- fixture pool
@@ -210,24 +236,25 @@ spec pool = do
       slot.duration `shouldBe` fx.service.duration
 
   describe "match" $ do
-    it "books the request and removes the slot" $ do
+    it "books the request and consumes the slot" $ do
       fx           <- fixture pool
       (_, slot, a) <- appoint pool fx t0
       stateOf pool a.triaged.submitted.id `shouldReturn` "appointed"
-      withResource pool (\c -> P.fetchSlot c slot.id) `shouldReturn` Right Nothing
+      S.fetchAvailableSlot pool slot.id `shouldReturn` Right Nothing
 
     it "matching an already booked request reports the booking" $ do
       fx        <- fixture pool
       (_, _, a) <- appoint pool fx t0
       later     <- slotAt pool fx (minutes 60 t0)
       S.matchAcceptedIntakeRequestToSlot pool a.triaged.submitted.id later.id
-        `shouldReturn` Right (RequestMovedOn (Appointed a))
+        `shouldReturn` Right (IntakeRequestMovedOn (Appointed a))
 
     it "the same slot can't be matched twice" $ do
       fx           <- fixture pool
       (_, slot, _) <- appoint pool fx t0
       other        <- accept pool fx AnyDoctor
-      S.matchAcceptedIntakeRequestToSlot pool other.submitted.id slot.id `shouldReturn` Right SlotAlreadyClaimed
+      S.matchAcceptedIntakeRequestToSlot pool other.submitted.id slot.id
+        `shouldReturn` Right AvailableSlotConsumed
       stateOf pool other.submitted.id `shouldReturn` "accepted"
 
     it "rolls the slot delete back when the request claim loses" $ do
@@ -235,20 +262,46 @@ spec pool = do
       t    <- accept pool fx AnyDoctor
       slot <- slotAt pool fx t0
       -- Meanwhile: marked stale.
-      Right (Transitioned _) <- S.markIntakeRequestStale pool t.submitted.id t0
-      Just appointed <- pure (matchIntakeRequestToSlot slot t)
-      withResource pool (\c -> P.persistMatchedIntakeRequest c slot.id appointed)
-        `shouldReturn` RequestAlreadyMatched
-      withResource pool (\c -> P.fetchSlot c slot.id) `shouldReturn` Right (Just slot)
+      Right (Transitioned _) <- S.markAcceptedIntakeRequestStale pool t.submitted.id t0
+      Just appointment <- pure (matchIntakeRequestToSlot slot t)
+      withResource pool (\c -> P.persistAppointedIntakeRequest c slot appointment)
+        `shouldReturn` P.IntakeRequestAlreadyClaimed
+      S.fetchAvailableSlot pool slot.id `shouldReturn` Right (Just slot)
       stateOf pool t.submitted.id `shouldReturn` "stale"
+
+    it "a request and slot that don't fit are the caller's mistake" $ do
+      fx    <- fixture pool
+      other <- S.createHealthcareService pool "Other service" HalfAnHour
+      s     <- submit pool fx
+      Right (Transitioned t) <-
+        S.acceptSubmittedIntakeRequest pool s.id other.id (Routine RoutineAnytime) AnyDoctor t0
+      slot  <- slotAt pool fx t0
+      S.matchAcceptedIntakeRequestToSlot pool t.submitted.id slot.id
+        `shouldReturn` Left SlotDoesNotMatchIntakeRequest
+
+  describe "match by priority" $ do
+    it "gives the slot to the waiting request that fits" $ do
+      fx   <- fixture pool
+      t    <- accept pool fx AnyDoctor
+      slot <- slotAt pool fx t0
+      Right (MatchAttempted (Matched a)) <- S.matchAvailableSlotByPriority pool slot.id
+      a.triaged `shouldBe` t
+      stateOf pool t.submitted.id `shouldReturn` "appointed"
+
+    it "with nothing waiting, the slot stays available" $ do
+      fx   <- fixture pool
+      slot <- slotAt pool fx t0
+      S.matchAvailableSlotByPriority pool slot.id `shouldReturn` Right NoMatchingIntakeRequest
+      S.fetchAvailableSlot pool slot.id `shouldReturn` Right (Just slot)
 
   describe "close / stale" $ do
     it "cancelling an appointment frees its time" $ do
       fx        <- fixture pool
       (_, _, a) <- appoint pool fx t0
       let rid       = a.triaged.submitted.id
-          cancelled = Cancelled ByDoctor t0 Nothing
-      S.closeAppointedIntakeRequest pool rid cancelled `shouldReturn` Right (Transitioned (Closed a cancelled))
+          cancelled = Cancelled (Cancellation DoctorParty t0 Nothing)
+      S.closeAppointedIntakeRequest pool rid cancelled
+        `shouldReturn` Right (Transitioned (ClosedIntakeRequest a cancelled))
       stateOf pool rid `shouldReturn` "closed"
       Right (SlotCreated _) <- S.createAvailableSlot pool fx.doctor.id fx.service.id t0
       pure ()
@@ -257,22 +310,33 @@ spec pool = do
       fx        <- fixture pool
       (_, _, a) <- appoint pool fx t0
       let rid       = a.triaged.submitted.id
-          cancelled = Cancelled ByPatient t0 Nothing
-      S.closeAppointedIntakeRequest pool rid cancelled `shouldReturn` Right (Transitioned (Closed a cancelled))
-      S.closeAppointedIntakeRequest pool rid Completed `shouldReturn` Right (MovedOn (Closed a cancelled))
+          cancelled = Cancelled (Cancellation PatientParty t0 Nothing)
+      S.closeAppointedIntakeRequest pool rid cancelled
+        `shouldReturn` Right (Transitioned (ClosedIntakeRequest a cancelled))
+      S.closeAppointedIntakeRequest pool rid Completed
+        `shouldReturn` Right (MovedOn (Closed (ClosedIntakeRequest a cancelled)))
 
     it "closing a request that is still accepted is the wrong state" $ do
       fx <- fixture pool
       t  <- accept pool fx AnyDoctor
       S.closeAppointedIntakeRequest pool t.submitted.id Completed
-        `shouldReturn` Left (RequestInWrongState (Accepted t))
+        `shouldReturn` Left (IntakeRequestInWrongState (Accepted t))
 
     it "mark stale works from accepted; from submitted it is the wrong state" $ do
       fx <- fixture pool
       t  <- accept pool fx AnyDoctor
-      S.markIntakeRequestStale pool t.submitted.id t0 `shouldReturn` Right (Transitioned t)
+      S.markAcceptedIntakeRequestStale pool t.submitted.id t0
+        `shouldReturn` Right (Transitioned (StaleIntakeRequest t t0))
       s  <- submit pool fx
-      S.markIntakeRequestStale pool s.id t0 `shouldReturn` Left (RequestInWrongState (Submitted s))
+      S.markAcceptedIntakeRequestStale pool s.id t0
+        `shouldReturn` Left (IntakeRequestInWrongState (Submitted s))
+
+    it "a request withdrawn before triage was never accepted: marking it stale is the wrong state" $ do
+      fx <- fixture pool
+      s  <- submit pool fx
+      Right (Transitioned w) <- S.withdrawIntakeRequest pool s.id t0 Nothing
+      S.markAcceptedIntakeRequestStale pool s.id t0
+        `shouldReturn` Left (IntakeRequestInWrongState (Withdrawn w))
 
   describe "unknown ids" $ do
     it "submitting for an unknown patient is PatientNotFound, and nothing is stored" $ do
@@ -301,6 +365,10 @@ spec pool = do
       unknown <- DoctorId <$> nextRandom
       S.createAvailableSlot pool unknown fx.service.id t0 `shouldReturn` Left (DoctorNotFound unknown)
 
+    it "reading an unknown request is IntakeRequestNotFound" $ do
+      unknown <- IntakeRequestId <$> nextRandom
+      S.fetchIntakeRequest pool unknown `shouldReturn` Left (IntakeRequestNotFound unknown)
+
   describe "constraints" $ do
     it "a submitted request can't carry a decided doctor requirement" $ do
       fx <- fixture pool
@@ -308,7 +376,7 @@ spec pool = do
       let IntakeRequestId rid = s.id
           DoctorId did        = fx.doctor.id
       result <- try (withResource pool (\c ->
-        execute c "UPDATE intake_requests SET required_doctor_id = ? WHERE id = ?" (did, rid)))
+        execute c "UPDATE intake_requests SET specific_doctor_id = ? WHERE id = ?" (did, rid)))
       case result of
         Left e  -> sqlState e `shouldBe` "23514"   -- check_violation
         Right n -> expectationFailure ("the update was accepted (" ++ show n ++ " row)")
@@ -318,7 +386,7 @@ spec pool = do
       t  <- accept pool fx AnyDoctor
       let IntakeRequestId rid = t.submitted.id
       result <- try (withResource pool (\c ->
-        execute c "UPDATE intake_requests SET due_not_before = ?, due_not_after = ? WHERE id = ?"
+        execute c "UPDATE intake_requests SET routine_not_before = ?, routine_not_after = ? WHERE id = ?"
           (minutes 60 t0, t0, rid)))
       case result of
         Left e  -> sqlState e `shouldBe` "23514"   -- check_violation

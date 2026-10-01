@@ -1,978 +1,590 @@
-{-# LANGUAGE DataKinds             #-}
-{-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE OverloadedRecordDot   #-}
-{-# LANGUAGE OverloadedStrings     #-}
-{-# LANGUAGE TypeApplications      #-}
-{-# LANGUAGE TypeOperators         #-}
+{-# LANGUAGE DataKinds           #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE OverloadedRecordDot #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications    #-}
+{-# LANGUAGE TypeOperators       #-}
 
--- REST API layer, built on Servant per .claude/skills/triage-api-codegen's
--- SKILL.md and references/servant-implementation.md — read both before
--- extending this file. Single file, sectioned per resource (route type +
--- handlers + sub-server wiring interleaved), same banner-comment
--- convention as Persistence.hs/Service.hs, not a signatures-then-bodies
--- split (servant-implementation.md section 2).
---
--- All six resource sections now exist — Doctor/Patient/HealthcareService/
--- Slot/IntakeRequest/Calendar — this file's build-out is complete,
--- matching every route in rest.md's settled table.
--- Doctor/Patient are both servant-implementation.md shape (a): bare IO all
--- the way down (createDoctor/fetchDoctor/fetchDoctors and their Patient
--- equivalents have no Either anywhere in Service.hs), so neither needs an
--- envelope or any middleware. HealthcareServiceAPI's create is shape (a)
--- too, but its list/get reads are shape (b) (IO (Either DecodeError a)) —
--- the first section to actually need the runRead helper (see the
--- MIDDLEWARE section below). SlotAPI's create is shape (c)'s
--- SlotCreationOutcome relative (IO (Either ServiceError
--- SlotCreationOutcome) — see MIDDLEWARE's own runSlotCreation). IntakeRequestAPI's submit is
--- IO (Either ServiceError a) with no race to report, via runEnveloped;
--- accept/reject/mark-stale/close are shape (c) proper (IO (Either
--- ServiceError a)), via runService/handleServiceError; match is
--- MatchOutcome-shaped (IO (Either ServiceError MatchOutcome)), via the
--- new runMatchOutcome (see MIDDLEWARE below) — MatchOutcome's own
--- 5-constructor success side doesn't fit runService's uniform tag/
--- toDetail shape. CalendarAPI's one route is shape (b) again, the
--- simplest section in the file — no new middleware, no new request DTOs.
---
--- An OpenAPI/Swagger spec is generated from API (the business routes
--- only, see the SWAGGER section near the bottom of this file) and served
--- alongside them: once the server is running, browse it at
--- http://localhost:8080/swagger-ui (raw spec at /swagger.json).
-
+-- Derived from src/Domain.hs and src/Service.hs by the triage-api-codegen
+-- skill: one REST endpoint per public Service function. Handlers parse,
+-- supply the current time, call Service and render its answer; nothing
+-- else. Every 200 body is {"outcome": <tag>, "detail": <payload or null>}.
 module Api
-  ( -- ── Application monad ────────────────────────────────────────────────
-    AppM
-  , runAppM
-
-    -- ── Config / wiring ──────────────────────────────────────────────────
-  , AppConfig (..)
-  , loadConfig
-  , mkPool
-  , app
+  ( API
+  , api
+  , swaggerDoc
   , main
-
-    -- ── Doctor ───────────────────────────────────────────────────────────
-  , DoctorAPI
-  , doctorServer
-
-    -- ── Patient ──────────────────────────────────────────────────────────
-  , PatientAPI
-  , patientServer
-
-    -- ── Healthcare Service ───────────────────────────────────────────────
-  , HealthcareServiceAPI
-  , healthcareServiceServer
-
-    -- ── Slot ─────────────────────────────────────────────────────────────
-  , SlotAPI
-  , slotServer
-
-    -- ── Intake Request ───────────────────────────────────────────────────
-  , IntakeRequestAPI
-  , intakeRequestServer
-
-    -- ── Calendar ─────────────────────────────────────────────────────────
-  , CalendarAPI
-  , calendarServer
-
-    -- ── Top-level API ────────────────────────────────────────────────────
-  , API
-  , server
-
-    -- ── Swagger ──────────────────────────────────────────────────────────
-  , APIWithSwagger
-  , swaggerSpec
-  , serverWithSwagger
   ) where
 
+import Control.Exception          (SomeAsyncException, SomeException, fromException, throwIO, try)
 import Control.Lens               ((&), (.~), (?~))
 import Control.Monad.IO.Class     (liftIO)
+import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
-import Data.Aeson                 (ToJSON, Value (Null), object, toJSON, (.=))
-import Data.ByteString            (ByteString)
+import Data.Aeson                 (ToJSON (..), Value (..), object, (.=))
 import Data.Maybe                 (fromMaybe)
 import Data.Pool                  (defaultPoolConfig, newPool)
-import Data.Swagger               (Swagger, description, info, title, version)
+import Data.Swagger
+  ( Definitions, NamedSchema (..), Referenced (..), Schema, Swagger, SwaggerType (..)
+  , Reference (..), ToSchema (..), declareSchemaRef, description, enum_, info, properties, required
+  , schemaName, title, type_, version )
+import Data.Swagger.Declare       (Declare, declare)
 import Data.Text                  (Text)
 import Data.Time                  (UTCTime, getCurrentTime)
-import Data.UUID                  (UUID)
-import Network.Wai                (Request, requestHeaders)
+import Database.PostgreSQL.Simple (close, connectPostgreSQL)
+import GHC.Exts                   (fromList)
+import GHC.TypeLits               (KnownSymbol, Symbol, symbolVal)
+import Network.Wai                (Middleware)
 import Network.Wai.Handler.Warp   (run)
 import Network.Wai.Middleware.Cors
-  ( CorsResourcePolicy (..)
-  , cors
-  , simpleCorsResourcePolicy
-  )
+  ( CorsResourcePolicy (..), cors, simpleCorsResourcePolicy )
 import Servant
-import Servant.Swagger            (HasSwagger (toSwagger))
-import Servant.Swagger.UI         (SwaggerSchemaUI, swaggerSchemaUIServerT)
+import Servant.Swagger            (toSwagger)
+import Servant.Swagger.UI         (SwaggerSchemaUI, swaggerSchemaUIServer)
 import System.Environment         (lookupEnv)
-import System.Exit                (exitFailure)
 import System.IO                  (hPutStrLn, stderr)
 import Text.Read                  (readMaybe)
 
-import qualified Data.ByteString.Char8      as BS8
-import qualified Data.ByteString.Lazy.Char8 as LBS8
-import qualified Data.UUID                  as UUID
-import qualified Database.PostgreSQL.Simple as PG
-import qualified Service
+import qualified Data.ByteString.Char8 as BS8
+import qualified Data.Text             as Text
 
 import Domain
-  ( DoctorId (..)
-  , HealthcareServiceId (..)
-  , IntakeRequest (Accepted, Stale, Submitted)
-  , IntakeRequestId (..)
-  , PatientId (..)
-  , SlotId (..)
-  )
-import Persistence (ConnectionPool, DecodeError)
-import Service     (MatchOutcome (..), ServiceError (..), SlotCreationOutcome (..), TransitionOutcome (..))
+import Persistence (ConnectionPool)
+import Service
 import Transport
-  ( AcceptIntakeRequestRequest (..)
-  , AppointedIntakeRequestDTO
-  , AvailableSlotDTO
-  , CalendarEntryDTO
-  , CloseReasonRequestDTO (..)
-  , CreateAvailableSlotRequest (..)
-  , CreateDoctorRequest (..)
-  , CreateHealthcareServiceRequest (..)
-  , CreatePatientRequest (..)
-  , DoctorDTO
-  , HealthcareServiceDTO
-  , IntakeRequestDTO
-  , PatientDTO
-  , MatchIntakeRequestRequest (..)
-  , RejectIntakeRequestRequest (..)
-  , SubmitIntakeRequestRequest (..)
-  , closeReasonFromRequest
-  , fromDomainAppointedIntakeRequest
-  , fromDomainAvailableSlot
-  , fromDomainCalendarEntry
-  , fromDomainDoctor
-  , fromDomainHealthcareService
-  , fromDomainIntakeRequest
-  , fromDomainPatient
-  , toDomainDoctorRequirement
-  , toDomainDuration
-  , toDomainIntakeRequestPriority
-  )
 
--- ═══════════════════════════════════════════════════════════════════════
--- APPLICATION MONAD
--- Bare ReaderT ConnectionPool Handler — no AppEnv wrapper record.
--- Deliberately does not inherit Service.hs's own explicit-ConnectionPool-
--- parameter convention: Service.hs functions are library-style entry
--- points called from multiple contexts (test/Spec.hs, this module), so an
--- explicit parameter keeps them composable; handlers here are called from
--- exactly one place (Servant's own dispatch), so there is no composability
--- to protect by keeping the pool explicit at this layer too. See
--- servant-implementation.md section 3 for the full reasoning.
--- ═══════════════════════════════════════════════════════════════════════
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ANSWERS
+-- The envelope, one rendering function per Service answer type (exhaustive,
+-- no wildcard), and each endpoint's response schema.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+data Envelope = Envelope Text (Maybe Value)
+
+envelopeValue :: Envelope -> Value
+envelopeValue (Envelope outcome detail) = object ["outcome" .= outcome, "detail" .= detail]
+
+-- A plain value with no constructor of its own.
+ok :: ToJSON a => a -> Envelope
+ok = Envelope "ok" . Just . toJSON
+
+tagged :: ToJSON a => Text -> a -> Envelope
+tagged outcome = Envelope outcome . Just . toJSON
+
+bare :: Text -> Envelope
+bare outcome = Envelope outcome Nothing
+
+-- The body of one endpoint's 200 response, named after its Service function.
+newtype Answer (useCase :: Symbol) = Answer Envelope
+
+instance ToJSON (Answer useCase) where
+  toJSON (Answer e) = envelopeValue e
+
+-- Only a decode failure is outside the domain's vocabulary: a 500.
+renderServiceError :: ServiceError -> AppM Envelope
+renderServiceError e = case e of
+  DecodeFailed _                  -> throwError internalError
+  DoctorNotFound i                -> pure (tagged "doctorNotFound" (fromDomainDoctorId i))
+  PatientNotFound i               -> pure (tagged "patientNotFound" (fromDomainPatientId i))
+  HealthcareServiceNotFound i     ->
+    pure (tagged "healthcareServiceNotFound" (fromDomainHealthcareServiceId i))
+  IntakeRequestNotFound i         ->
+    pure (tagged "intakeRequestNotFound" (fromDomainIntakeRequestId i))
+  IntakeRequestInWrongState r     ->
+    pure (tagged "intakeRequestInWrongState" (fromDomainIntakeRequest r))
+  SlotDoesNotMatchIntakeRequest   -> pure (bare "slotDoesNotMatchIntakeRequest")
+
+renderTransitionOutcome :: ToJSON dto => (a -> dto) -> TransitionOutcome a -> Envelope
+renderTransitionOutcome render outcome = case outcome of
+  Transitioned a -> tagged "transitioned" (render a)
+  MovedOn r      -> tagged "movedOn" (fromDomainIntakeRequest r)
+
+renderMatchOutcome :: MatchOutcome -> Envelope
+renderMatchOutcome outcome = case outcome of
+  Matched a              -> tagged "matched" (fromDomainAppointedIntakeRequest a)
+  AvailableSlotConsumed  -> bare "availableSlotConsumed"
+  IntakeRequestMovedOn r -> tagged "intakeRequestMovedOn" (fromDomainIntakeRequest r)
+
+renderPriorityMatchOutcome :: PriorityMatchOutcome -> Envelope
+renderPriorityMatchOutcome outcome = case outcome of
+  NoMatchingIntakeRequest -> bare "noMatchingIntakeRequest"
+  MatchAttempted m        -> Envelope "matchAttempted" (Just (envelopeValue (renderMatchOutcome m)))
+
+renderSlotCreationOutcome :: SlotCreationOutcome -> Envelope
+renderSlotCreationOutcome outcome = case outcome of
+  SlotCreated s              -> tagged "slotCreated" (fromDomainAvailableSlot s)
+  SlotOverlapsDoctorCalendar -> bare "slotOverlapsDoctorCalendar"
+
+-- A slot is deleted on consumption: Nothing is the same fact as Service's
+-- AvailableSlotConsumed.
+renderAvailableSlotRead :: Maybe AvailableSlot -> Envelope
+renderAvailableSlotRead found = case found of
+  Just s  -> ok (fromDomainAvailableSlot s)
+  Nothing -> bare "availableSlotConsumed"
+
+answered :: (a -> Envelope) -> Either ServiceError a -> AppM (Answer useCase)
+answered render = fmap Answer . either renderServiceError (pure . render)
+
+answer :: Envelope -> AppM (Answer useCase)
+answer = pure . Answer
+
+-- ── Response schemas ────────────────────────────────────────────────────
+-- Swagger 2.0 cannot tie "detail"'s type to "outcome", so each endpoint's
+-- schema lists its tags as an enum, declares every payload's schema, and
+-- names the payload of each tag in "detail"'s description.
+
+type Decl = Declare (Definitions Schema)
+
+data Payload = Payload Text (Decl (Referenced Schema))
+
+data AnswerCase = AnswerCase Text (Maybe Payload)
+
+one :: forall a. ToSchema a => Proxy a -> Maybe Payload
+one p = Just (Payload (fromMaybe "value" (schemaName p)) (declareSchemaRef p))
+
+many :: forall a. (ToSchema a, ToSchema [a]) => Proxy a -> Maybe Payload
+many p = Just (Payload ("array of " <> fromMaybe "value" (schemaName p)) (declareSchemaRef (Proxy @[a])))
+
+okCase :: Maybe Payload -> [AnswerCase]
+okCase p = [AnswerCase "ok" p]
+
+serviceErrorCases :: [AnswerCase]
+serviceErrorCases =
+  [ AnswerCase "doctorNotFound" (one (Proxy @DoctorIdDTO))
+  , AnswerCase "patientNotFound" (one (Proxy @PatientIdDTO))
+  , AnswerCase "healthcareServiceNotFound" (one (Proxy @HealthcareServiceIdDTO))
+  , AnswerCase "intakeRequestNotFound" (one (Proxy @IntakeRequestIdDTO))
+  , AnswerCase "intakeRequestInWrongState" (one (Proxy @IntakeRequestDTO))
+  , AnswerCase "slotDoesNotMatchIntakeRequest" Nothing
+  ]
+
+transitionCases :: ToSchema dto => Proxy dto -> [AnswerCase]
+transitionCases p =
+  [ AnswerCase "transitioned" (one p)
+  , AnswerCase "movedOn" (one (Proxy @IntakeRequestDTO))
+  ]
+
+matchOutcomeCases :: [AnswerCase]
+matchOutcomeCases =
+  [ AnswerCase "matched" (one (Proxy @AppointedIntakeRequestDTO))
+  , AnswerCase "availableSlotConsumed" Nothing
+  , AnswerCase "intakeRequestMovedOn" (one (Proxy @IntakeRequestDTO))
+  ]
+
+priorityMatchOutcomeCases :: [AnswerCase]
+priorityMatchOutcomeCases =
+  [ AnswerCase "noMatchingIntakeRequest" Nothing
+  , AnswerCase "matchAttempted"
+      (Just (Payload "MatchOutcome" (declareAnswer "MatchOutcome" matchOutcomeCases)))
+  ]
+
+slotCreationOutcomeCases :: [AnswerCase]
+slotCreationOutcomeCases =
+  [ AnswerCase "slotCreated" (one (Proxy @AvailableSlotDTO))
+  , AnswerCase "slotOverlapsDoctorCalendar" Nothing
+  ]
+
+availableSlotReadCases :: [AnswerCase]
+availableSlotReadCases =
+  [ AnswerCase "ok" (one (Proxy @AvailableSlotDTO))
+  , AnswerCase "availableSlotConsumed" Nothing
+  ]
+
+answerSchema :: [AnswerCase] -> Decl Schema
+answerSchema cases = do
+  described <- traverse describe cases
+  let outcomeSchema = mempty & type_ ?~ SwaggerString & enum_ ?~ [String t | AnswerCase t _ <- cases]
+      detailSchema  = mempty & description ?~
+        ("By outcome: " <> Text.intercalate "; " described)
+  pure $ mempty
+    & type_ ?~ SwaggerObject
+    & properties .~ fromList [("outcome", Inline outcomeSchema), ("detail", Inline detailSchema)]
+    & required .~ ["outcome", "detail"]
+  where
+    describe (AnswerCase t Nothing)                = pure (t <> ": null")
+    describe (AnswerCase t (Just (Payload n decl))) = (t <> ": " <> n) <$ decl
+
+-- A nested envelope, declared once under its answer type's name.
+declareAnswer :: Text -> [AnswerCase] -> Decl (Referenced Schema)
+declareAnswer answerName cases = do
+  s <- answerSchema cases
+  declare (fromList [(answerName, s)])
+  pure (Ref (Reference answerName))
+
+class KnownSymbol useCase => AnswerCases (useCase :: Symbol) where
+  answerCases :: Proxy useCase -> [AnswerCase]
+
+instance AnswerCases useCase => ToSchema (Answer useCase) where
+  declareNamedSchema _ =
+    NamedSchema (Just (capitalize (symbolVal (Proxy @useCase)) <> "Answer"))
+      <$> answerSchema (answerCases (Proxy @useCase))
+    where
+      capitalize s = Text.toUpper (Text.take 1 (Text.pack s)) <> Text.drop 1 (Text.pack s)
+
+orError :: [AnswerCase] -> [AnswerCase]
+orError cases = cases <> serviceErrorCases
+
+instance AnswerCases "createDoctor" where answerCases _ = okCase (one (Proxy @DoctorDTO))
+instance AnswerCases "fetchDoctors" where answerCases _ = okCase (many (Proxy @DoctorDTO))
+instance AnswerCases "fetchDoctor" where answerCases _ = orError (okCase (one (Proxy @DoctorDTO)))
+instance AnswerCases "createPatient" where answerCases _ = okCase (one (Proxy @PatientDTO))
+instance AnswerCases "fetchPatients" where answerCases _ = okCase (many (Proxy @PatientDTO))
+instance AnswerCases "fetchPatient" where answerCases _ = orError (okCase (one (Proxy @PatientDTO)))
+instance AnswerCases "createHealthcareService" where
+  answerCases _ = okCase (one (Proxy @HealthcareServiceDTO))
+instance AnswerCases "fetchHealthcareServices" where
+  answerCases _ = orError (okCase (many (Proxy @HealthcareServiceDTO)))
+instance AnswerCases "fetchHealthcareService" where
+  answerCases _ = orError (okCase (one (Proxy @HealthcareServiceDTO)))
+instance AnswerCases "submitIntakeRequest" where
+  answerCases _ = orError (okCase (one (Proxy @SubmittedIntakeRequestDTO)))
+instance AnswerCases "acceptSubmittedIntakeRequest" where
+  answerCases _ = orError (transitionCases (Proxy @TriagedIntakeRequestDTO))
+instance AnswerCases "rejectSubmittedIntakeRequest" where
+  answerCases _ = orError (transitionCases (Proxy @RejectedIntakeRequestDTO))
+instance AnswerCases "matchAcceptedIntakeRequestToSlot" where
+  answerCases _ = orError matchOutcomeCases
+instance AnswerCases "withdrawIntakeRequest" where
+  answerCases _ = orError (transitionCases (Proxy @WithdrawnIntakeRequestDTO))
+instance AnswerCases "markAcceptedIntakeRequestStale" where
+  answerCases _ = orError (transitionCases (Proxy @StaleIntakeRequestDTO))
+instance AnswerCases "closeAppointedIntakeRequest" where
+  answerCases _ = orError (transitionCases (Proxy @ClosedIntakeRequestDTO))
+instance AnswerCases "fetchIntakeRequest" where
+  answerCases _ = orError (okCase (one (Proxy @IntakeRequestDTO)))
+instance AnswerCases "fetchSubmittedIntakeRequests" where
+  answerCases _ = orError (okCase (many (Proxy @SubmittedIntakeRequestDTO)))
+instance AnswerCases "fetchAcceptedIntakeRequests" where
+  answerCases _ = orError (okCase (many (Proxy @TriagedIntakeRequestDTO)))
+instance AnswerCases "fetchAppointedIntakeRequests" where
+  answerCases _ = orError (okCase (many (Proxy @AppointedIntakeRequestDTO)))
+instance AnswerCases "fetchRejectedIntakeRequestsByRejectedAt" where
+  answerCases _ = orError (okCase (many (Proxy @RejectedIntakeRequestDTO)))
+instance AnswerCases "fetchWithdrawnIntakeRequestsByWithdrawnAt" where
+  answerCases _ = orError (okCase (many (Proxy @WithdrawnIntakeRequestDTO)))
+instance AnswerCases "fetchStaleIntakeRequestsByStaleAt" where
+  answerCases _ = orError (okCase (many (Proxy @StaleIntakeRequestDTO)))
+instance AnswerCases "fetchClosedIntakeRequestsByStart" where
+  answerCases _ = orError (okCase (many (Proxy @ClosedIntakeRequestDTO)))
+instance AnswerCases "createAvailableSlot" where
+  answerCases _ = orError slotCreationOutcomeCases
+instance AnswerCases "fetchAvailableSlot" where
+  answerCases _ = orError availableSlotReadCases
+instance AnswerCases "matchAvailableSlotByPriority" where
+  answerCases _ = orError priorityMatchOutcomeCases
+instance AnswerCases "fetchDoctorCalendarEntriesOverlapping" where
+  answerCases _ = orError (okCase (many (Proxy @DoctorCalendarEntryDTO)))
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- HANDLER MONAD
+-- ═══════════════════════════════════════════════════════════════════════════
 
 type AppM = ReaderT ConnectionPool Handler
 
-runAppM :: ConnectionPool -> AppM a -> Handler a
-runAppM pool action = runReaderT action pool
+withPool :: (ConnectionPool -> IO a) -> AppM a
+withPool f = ask >>= liftIO . f
 
--- ═══════════════════════════════════════════════════════════════════════
--- CONFIG / WIRING
--- See servant-implementation.md section 7 for the deliberate asymmetry
--- between the two env vars below: a missing TRIAGE_DB_URL silently
--- defaults (a wrong connection string fails loudly the moment mkPool
--- actually tries to connect, same as any other infra hiccup), but a
--- present-but-malformed TRIAGE_PORT fails loudly at startup rather than
--- silently falling back to 8080 — a wrong port that silently defaulted
--- could run unnoticed (the server comes up, appears healthy, and is
--- simply listening somewhere nobody expects), whereas a startup crash on
--- bad config is immediately actionable and costs nothing at boot, since
--- nothing has served a single request yet.
--- ═══════════════════════════════════════════════════════════════════════
+now :: AppM UTCTime
+now = liftIO getCurrentTime
 
-data AppConfig = AppConfig
-  { dbConnectionString :: ByteString
-  , serverPort         :: Int
+-- A plain-text 500 that exposes no internals.
+internalError :: ServerError
+internalError = err500
+  { errBody    = "Internal server error"
+  , errHeaders = [("Content-Type", "text/plain; charset=utf-8")]
   }
 
--- A local-dev default, not meant to be relied on beyond that.
-defaultDbConnectionString :: String
-defaultDbConnectionString = "postgresql://localhost/triage"
-
-defaultServerPort :: Int
-defaultServerPort = 8080
-
-loadConfig :: IO AppConfig
-loadConfig = do
-  mDbUrl <- lookupEnv "TRIAGE_DB_URL"
-  let connStr = fromMaybe defaultDbConnectionString mDbUrl
-  mPortStr <- lookupEnv "TRIAGE_PORT"
-  port <- case mPortStr of
-    Nothing      -> pure defaultServerPort
-    Just portStr -> case readMaybe portStr of
-      Just p  -> pure p
-      Nothing -> do
-        hPutStrLn stderr
-          ("TRIAGE_PORT is set but not a valid port number: " ++ show portStr)
-        exitFailure
-  pure AppConfig { dbConnectionString = BS8.pack connStr, serverPort = port }
-
--- 10 connections / 60-second idle timeout — both explicitly unrefined
--- placeholders appropriate to current scale (2-3 doctors), not tuned
--- values. Revisit if/when connection contention or idle-churn actually
--- becomes observable, not preemptively.
-mkPool :: AppConfig -> IO ConnectionPool
-mkPool config = newPool $ defaultPoolConfig
-  (PG.connectPostgreSQL config.dbConnectionString)
-  PG.close
-  60
-  10
-
-main :: IO ()
-main = do
-  config <- loadConfig
-  pool   <- mkPool config
-  putStrLn $ "Starting triage API on port " ++ show config.serverPort
-  run config.serverPort (app pool)
-
--- hoistServer supplies runAppM pool once, at server-construction time —
--- not per-handler. Every handler below is written against AppM; this is
--- the one call that threads the pool through all of them uniformly.
--- Serves APIWithSwagger (business API + swagger.json + swagger-ui), not
--- the bare business API — see the SWAGGER section below for why those
--- are kept as separate names rather than folded into API/server
--- themselves.
-app :: ConnectionPool -> Application
-app pool = cors corsPolicy $
-  serve (Proxy @APIWithSwagger) (hoistServer (Proxy @APIWithSwagger) (runAppM pool) serverWithSwagger)
-
--- ═══════════════════════════════════════════════════════════════════════
--- CORS
--- Local-dev-only, permissive: a browser-based frontend on a different
--- port (Vite's dev server, localhost:5173) calling this API
--- (localhost:8080) is silently blocked by the browser's same-origin
--- policy without an explicit CORS response — this is not a production
--- security decision, just what's needed for local dev to work at all.
--- Origin is matched against localhost/127.0.0.1 on any port, rather than
--- reflecting every origin unconditionally, since the ask was specifically
--- "allow localhost origins", not "allow anything".
--- ═══════════════════════════════════════════════════════════════════════
-
-isLocalDevOrigin :: ByteString -> Bool
-isLocalDevOrigin origin =
-  any (`BS8.isPrefixOf` origin) ["http://localhost:", "http://127.0.0.1:"]
-
-localDevCorsPolicy :: ByteString -> CorsResourcePolicy
-localDevCorsPolicy origin = simpleCorsResourcePolicy
-  { corsOrigins        = Just ([origin], False)
-  , corsMethods        = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
-  , corsRequestHeaders = ["Content-Type", "Accept"]
-  }
-
-corsPolicy :: Request -> Maybe CorsResourcePolicy
-corsPolicy req = case lookup "Origin" (requestHeaders req) of
-  Just origin | isLocalDevOrigin origin -> Just (localDevCorsPolicy origin)
-  _                                     -> Nothing
-
--- ═══════════════════════════════════════════════════════════════════════
--- MIDDLEWARE
--- Shared AppM helpers translating Service.hs/Persistence.hs result shapes
--- into HTTP responses, per servant-implementation.md section 4.
---
--- runRead exists for shape (b) (IO (Either DecodeError a)) —
--- HealthcareServiceAPI's list/get reads were the first section that
--- needed it. runSlotCreation/envelope/envelopeEmpty exist for SlotAPI's
--- create (IO (Either ServiceError SlotCreationOutcome), its own
--- outcome-typed shape). handleServiceError/runService exist for shape (c)
--- proper — mutations returning IO (Either ServiceError a) — needed by
--- acceptSubmittedIntakeRequestHandler/rejectSubmittedIntakeRequestHandler/
--- markIntakeRequestStaleHandler/closeAppointedIntakeRequestHandler.
--- runMatchOutcome now also exists, implemented here for the first time,
--- for matchAcceptedIntakeRequestToSlot's IO (Either ServiceError
--- MatchOutcome) shape — MatchOutcome's own 5-constructor success side
--- doesn't fit runService's uniform tag/toDetail shape (only one of its
--- five carries a payload), so this is its own exhaustive match, sharing
--- handleServiceError for the Left case exactly like runService does.
--- matchWaitlistToSlot is the one other function with this same shape,
--- per match-by-priority-not-an-endpoint it never gets its own route, so
--- runMatchOutcome's only caller so far is
--- matchAcceptedIntakeRequestToSlotHandler.
---
--- DecodeError (Persistence.hs) derives only (Show, Eq) — no Generic, no
--- hand-written ToJSON anywhere in this codebase (verified, not assumed).
--- A decode failure is outside the domain's error vocabulary regardless
--- (error-vs-outcome-mapping's own 500 case: "anything genuinely
--- unexpected that no ServiceError/outcome constructor was written to
--- describe"), so its body is a plain-text `show`, not a JSON encoding
--- there is no instance to produce.
--- ═══════════════════════════════════════════════════════════════════════
-
-runRead :: IO (Either DecodeError a) -> AppM a
-runRead action = do
-  result <- liftIO action
+-- Supplies the pool once; anything unexpected (a database failure) becomes
+-- the same plain 500, logged to stderr.
+toHandler :: ConnectionPool -> AppM a -> Handler a
+toHandler pool m = Handler . ExceptT $ do
+  result <- try (runHandler (runReaderT m pool))
   case result of
-    Left e  -> throwError err500 { errBody = LBS8.pack (show e) }
-    Right a -> pure a
+    Right r -> pure r
+    Left (e :: SomeException)
+      | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
+      | otherwise -> do
+          hPutStrLn stderr ("triage-server: " <> show e)
+          pure (Left internalError)
 
--- Generic response envelope for mutations with an outcome to discriminate
--- in-body, per error-vs-outcome-mapping/servant-implementation.md section
--- 4 — one shared shape ({"outcome", "detail"}), not a bespoke response
--- DTO per endpoint. envelopeEmpty is for outcome constructors with no
--- payload — "detail" is always present as a key, its value null rather
--- than the key being omitted.
-envelope :: ToJSON dto => Text -> dto -> Value
-envelope tag detail = object ["outcome" .= tag, "detail" .= toJSON detail]
+type Range a = QueryParam' '[Required, Strict] "from" UTCTime
+            :> QueryParam' '[Required, Strict] "to" UTCTime
+            :> a
 
-envelopeEmpty :: Text -> Value
-envelopeEmpty tag = object ["outcome" .= tag, "detail" .= Null]
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DOCTORS
+-- ═══════════════════════════════════════════════════════════════════════════
 
--- For createAvailableSlot's IO (Either ServiceError SlotCreationOutcome)
--- shape (SlotCreated AvailableSlot | SlotConflict), sharing
--- handleServiceError for the Left case like runMatchOutcome. Per checkwaitlist-not-an-
--- endpoint/servant-implementation.md section 4's own resolved design
--- question, this deliberately does NOT also invoke matchWaitlistToSlot —
--- the response reflects only SlotCreationOutcome, full stop.
-runSlotCreation :: IO (Either ServiceError SlotCreationOutcome) -> AppM Value
-runSlotCreation action = do
-  result <- liftIO action
-  case result of
-    Left se                  -> handleServiceError se
-    Right (SlotCreated slot) -> pure (envelope "slotCreated" (fromDomainAvailableSlot slot))
-    Right SlotConflict       -> pure (envelopeEmpty "slotConflict")
+type DoctorsAPI = "doctors" :>
+  (    ReqBody '[JSON] CreateDoctorRequest :> Post '[JSON] (Answer "createDoctor")
+  :<|> Get '[JSON] (Answer "fetchDoctors")
+  :<|> Capture "doctorId" DoctorIdDTO :> Get '[JSON] (Answer "fetchDoctor")
+  )
 
--- IntakeRequestId (Domain.hs) has no ToJSON instance of its own (Domain.hs
--- has no serialization awareness of any kind), so RequestNotFound's bare
--- id can't go straight into envelope's generic dto parameter. Wrapped in a
--- small anonymous object instead, same UUID.toText convention as every
--- Transport.hs DTO field standing in for a bare id.
-requestIdDetail :: IntakeRequestId -> Value
-requestIdDetail (IntakeRequestId rid) = object ["requestId" .= UUID.toText rid]
+doctorsServer :: ServerT DoctorsAPI AppM
+doctorsServer = createDoctorHandler :<|> fetchDoctorsHandler :<|> fetchDoctorHandler
+  where
+    createDoctorHandler req =
+      withPool (\p -> createDoctor p req.name) >>= answer . ok . fromDomainDoctor
+    fetchDoctorsHandler =
+      withPool fetchDoctors >>= answer . ok . map fromDomainDoctor
+    fetchDoctorHandler doctorIdDTO =
+      withPool (\p -> fetchDoctor p (toDomainDoctorId doctorIdDTO))
+        >>= answered (ok . fromDomainDoctor)
 
--- Exhaustive match, no wildcard — each ServiceError renders the same way
--- regardless of which mutation produced it (servant-implementation.md
--- section 4's own reasoning for why this is a tag/toDetail-less
--- exhaustive match, not per-call-site onError continuations).
--- RequestInWrongState carries the request as it is, rendered as its
--- IntakeRequestDTO — the same detail requestMovedOn uses. PersistenceDecodeError is the one constructor
--- NOT rendered via envelope — a decode failure is outside the domain's
--- error vocabulary (error-vs-outcome-mapping's own 500 case), same
--- plain-text-`show` treatment as runRead's Left case above, since
--- DecodeError has no ToJSON instance either.
-handleServiceError :: ServiceError -> AppM Value
-handleServiceError (PersistenceDecodeError e)     = throwError err500 { errBody = LBS8.pack (show e) }
-handleServiceError (RequestNotFound rid)          = pure (envelope "requestNotFound" (requestIdDetail rid))
-handleServiceError (RequestInWrongState current) = pure (envelope "requestInWrongState" (fromDomainIntakeRequest current))
-handleServiceError (HealthcareServiceNotFound (HealthcareServiceId sid)) =
-  pure (envelope "healthcareServiceNotFound" (object ["healthcareServiceId" .= UUID.toText sid]))
-handleServiceError (DoctorNotFound (DoctorId did)) =
-  pure (envelope "doctorNotFound" (object ["doctorId" .= UUID.toText did]))
-handleServiceError (PatientNotFound (PatientId pid)) =
-  pure (envelope "patientNotFound" (object ["patientId" .= UUID.toText pid]))
+-- ═══════════════════════════════════════════════════════════════════════════
+-- PATIENTS
+-- ═══════════════════════════════════════════════════════════════════════════
 
--- For shape (c) proper: Service.hs mutations returning
--- IO (Either ServiceError (TransitionOutcome a)). MovedOn — the request had
--- already moved on to a later state — is the same "requestMovedOn"
--- outcome for every caller, with the request as it is now as its detail.
--- The success side genuinely varies per call site (the value's own DTO
--- conversion, and the success outcome's tag name) while the error side
--- never does — handleServiceError above covers every constructor — so this
--- takes a success tag and a toDetail conversion, not onSuccess/onError
--- continuations (servant-implementation.md section 4's own reasoning).
--- For a Service.hs operation that can fail but has no race to report
--- (submitIntakeRequest): same envelope as runService, without TransitionOutcome.
-runEnveloped :: ToJSON dto => Text -> IO (Either ServiceError a) -> (a -> dto) -> AppM Value
-runEnveloped successTag action toDetail = do
-  result <- liftIO action
-  case result of
-    Left se -> handleServiceError se
-    Right a -> pure (envelope successTag (toDetail a))
+type PatientsAPI = "patients" :>
+  (    ReqBody '[JSON] CreatePatientRequest :> Post '[JSON] (Answer "createPatient")
+  :<|> Get '[JSON] (Answer "fetchPatients")
+  :<|> Capture "patientId" PatientIdDTO :> Get '[JSON] (Answer "fetchPatient")
+  )
 
-runService :: ToJSON dto => Text -> IO (Either ServiceError (TransitionOutcome a)) -> (a -> dto) -> AppM Value
-runService successTag action toDetail = do
-  result <- liftIO action
-  case result of
-    Left se                 -> handleServiceError se
-    Right (Transitioned a)  -> pure (envelope successTag (toDetail a))
-    Right (MovedOn current) -> pure (envelope "requestMovedOn" (fromDomainIntakeRequest current))
+patientsServer :: ServerT PatientsAPI AppM
+patientsServer = createPatientHandler :<|> fetchPatientsHandler :<|> fetchPatientHandler
+  where
+    createPatientHandler req =
+      withPool (\p -> createPatient p req.name) >>= answer . ok . fromDomainPatient
+    fetchPatientsHandler =
+      withPool fetchPatients >>= answer . ok . map fromDomainPatient
+    fetchPatientHandler patientIdDTO =
+      withPool (\p -> fetchPatient p (toDomainPatientId patientIdDTO))
+        >>= answered (ok . fromDomainPatient)
 
--- For matchAcceptedIntakeRequestToSlot's IO (Either ServiceError
--- MatchOutcome) shape — verified against Service.hs directly: MatchOutcome
--- is Matched AppointedIntakeRequest | NoEligibleRequest | RequestIneligible
--- | SlotAlreadyClaimed | RequestMovedOn IntakeRequest. Exhaustive match, no
--- wildcard, same discipline as handleServiceError above — Matched and
--- RequestMovedOn carry a payload, the other three are envelopeEmpty.
-runMatchOutcome :: IO (Either ServiceError MatchOutcome) -> AppM Value
-runMatchOutcome action = do
-  result <- liftIO action
-  case result of
-    Left se                        -> handleServiceError se
-    Right (Matched appointed)      -> pure (envelope "matched" (fromDomainAppointedIntakeRequest appointed))
-    Right NoEligibleRequest        -> pure (envelopeEmpty "noEligibleRequest")
-    Right RequestIneligible        -> pure (envelopeEmpty "requestIneligible")
-    Right SlotAlreadyClaimed       -> pure (envelopeEmpty "slotAlreadyClaimed")
-    Right (RequestMovedOn current) -> pure (envelope "requestMovedOn" (fromDomainIntakeRequest current))
+-- ═══════════════════════════════════════════════════════════════════════════
+-- HEALTHCARE SERVICES
+-- ═══════════════════════════════════════════════════════════════════════════
 
--- ═══════════════════════════════════════════════════════════════════════
--- DOCTOR
--- All three operations are shape (a) (bare IO, no Either) — verified
--- against Service.hs directly: createDoctor :: ConnectionPool -> Text ->
--- IO Doctor, fetchDoctor :: ConnectionPool -> DoctorId -> IO (Maybe
--- Doctor), fetchDoctors :: ConnectionPool -> IO [Doctor]. No envelope, no
--- runService/runRead here — just call Service.hs, convert through
--- Transport.hs, return the DTO directly as the 200 body.
---
--- getDoctorHandler's 404 is a genuine exception to error-vs-outcome-
--- mapping's usual "200, discriminated in-body" rule: fetchDoctor's
--- return type is bare Maybe Doctor, with no ServiceError/outcome-type
--- layer at all to discriminate a 200 body around. Unlike RequestNotFound
--- on the mutation side (which has that layer, via ServiceError, and
--- stays 200), there is no comparable envelope here to put "not found"
--- inside — 404 is the only honest option once Nothing comes back.
--- ═══════════════════════════════════════════════════════════════════════
+type HealthcareServicesAPI = "healthcare-services" :>
+  (    ReqBody '[JSON] CreateHealthcareServiceRequest
+         :> Post '[JSON] (Answer "createHealthcareService")
+  :<|> Get '[JSON] (Answer "fetchHealthcareServices")
+  :<|> Capture "healthcareServiceId" HealthcareServiceIdDTO
+         :> Get '[JSON] (Answer "fetchHealthcareService")
+  )
 
-type DoctorAPI =
-       ReqBody '[JSON] CreateDoctorRequest :> Post '[JSON] DoctorDTO
-  :<|> Get '[JSON] [DoctorDTO]
-  :<|> Capture "id" UUID :> Get '[JSON] DoctorDTO
+healthcareServicesServer :: ServerT HealthcareServicesAPI AppM
+healthcareServicesServer =
+  createHealthcareServiceHandler :<|> fetchHealthcareServicesHandler :<|> fetchHealthcareServiceHandler
+  where
+    createHealthcareServiceHandler req =
+      withPool (\p -> createHealthcareService p req.name (toDomainDuration req.duration))
+        >>= answer . ok . fromDomainHealthcareService
+    fetchHealthcareServicesHandler =
+      withPool fetchHealthcareServices >>= answered (ok . map fromDomainHealthcareService)
+    fetchHealthcareServiceHandler serviceId =
+      withPool (\p -> fetchHealthcareService p (toDomainHealthcareServiceId serviceId))
+        >>= answered (ok . fromDomainHealthcareService)
 
-createDoctorHandler :: CreateDoctorRequest -> AppM DoctorDTO
-createDoctorHandler req = do
-  pool   <- ask
-  doctor <- liftIO (Service.createDoctor pool req.name)
-  pure (fromDomainDoctor doctor)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- INTAKE REQUESTS
+-- ═══════════════════════════════════════════════════════════════════════════
 
-listDoctorsHandler :: AppM [DoctorDTO]
-listDoctorsHandler = do
-  pool    <- ask
-  doctors <- liftIO (Service.fetchDoctors pool)
-  pure (map fromDomainDoctor doctors)
+type IntakeRequestsAPI = "intake-requests" :>
+  (    ReqBody '[JSON] SubmitIntakeRequestRequest :> Post '[JSON] (Answer "submitIntakeRequest")
+  :<|> "submitted" :> Get '[JSON] (Answer "fetchSubmittedIntakeRequests")
+  :<|> "accepted" :> Get '[JSON] (Answer "fetchAcceptedIntakeRequests")
+  :<|> "appointed" :> Get '[JSON] (Answer "fetchAppointedIntakeRequests")
+  :<|> "rejected" :> Range (Get '[JSON] (Answer "fetchRejectedIntakeRequestsByRejectedAt"))
+  :<|> "withdrawn" :> Range (Get '[JSON] (Answer "fetchWithdrawnIntakeRequestsByWithdrawnAt"))
+  :<|> "stale" :> Range (Get '[JSON] (Answer "fetchStaleIntakeRequestsByStaleAt"))
+  :<|> "closed" :> Range (Get '[JSON] (Answer "fetchClosedIntakeRequestsByStart"))
+  :<|> Capture "intakeRequestId" IntakeRequestIdDTO :>
+         (    Get '[JSON] (Answer "fetchIntakeRequest")
+         :<|> "accept" :> ReqBody '[JSON] AcceptSubmittedIntakeRequestRequest
+                :> Post '[JSON] (Answer "acceptSubmittedIntakeRequest")
+         :<|> "reject" :> ReqBody '[JSON] RejectSubmittedIntakeRequestRequest
+                :> Post '[JSON] (Answer "rejectSubmittedIntakeRequest")
+         :<|> "match-to-slot" :> ReqBody '[JSON] MatchAcceptedIntakeRequestToSlotRequest
+                :> Post '[JSON] (Answer "matchAcceptedIntakeRequestToSlot")
+         :<|> "withdraw" :> ReqBody '[JSON] WithdrawIntakeRequestRequest
+                :> Post '[JSON] (Answer "withdrawIntakeRequest")
+         :<|> "mark-stale" :> Post '[JSON] (Answer "markAcceptedIntakeRequestStale")
+         :<|> "close" :> ReqBody '[JSON] CloseAppointedIntakeRequestRequest
+                :> Post '[JSON] (Answer "closeAppointedIntakeRequest")
+         )
+  )
 
-getDoctorHandler :: UUID -> AppM DoctorDTO
-getDoctorHandler uid = do
-  pool    <- ask
-  mDoctor <- liftIO (Service.fetchDoctor pool (DoctorId uid))
-  case mDoctor of
-    Just doctor -> pure (fromDomainDoctor doctor)
-    Nothing     -> throwError err404
+intakeRequestsServer :: ServerT IntakeRequestsAPI AppM
+intakeRequestsServer =
+       submitHandler
+  :<|> withPool fetchSubmittedIntakeRequests
+         `readWith` map fromDomainSubmittedIntakeRequest
+  :<|> withPool fetchAcceptedIntakeRequests
+         `readWith` map fromDomainTriagedIntakeRequest
+  :<|> withPool fetchAppointedIntakeRequests
+         `readWith` map fromDomainAppointedIntakeRequest
+  :<|> (\from to -> withPool (\p -> fetchRejectedIntakeRequestsByRejectedAt p from to)
+         `readWith` map fromDomainRejectedIntakeRequest)
+  :<|> (\from to -> withPool (\p -> fetchWithdrawnIntakeRequestsByWithdrawnAt p from to)
+         `readWith` map fromDomainWithdrawnIntakeRequest)
+  :<|> (\from to -> withPool (\p -> fetchStaleIntakeRequestsByStaleAt p from to)
+         `readWith` map fromDomainStaleIntakeRequest)
+  :<|> (\from to -> withPool (\p -> fetchClosedIntakeRequestsByStart p from to)
+         `readWith` map fromDomainClosedIntakeRequest)
+  :<|> byId
+  where
+    readWith :: ToJSON dto => AppM (Either ServiceError a) -> (a -> dto) -> AppM (Answer useCase)
+    readWith fetch render = fetch >>= answered (ok . render)
 
-doctorServer :: ServerT DoctorAPI AppM
-doctorServer = createDoctorHandler :<|> listDoctorsHandler :<|> getDoctorHandler
+    submitHandler req = do
+      recordedAt <- now
+      withPool (\p -> submitIntakeRequest p (toDomainPatientId req.patientId) req.narrative recordedAt)
+        >>= answered (ok . fromDomainSubmittedIntakeRequest)
 
--- ═══════════════════════════════════════════════════════════════════════
--- PATIENT
--- Mirrors Doctor exactly: createPatient/fetchPatient/fetchPatients are
--- the same three shape-(a) operations, verified against Service.hs
--- directly (createPatient :: ConnectionPool -> Text -> IO Patient;
--- fetchPatient :: ConnectionPool -> PatientId -> IO (Maybe Patient);
--- fetchPatients :: ConnectionPool -> IO [Patient]) — same reasoning
--- throughout, not restated.
--- ═══════════════════════════════════════════════════════════════════════
+    byId requestIdDTO =
+           fetchHandler
+      :<|> acceptHandler
+      :<|> rejectHandler
+      :<|> matchToSlotHandler
+      :<|> withdrawHandler
+      :<|> markStaleHandler
+      :<|> closeHandler
+      where
+        requestId = toDomainIntakeRequestId requestIdDTO
 
-type PatientAPI =
-       ReqBody '[JSON] CreatePatientRequest :> Post '[JSON] PatientDTO
-  :<|> Get '[JSON] [PatientDTO]
-  :<|> Capture "id" UUID :> Get '[JSON] PatientDTO
+        fetchHandler =
+          withPool (\p -> fetchIntakeRequest p requestId)
+            >>= answered (ok . fromDomainIntakeRequest)
 
-createPatientHandler :: CreatePatientRequest -> AppM PatientDTO
-createPatientHandler req = do
-  pool    <- ask
-  patient <- liftIO (Service.createPatient pool req.name)
-  pure (fromDomainPatient patient)
+        acceptHandler req = do
+          recordedAt <- now
+          withPool (\p -> acceptSubmittedIntakeRequest p requestId
+                      (toDomainHealthcareServiceId req.healthcareServiceId)
+                      (toDomainIntakeRequestPriority req.priority)
+                      (toDomainDoctorRequirement req.doctorRequirement)
+                      recordedAt)
+            >>= answered (renderTransitionOutcome fromDomainTriagedIntakeRequest)
 
-listPatientsHandler :: AppM [PatientDTO]
-listPatientsHandler = do
-  pool     <- ask
-  patients <- liftIO (Service.fetchPatients pool)
-  pure (map fromDomainPatient patients)
+        rejectHandler req = do
+          recordedAt <- now
+          withPool (\p -> rejectSubmittedIntakeRequest p requestId recordedAt req.rejectionReason)
+            >>= answered (renderTransitionOutcome fromDomainRejectedIntakeRequest)
 
-getPatientHandler :: UUID -> AppM PatientDTO
-getPatientHandler uid = do
-  pool     <- ask
-  mPatient <- liftIO (Service.fetchPatient pool (PatientId uid))
-  case mPatient of
-    Just patient -> pure (fromDomainPatient patient)
-    Nothing      -> throwError err404
+        matchToSlotHandler req =
+          withPool (\p -> matchAcceptedIntakeRequestToSlot p requestId (toDomainSlotId req.slotId))
+            >>= answered renderMatchOutcome
 
-patientServer :: ServerT PatientAPI AppM
-patientServer = createPatientHandler :<|> listPatientsHandler :<|> getPatientHandler
+        withdrawHandler req = do
+          recordedAt <- now
+          withPool (\p -> withdrawIntakeRequest p requestId recordedAt req.withdrawalNote)
+            >>= answered (renderTransitionOutcome fromDomainWithdrawnIntakeRequest)
 
--- ═══════════════════════════════════════════════════════════════════════
--- HEALTHCARE SERVICE
--- createHealthcareServiceHandler is shape (a) — verified against
--- Service.hs directly: createHealthcareService :: ConnectionPool -> Text
--- -> Duration -> IO HealthcareService, bare IO, no Either. Mirrors
--- createDoctorHandler exactly, plus unwrapping the request DTO's
--- duration field through toDomainDuration (total — see Transport.hs's own
--- DURATION section).
---
--- listHealthcareServicesHandler/getHealthcareServiceHandler are shape (b)
--- — verified against Service.hs directly: fetchHealthcareServices ::
--- ConnectionPool -> IO (Either DecodeError [HealthcareService]);
--- fetchHealthcareService :: ConnectionPool -> HealthcareServiceId -> IO
--- (Either DecodeError (Maybe HealthcareService)) — a decode failure
--- (outer Either) and a missing row (inner Maybe) are two independent,
--- layered possibilities, unlike Doctor/Patient's bare Maybe. runRead
--- narrows away the outer DecodeError layer (500 on Left, per MIDDLEWARE
--- above), leaving a plain Maybe HealthcareService to pattern-match on —
--- same 404-on-Nothing shape as getDoctorHandler, just with runRead
--- handling the outer layer first.
--- ═══════════════════════════════════════════════════════════════════════
+        markStaleHandler = do
+          recordedAt <- now
+          withPool (\p -> markAcceptedIntakeRequestStale p requestId recordedAt)
+            >>= answered (renderTransitionOutcome fromDomainStaleIntakeRequest)
 
-type HealthcareServiceAPI =
-       ReqBody '[JSON] CreateHealthcareServiceRequest :> Post '[JSON] HealthcareServiceDTO
-  :<|> Get '[JSON] [HealthcareServiceDTO]
-  :<|> Capture "id" UUID :> Get '[JSON] HealthcareServiceDTO
+        closeHandler req = do
+          recordedAt <- now
+          withPool (\p -> closeAppointedIntakeRequest p requestId
+                      (toDomainCloseReasonRequest recordedAt req.closeReason))
+            >>= answered (renderTransitionOutcome fromDomainClosedIntakeRequest)
 
-createHealthcareServiceHandler :: CreateHealthcareServiceRequest -> AppM HealthcareServiceDTO
-createHealthcareServiceHandler req = do
-  pool    <- ask
-  service <- liftIO (Service.createHealthcareService pool req.name (toDomainDuration req.duration))
-  pure (fromDomainHealthcareService service)
+-- ═══════════════════════════════════════════════════════════════════════════
+-- AVAILABLE SLOTS
+-- ═══════════════════════════════════════════════════════════════════════════
 
-listHealthcareServicesHandler :: AppM [HealthcareServiceDTO]
-listHealthcareServicesHandler = do
-  pool     <- ask
-  services <- runRead (Service.fetchHealthcareServices pool)
-  pure (map fromDomainHealthcareService services)
+type AvailableSlotsAPI = "available-slots" :>
+  (    ReqBody '[JSON] CreateAvailableSlotRequest :> Post '[JSON] (Answer "createAvailableSlot")
+  :<|> Capture "slotId" SlotIdDTO :>
+         (    Get '[JSON] (Answer "fetchAvailableSlot")
+         :<|> "match-by-priority" :> Post '[JSON] (Answer "matchAvailableSlotByPriority")
+         )
+  )
 
-getHealthcareServiceHandler :: UUID -> AppM HealthcareServiceDTO
-getHealthcareServiceHandler uid = do
-  pool     <- ask
-  mService <- runRead (Service.fetchHealthcareService pool (HealthcareServiceId uid))
-  case mService of
-    Just service -> pure (fromDomainHealthcareService service)
-    Nothing      -> throwError err404
+availableSlotsServer :: ServerT AvailableSlotsAPI AppM
+availableSlotsServer = createHandler :<|> byId
+  where
+    createHandler req =
+      withPool (\p -> createAvailableSlot p
+                  (toDomainDoctorId req.doctorId)
+                  (toDomainHealthcareServiceId req.healthcareServiceId)
+                  req.start)
+        >>= answered renderSlotCreationOutcome
 
-healthcareServiceServer :: ServerT HealthcareServiceAPI AppM
-healthcareServiceServer =
-  createHealthcareServiceHandler :<|> listHealthcareServicesHandler :<|> getHealthcareServiceHandler
+    byId slotIdDTO = fetchHandler :<|> matchByPriorityHandler
+      where
+        domainSlotId = toDomainSlotId slotIdDTO
+        fetchHandler =
+          withPool (\p -> fetchAvailableSlot p domainSlotId) >>= answered renderAvailableSlotRead
+        matchByPriorityHandler =
+          withPool (\p -> matchAvailableSlotByPriority p domainSlotId)
+            >>= answered renderPriorityMatchOutcome
 
--- ═══════════════════════════════════════════════════════════════════════
--- SLOT
--- createAvailableSlotHandler — verified against Service.hs directly:
--- createAvailableSlot :: ConnectionPool -> DoctorId -> HealthcareServiceId
--- -> UTCTime -> IO (Either ServiceError SlotCreationOutcome). Service.hs
--- mints the SlotId and takes the duration from the stored
--- HealthcareService, so the handler only passes the caller's three facts
--- through; an unknown service comes back as HealthcareServiceNotFound via
--- handleServiceError. The response is the {"outcome", "detail"} envelope via
--- runSlotCreation, not a bare AvailableSlotDTO — and per
--- match-by-priority-not-an-endpoint's already-settled resolution, this does
--- NOT also call matchWaitlistToSlot; the response reflects only this
--- call's own SlotCreationOutcome.
---
--- listAvailableSlotsHandler is shape (b) — verified against Service.hs
--- directly: fetchAvailableSlots :: ConnectionPool -> UTCTime -> UTCTime ->
--- Maybe DoctorId -> Maybe HealthcareServiceId -> IO (Either DecodeError
--- [AvailableSlot]) — a required date range plus two optional filters, not
--- a bare no-argument list the way listDoctorsHandler/
--- listPatientsHandler are. The route needs two required query params
--- (start/end) and two optional ones (doctorId/healthcareServiceId,
--- plain UUID on the wire per opaque-uuid-ids, converted to
--- Maybe DoctorId/Maybe HealthcareServiceId in the handler, same
--- Capture-then-wrap pattern as getDoctorHandler). Plain list of
--- AvailableSlotDTO as the 200 body via runRead — no envelope, since reads
--- never get the outcome envelope (servant-implementation.md section 4's
--- closing note: "Reads have no equivalent envelope").
--- ═══════════════════════════════════════════════════════════════════════
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DOCTOR CALENDAR
+-- ═══════════════════════════════════════════════════════════════════════════
 
-type SlotAPI =
-       ReqBody '[JSON] CreateAvailableSlotRequest :> Post '[JSON] Value
-  :<|> QueryParam' '[Required, Strict] "start" UTCTime
-       :> QueryParam' '[Required, Strict] "end" UTCTime
-       :> QueryParam "doctorId" UUID
-       :> QueryParam "healthcareServiceId" UUID
-       :> Get '[JSON] [AvailableSlotDTO]
+type DoctorCalendarAPI = "doctor-calendar" :>
+  Range (Get '[JSON] (Answer "fetchDoctorCalendarEntriesOverlapping"))
 
-createAvailableSlotHandler :: CreateAvailableSlotRequest -> AppM Value
-createAvailableSlotHandler req = do
-  pool <- ask
-  runSlotCreation
-    (Service.createAvailableSlot pool (DoctorId req.doctorId) (HealthcareServiceId req.healthcareServiceId) req.start)
+doctorCalendarServer :: ServerT DoctorCalendarAPI AppM
+doctorCalendarServer from to =
+  withPool (\p -> fetchDoctorCalendarEntriesOverlapping p from to)
+    >>= answered (ok . map fromDomainDoctorCalendarEntry)
 
-listAvailableSlotsHandler :: UTCTime -> UTCTime -> Maybe UUID -> Maybe UUID -> AppM [AvailableSlotDTO]
-listAvailableSlotsHandler rangeStart rangeEnd mDoctorUUID mServiceUUID = do
-  pool  <- ask
-  slots <- runRead
-    (Service.fetchAvailableSlots pool rangeStart rangeEnd
-      (DoctorId <$> mDoctorUUID) (HealthcareServiceId <$> mServiceUUID))
-  pure (map fromDomainAvailableSlot slots)
-
-slotServer :: ServerT SlotAPI AppM
-slotServer = createAvailableSlotHandler :<|> listAvailableSlotsHandler
-
--- ═══════════════════════════════════════════════════════════════════════
--- INTAKE REQUEST
--- Fifth slice: loosens fetchAppointedIntakeRequests's range to optional
--- and adds fetchClosedIntakeRequests (GET /intake-requests/closed) with
--- the deliberately opposite default, a REQUIRED range — see each
--- handler's own comment below for why. Same section/route type extended
--- across passes rather than a new one.
---
--- Routing ambiguity, resolved by ordering: "waitlist"/"submitted"/
--- "appointed"/"closed" are all exactly one path segment under
--- /intake-requests, the same shape as the bare Capture "id" UUID :> Get
--- route added below — a GET to /intake-requests/waitlist (or /submitted,
--- /closed) could otherwise be attempted against the capture branch first
--- (parsing the literal segment as a UUID and failing) instead of falling
--- through to the literal branch. Fixed the standard way: IntakeRequestAPI's
--- type lists all four literal-segment GETs before the bare
--- Capture-then-Get route, and intakeRequestServer's handler list is kept
--- in that exact same order (positional correspondence with the type, per
--- servant-implementation.md section 2's own reasoning for why this file
--- groups per-resource in the first place). The other Capture-based
--- routes (accept/reject/match/mark-stale/close as a
--- mutation-suffix, not to be confused with this section's new "closed"
--- read) don't share this ambiguity regardless of ordering — each has its
--- own distinguishing trailing literal segment, so they're a different
--- path *shape* than the bare single-capture GET.
---
--- fetchIntakeWaitlistHandler/fetchSubmittedIntakeRequestsHandler/
--- fetchAppointedIntakeRequestsHandler/fetchClosedIntakeRequestsHandler/
--- fetchIntakeRequestHandler are all shape (b) — runRead, plain DTO/list
--- as the 200 body, no envelope (reads never get the outcome envelope,
--- same as every other read in this file, even though IntakeRequestDTO is
--- itself a tagged multi-case type — no different in principle from
--- submitIntakeRequestHandler already returning a bare IntakeRequestDTO).
---
--- fetchIntakeRequestHandler mirrors getHealthcareServiceHandler's own
--- nested-Either/Maybe pattern — verified against Service.hs directly:
--- fetchIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either
--- DecodeError (Maybe IntakeRequest)). runRead narrows away the outer
--- DecodeError (500 on Left), leaving a plain Maybe IntakeRequest to
--- pattern-match on — 404 on Nothing.
---
--- fetchSubmittedIntakeRequestsHandler — verified against Service.hs
--- directly: fetchSubmittedIntakeRequests :: ConnectionPool -> IO (Either
--- DecodeError [SubmittedIntakeRequest]). No standalone
--- SubmittedIntakeRequestDTO/conversion exists in Transport.hs (same gap
--- as submitIntakeRequestHandler's own return value above), so each
--- element is wrapped via the IntakeRequest sum's own Submitted
--- constructor then fromDomainIntakeRequest — identical DTO-reachability
--- workaround to fetchIntakeWaitlistHandler's own Accepted-wrapping,
--- applied to Submitted instead.
---
--- fetchIntakeWaitlistHandler — verified against Service.hs directly:
--- fetchIntakeWaitlist :: ConnectionPool -> IO (Either DecodeError
--- [TriagedIntakeRequest]), NOT the seven-case IntakeRequest. No standalone
--- TriagedIntakeRequest DTO/conversion exists in Transport.hs (same gap
--- already worked around in acceptSubmittedIntakeRequestHandler above),
--- so each waitlist element
--- is wrapped via the IntakeRequest sum's own Accepted constructor then
--- fromDomainIntakeRequest, same DTO-reachability path, applied per-element
--- via map instead of to a single value.
---
--- fetchAppointedIntakeRequestsHandler — verified against Service.hs
--- directly: fetchAppointedIntakeRequests :: ConnectionPool -> Maybe
--- UTCTime -> Maybe UTCTime -> Maybe DoctorId -> IO (Either DecodeError
--- [AppointedIntakeRequest]) — range loosened to optional this pass (was
--- required): unlike fetchAvailableSlots (required; slots accumulate
--- unboundedly forever) or fetchClosedIntakeRequests below (required;
--- closed requests are permanently terminal, so that set only grows),
--- the live appointed set is naturally bounded — once a request closes,
--- it leaves this set entirely, so "everyone currently appointed,
--- unbounded" is a reasonable, non-explosive query. Both start/end are
--- now plain QueryParam (optional), passed straight through as
--- Maybe UTCTime — no more forced-required unwrapping. Doctor filter
--- stays optional as before. This one DOES have a standalone DTO
--- (AppointedIntakeRequestDTO, built during the mutations slice for
--- runMatchOutcome/reuse) — no wrapping workaround needed, used directly
--- via fromDomainAppointedIntakeRequest.
---
--- fetchClosedIntakeRequestsHandler — verified against Service.hs
--- directly: fetchClosedIntakeRequests :: ConnectionPool -> UTCTime ->
--- UTCTime -> Maybe DoctorId -> IO (Either DecodeError [IntakeRequest]) —
--- REQUIRED range, the deliberately opposite default from
--- fetchAppointedIntakeRequestsHandler's own loosening just above: closed
--- requests are permanently terminal (docs/decisions.md's settled
--- no-delete-on-consumption reasoning — nothing ever leaves this state),
--- so this set only grows, forever, for the entire lifetime of the
--- practice — the same unbounded-growth justification fetchAvailableSlots's
--- required range already established, applying even more strongly here.
--- Returns [IntakeRequest] (via Service.hs, ultimately
--- Persistence.toDomainIntakeRequest), not a new speculative
--- "ClosedIntakeRequest" Domain type — Closed is just one case of the
--- seven-case IntakeRequest, and IntakeRequestDTO/fromDomainIntakeRequest
--- already exist as its full wire representation, so this reuses them
--- directly with no wrapping workaround needed (same reason
--- fetchAppointedIntakeRequestsHandler above needs none).
---
--- submitIntakeRequestHandler — verified against Service.hs directly:
--- submitIntakeRequest :: ConnectionPool -> PatientId -> Text -> UTCTime ->
--- IO (Either ServiceError SubmittedIntakeRequest): an unknown patient is
--- PatientNotFound, so the route answers with the {"outcome", "detail"}
--- envelope ("submitted" on success) via runEnveloped. There is no race to
--- report (nothing guards a fresh insert). No standalone SubmittedIntakeRequestDTO exists in
--- Transport.hs — SubmittedIntakeRequest is only ever one case
--- ("submitted") of the seven-tag IntakeRequestDTO sum, reached by
--- wrapping the Domain value in the IntakeRequest sum's own Submitted
--- constructor and going through fromDomainIntakeRequest, the only
--- exported conversion (the internal submittedFields/toDomainSubmitted
--- helper pair Transport.hs uses for this isn't exported).
---
--- acceptSubmittedIntakeRequestHandler/rejectSubmittedIntakeRequestHandler
--- are shape (c) proper — verified against Service.hs directly:
--- acceptSubmittedIntakeRequest :: ConnectionPool -> IntakeRequestId ->
--- HealthcareServiceId -> IntakeRequestPriority -> UTCTime -> IO (Either
--- ServiceError TriagedIntakeRequest); rejectSubmittedIntakeRequest ::
--- ConnectionPool -> IntakeRequestId -> UTCTime -> Text -> IO (Either
--- ServiceError IntakeRequest) — note the two return different Domain
--- types (TriagedIntakeRequest vs. the six/seven-case IntakeRequest), so
--- their runService toDetail conversions differ: accept's success value
--- is wrapped via the IntakeRequest sum's own Accepted constructor then
--- fromDomainIntakeRequest (mirroring submit's own DTO-reachability path
--- above, since TriagedIntakeRequest has no standalone DTO conversion
--- either); reject's success value already IS an IntakeRequest, so
--- fromDomainIntakeRequest applies directly. Both getCurrentTime for
--- their own triagedAt/rejectedAt — never a client-supplied timestamp
--- (servant-implementation.md section 5).
---
--- acceptSubmittedIntakeRequestHandler has one more decode step neither
--- Doctor/Patient/HealthcareService/Slot needed: req.priority
--- (IntakeRequestPriorityDTO) converts to Domain's IntakeRequestPriority
--- via toDomainIntakeRequestPriority, which is Either TransportError, not
--- total (RoutineWithin's from <= to invariant can fail). Per
--- error-vs-outcome-mapping, this is a 400, not a 500 or a 200-with-
--- envelope: the request never reached a state where Service.hs could
--- evaluate it at all, rejected before any Service.hs function is called
--- — so this is checked before ever touching the pool/Service.hs, same
--- category as a malformed body, distinct from runRead/runService's own
--- Left cases (which both represent Service.hs/Persistence.hs having
--- already run).
---
--- matchAcceptedIntakeRequestToSlotHandler is MatchOutcome-shaped —
--- verified against Service.hs directly: matchAcceptedIntakeRequestToSlot
--- :: ConnectionPool -> IntakeRequestId -> SlotId -> IO (Either
--- ServiceError MatchOutcome), wrapped via the new runMatchOutcome (see
--- MIDDLEWARE above). The request body is MatchIntakeRequestRequest — the
--- slot's id only. It used to be a whole AvailableSlotDTO, which let the
--- appointment copy a client-sent doctor/start/duration while only the id
--- was used to delete the slot; Service.hs now matches against the stored
--- slot instead.
---
--- markIntakeRequestStaleHandler has no request body — it needs nothing
--- beyond the path id. Verified against Service.hs directly:
--- markIntakeRequestStale :: ConnectionPool -> IntakeRequestId -> UTCTime
--- -> IO (Either ServiceError TriagedIntakeRequest). The row's persisted
--- state afterwards is 'stale' — TriagedIntakeRequest is the return type
--- only because that's the data left unchanged by the transition (Stale
--- embeds a full TriagedIntakeRequest, same as Accepted does), so wrapping
--- via Accepted would render "type": "accepted" for a row that is now
--- stale. This wraps via the IntakeRequest sum's own Stale constructor
--- instead — Stale triaged staleAt, reusing the same staleAt this handler
--- generated via getCurrentTime and passed to
--- Service.markIntakeRequestStale — then fromDomainIntakeRequest: the same
--- DTO-reachability mechanism as accept, different target constructor.
---
--- closeAppointedIntakeRequestHandler is shape (c) proper too — verified
--- against Service.hs directly: closeAppointedIntakeRequest ::
--- ConnectionPool -> IntakeRequestId -> CloseReason -> IO (Either
--- ServiceError IntakeRequest), success type already IS IntakeRequest, so
--- fromDomainIntakeRequest applies directly, same as reject's own
--- toDetail. getCurrentTime supplies Cancelled's embedded timestamp via
--- closeReasonFromRequest (Transport.hs) — never accepted from the body,
--- same convention as every other mutation's own timestamp.
--- ═══════════════════════════════════════════════════════════════════════
-
-type IntakeRequestAPI =
-       ReqBody '[JSON] SubmitIntakeRequestRequest :> Post '[JSON] Value
-  :<|> "waitlist" :> Get '[JSON] [IntakeRequestDTO]
-  :<|> "submitted" :> Get '[JSON] [IntakeRequestDTO]
-  :<|> "appointed"
-       :> QueryParam "start" UTCTime
-       :> QueryParam "end" UTCTime
-       :> QueryParam "doctorId" UUID
-       :> Get '[JSON] [AppointedIntakeRequestDTO]
-  :<|> "closed"
-       :> QueryParam' '[Required, Strict] "start" UTCTime
-       :> QueryParam' '[Required, Strict] "end" UTCTime
-       :> QueryParam "doctorId" UUID
-       :> Get '[JSON] [IntakeRequestDTO]
-  :<|> Capture "id" UUID :> "accept" :> ReqBody '[JSON] AcceptIntakeRequestRequest :> Post '[JSON] Value
-  :<|> Capture "id" UUID :> "reject" :> ReqBody '[JSON] RejectIntakeRequestRequest :> Post '[JSON] Value
-  :<|> Capture "id" UUID :> "match" :> ReqBody '[JSON] MatchIntakeRequestRequest :> Post '[JSON] Value
-  :<|> Capture "id" UUID :> "mark-stale" :> Post '[JSON] Value
-  :<|> Capture "id" UUID :> "close" :> ReqBody '[JSON] CloseReasonRequestDTO :> Post '[JSON] Value
-  :<|> Capture "id" UUID :> Get '[JSON] IntakeRequestDTO
-
-submitIntakeRequestHandler :: SubmitIntakeRequestRequest -> AppM Value
-submitIntakeRequestHandler req = do
-  pool      <- ask
-  createdAt <- liftIO getCurrentTime
-  runEnveloped "submitted"
-    (Service.submitIntakeRequest pool (PatientId req.patientId) req.narrative createdAt)
-    (fromDomainIntakeRequest . Submitted)
-
-fetchIntakeWaitlistHandler :: AppM [IntakeRequestDTO]
-fetchIntakeWaitlistHandler = do
-  pool     <- ask
-  waitlist <- runRead (Service.fetchIntakeWaitlist pool)
-  pure (map (fromDomainIntakeRequest . Accepted) waitlist)
-
-fetchSubmittedIntakeRequestsHandler :: AppM [IntakeRequestDTO]
-fetchSubmittedIntakeRequestsHandler = do
-  pool      <- ask
-  submitted <- runRead (Service.fetchSubmittedIntakeRequests pool)
-  pure (map (fromDomainIntakeRequest . Submitted) submitted)
-
-fetchAppointedIntakeRequestsHandler
-  :: Maybe UTCTime -> Maybe UTCTime -> Maybe UUID -> AppM [AppointedIntakeRequestDTO]
-fetchAppointedIntakeRequestsHandler mRangeStart mRangeEnd mDoctorUUID = do
-  pool      <- ask
-  appointed <- runRead
-    (Service.fetchAppointedIntakeRequests pool mRangeStart mRangeEnd (DoctorId <$> mDoctorUUID))
-  pure (map fromDomainAppointedIntakeRequest appointed)
-
-fetchClosedIntakeRequestsHandler :: UTCTime -> UTCTime -> Maybe UUID -> AppM [IntakeRequestDTO]
-fetchClosedIntakeRequestsHandler rangeStart rangeEnd mDoctorUUID = do
-  pool   <- ask
-  closed <- runRead
-    (Service.fetchClosedIntakeRequests pool rangeStart rangeEnd (DoctorId <$> mDoctorUUID))
-  pure (map fromDomainIntakeRequest closed)
-
-acceptSubmittedIntakeRequestHandler :: UUID -> AcceptIntakeRequestRequest -> AppM Value
-acceptSubmittedIntakeRequestHandler uid req = do
-  domainPriority <- case toDomainIntakeRequestPriority req.priority of
-    Left err -> throwError err400 { errBody = LBS8.pack (show err) }
-    Right p  -> pure p
-  pool      <- ask
-  triagedAt <- liftIO getCurrentTime
-  runService "accepted"
-    (Service.acceptSubmittedIntakeRequest pool (IntakeRequestId uid)
-      (HealthcareServiceId req.healthcareServiceId) domainPriority
-      (toDomainDoctorRequirement req.doctorRequirement) triagedAt)
-    (fromDomainIntakeRequest . Accepted)
-
-rejectSubmittedIntakeRequestHandler :: UUID -> RejectIntakeRequestRequest -> AppM Value
-rejectSubmittedIntakeRequestHandler uid req = do
-  pool       <- ask
-  rejectedAt <- liftIO getCurrentTime
-  runService "rejected"
-    (Service.rejectSubmittedIntakeRequest pool (IntakeRequestId uid) rejectedAt req.rejectionReason)
-    fromDomainIntakeRequest
-
-matchAcceptedIntakeRequestToSlotHandler :: UUID -> MatchIntakeRequestRequest -> AppM Value
-matchAcceptedIntakeRequestToSlotHandler uid req = do
-  pool <- ask
-  runMatchOutcome
-    (Service.matchAcceptedIntakeRequestToSlot pool (IntakeRequestId uid) (SlotId req.slotId))
-
-markIntakeRequestStaleHandler :: UUID -> AppM Value
-markIntakeRequestStaleHandler uid = do
-  pool    <- ask
-  staleAt <- liftIO getCurrentTime
-  runService "stale"
-    (Service.markIntakeRequestStale pool (IntakeRequestId uid) staleAt)
-    (\triaged -> fromDomainIntakeRequest (Stale triaged staleAt))
-
-closeAppointedIntakeRequestHandler :: UUID -> CloseReasonRequestDTO -> AppM Value
-closeAppointedIntakeRequestHandler uid reasonDto = do
-  pool     <- ask
-  closedAt <- liftIO getCurrentTime
-  runService "closed"
-    (Service.closeAppointedIntakeRequest pool (IntakeRequestId uid) (closeReasonFromRequest reasonDto closedAt))
-    fromDomainIntakeRequest
-
-fetchIntakeRequestHandler :: UUID -> AppM IntakeRequestDTO
-fetchIntakeRequestHandler uid = do
-  pool     <- ask
-  mRequest <- runRead (Service.fetchIntakeRequest pool (IntakeRequestId uid))
-  case mRequest of
-    Just request -> pure (fromDomainIntakeRequest request)
-    Nothing      -> throwError err404
-
-intakeRequestServer :: ServerT IntakeRequestAPI AppM
-intakeRequestServer =
-       submitIntakeRequestHandler
-  :<|> fetchIntakeWaitlistHandler
-  :<|> fetchSubmittedIntakeRequestsHandler
-  :<|> fetchAppointedIntakeRequestsHandler
-  :<|> fetchClosedIntakeRequestsHandler
-  :<|> acceptSubmittedIntakeRequestHandler
-  :<|> rejectSubmittedIntakeRequestHandler
-  :<|> matchAcceptedIntakeRequestToSlotHandler
-  :<|> markIntakeRequestStaleHandler
-  :<|> closeAppointedIntakeRequestHandler
-  :<|> fetchIntakeRequestHandler
-
--- ═══════════════════════════════════════════════════════════════════════
--- CALENDAR
--- The sixth and final resource section — simplest one in the file: one
--- route, shape (b) (IO (Either DecodeError a)), same runRead pattern as
--- every other read here. No new middleware, no new request DTOs.
---
--- fetchCalendarViewHandler — verified against Service.hs directly:
--- fetchCalendarView :: ConnectionPool -> UTCTime -> UTCTime -> Maybe
--- DoctorId -> IO (Either DecodeError [CalendarEntry]) — a required date
--- range plus one optional doctorId filter, the same shape as
--- fetchAppointedIntakeRequests (no healthcareServiceId filter here
--- either — Service.hs's own comment notes this is deliberate: a calendar
--- view is scoped by time and doctor, not by service). CalendarEntryDTO/
--- toDomainCalendarEntry/fromDomainCalendarEntry already existed in
--- Transport.hs from earlier design work (verified, not assumed) —
--- fromDomainCalendarEntry is total, so this needs no decode-failure
--- handling beyond runRead's own outer DecodeError layer.
--- ═══════════════════════════════════════════════════════════════════════
-
-type CalendarAPI =
-       QueryParam' '[Required, Strict] "start" UTCTime
-  :> QueryParam' '[Required, Strict] "end" UTCTime
-  :> QueryParam "doctorId" UUID
-  :> Get '[JSON] [CalendarEntryDTO]
-
-fetchCalendarViewHandler :: UTCTime -> UTCTime -> Maybe UUID -> AppM [CalendarEntryDTO]
-fetchCalendarViewHandler rangeStart rangeEnd mDoctorUUID = do
-  pool    <- ask
-  entries <- runRead
-    (Service.fetchCalendarView pool rangeStart rangeEnd (DoctorId <$> mDoctorUUID))
-  pure (map fromDomainCalendarEntry entries)
-
-calendarServer :: ServerT CalendarAPI AppM
-calendarServer = fetchCalendarViewHandler
-
--- ═══════════════════════════════════════════════════════════════════════
--- TOP-LEVEL API
--- All six resource sections now exist — Doctor/Patient/HealthcareService/
--- Slot/IntakeRequest/Calendar — matching every route in rest.md's settled
--- table. Api.hs's build-out is complete.
--- ═══════════════════════════════════════════════════════════════════════
+-- ═══════════════════════════════════════════════════════════════════════════
+-- API
+-- ═══════════════════════════════════════════════════════════════════════════
 
 type API =
-       "doctors" :> DoctorAPI
-  :<|> "patients" :> PatientAPI
-  :<|> "healthcare-services" :> HealthcareServiceAPI
-  :<|> "slots" :> SlotAPI
-  :<|> "intake-requests" :> IntakeRequestAPI
-  :<|> "calendar" :> CalendarAPI
+       DoctorsAPI
+  :<|> PatientsAPI
+  :<|> HealthcareServicesAPI
+  :<|> IntakeRequestsAPI
+  :<|> AvailableSlotsAPI
+  :<|> DoctorCalendarAPI
+
+api :: Proxy API
+api = Proxy
 
 server :: ServerT API AppM
 server =
-       doctorServer
-  :<|> patientServer
-  :<|> healthcareServiceServer
-  :<|> slotServer
-  :<|> intakeRequestServer
-  :<|> calendarServer
+       doctorsServer
+  :<|> patientsServer
+  :<|> healthcareServicesServer
+  :<|> intakeRequestsServer
+  :<|> availableSlotsServer
+  :<|> doctorCalendarServer
 
--- ═══════════════════════════════════════════════════════════════════════
--- SWAGGER
--- API/server above stay the pure business API — swaggerSpec/
--- APIWithSwagger/serverWithSwagger are a separate wrapping layer around
--- them, not a change to what API itself means (test/Spec.hs's
--- validateEveryToJSON is deliberately pointed at Proxy :: Proxy API, the
--- 6-resource business API, not this wrapper — documenting "how to fetch
--- the docs" inside the docs themselves is circular, and toSwagger has no
--- reason to walk SwaggerSchemaUI's own Raw/HTML routes).
---
--- swaggerSchemaUIServerT (not swaggerSchemaUIServer) — generalized to any
--- Monad, needed since this codebase's handlers run in AppM, not bare
--- Servant Handler (see APPLICATION MONAD above).
--- ═══════════════════════════════════════════════════════════════════════
+swaggerDoc :: Swagger
+swaggerDoc = toSwagger api
+  & info . title   .~ "triage API"
+  & info . version .~ "0.1.0.0"
 
-type APIWithSwagger = SwaggerSchemaUI "swagger-ui" "swagger.json" :<|> API
+type AppAPI = SwaggerSchemaUI "swagger-ui" "swagger.json" :<|> API
 
-swaggerSpec :: Swagger
-swaggerSpec = toSwagger (Proxy @API)
-  & info . title       .~ "triage API"
-  & info . version     .~ "0.1.0.0"
-  & info . description ?~ "Priority-based medical appointment scheduling API"
+appServer :: ConnectionPool -> Server AppAPI
+appServer pool = swaggerSchemaUIServer swaggerDoc :<|> hoistServer api (toHandler pool) server
 
-serverWithSwagger :: ServerT APIWithSwagger AppM
-serverWithSwagger = swaggerSchemaUIServerT swaggerSpec :<|> server
+-- ═══════════════════════════════════════════════════════════════════════════
+-- CONFIGURATION / MAIN
+-- Only serves: migrations are a separate, manual step.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+frontendOrigin :: BS8.ByteString
+frontendOrigin = "http://localhost:5173"
+
+corsMiddleware :: Middleware
+corsMiddleware = cors . const . Just $ simpleCorsResourcePolicy
+  { corsOrigins        = Just ([frontendOrigin], False)
+  , corsMethods        = ["GET", "POST"]
+  , corsRequestHeaders = ["Content-Type"]
+  }
+
+main :: IO ()
+main = do
+  dbUrl <- fromMaybe "postgresql://localhost/triage" <$> lookupEnv "TRIAGE_DB_URL"
+  port  <- lookupEnv "TRIAGE_PORT" >>= \v -> case v of
+    Nothing -> pure 8080
+    Just s  -> case readMaybe s of
+      Just n | n > 0 && n < 65536 -> pure n
+      _ -> ioError (userError ("TRIAGE_PORT is not a valid port: " <> show s))
+  pool <- newPool (defaultPoolConfig (connectPostgreSQL (BS8.pack dbUrl)) close 60 10)
+  run port (corsMiddleware (serve (Proxy @AppAPI) (appServer pool)))

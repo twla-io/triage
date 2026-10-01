@@ -5,94 +5,85 @@ description: Generate the service (orchestration) layer, src/Service.hs, from tr
 
 # triage-service-codegen
 
-`Domain.hs` is the single source of truth; `Persistence.hs` is derived from it per `triage-db-codegen`. `Service.hs` sits above both — it orchestrates `Domain.hs`'s pure functions with `Persistence.hs`'s fetch/store functions, one function per real-world use case. Read `Domain.hs` and `Persistence.hs` fresh before generating or extending anything here, per the same discipline `triage-db-codegen` states for itself — this file's own worked examples will go stale exactly the way that one's did.
+Derive `src/Service.hs` from two sources:
+- **`Domain.hs`** says *what* happens: its transitions, smart constructors and functions, and which facts a caller is the authority on.
+- **`Persistence.hs`** says *how* it is stored: its writes, the outcomes they report, and its reads. It is itself derived from `Domain.hs` (`triage-db-codegen`).
 
-This skill encodes specific decisions already made for `triage`'s `Service.hs`, not a menu of strategies. Apply these rules directly; don't offer alternatives.
+This skill says only how those become use cases. It names no Domain type; `e.g.` marks an illustration, never a requirement.
 
-**Rules are identified by name, not number.** Cross-reference by name (e.g. `verifies-the-precondition`), never by position in the table below.
+- Read both files fresh every time. Existing `Service.hs` is output to check against these rules, never an example to copy.
+- These are decisions already made: apply them, don't offer alternatives. Reasons are in `docs/decisions.md`.
+- Service uses only what `Persistence.hs` exports and never writes SQL. A use case that needs a read `Persistence.hs` lacks adds it there first, by `triage-db-codegen`'s `reads-follow-cases`.
+- If the sources leave something a rule needs undetermined, stop and ask. The fix belongs in `Domain.hs` or `Persistence.hs`, not in an invented convention.
+- Rules apply to existing code. After a rule or a source changes, check every function against every rule, comments included.
 
-| Name | One-line summary |
-|---|---|
-| `function-per-use-case` | One `Service.hs` function per orchestration operation, named after what it does |
-| `verifies-the-precondition` | Naming test for a `Service.hs`/`Domain.hs` verb pair: the name goes to whichever one actually verifies the precondition it would claim |
-| `error-vs-outcome-types` | `ServiceError` for bugs/misuse/infrastructure failure; named outcome types for legitimate concurrent/business branches — never folded together |
-| `pool-in-connection-scoped` | Every public function takes `ConnectionPool`, checks out one `Connection` via `withResource`, holds it for the whole operation — never a bare `Connection` parameter |
-| `guard-every-fetch-then-write-gap` | Any fetch-then-write operation needs an affected-rows/existence guard at write time, regardless of whether a literal DB constraint sits underneath — flag this when *proposing* the function, don't wait for it to be caught after the fact |
-| `caller-supplied-facts` | Timestamps, reasons, and other facts the caller already knows are always parameters, never minted internally (no `getCurrentTime` inside a `Service.hs` function) |
-| `stored-facts-by-reference` | An operation on an existing stored entity takes its ID and fetches it; the caller never supplies facts the database already holds |
+## Use cases
 
-## Architecture this skill fits into
+### `function-per-use-case`
+One public function per use case, each its own unit of work. The use cases are:
+1. **Create an entity:** one per entity that is not a stage of another and not an element of a sealed collection (that grows by use case 4). It takes the new entity's fields, mints the id, inserts, and returns the value itself when nothing can fail. For an entity that is a sum type, only its entry case is created, named after that constructor as a verb (e.g. submit).
+2. **Perform a transition:** one per transition `Domain.hs` defines (a function or a constructor). It fetches the stored value by id, checks its case (`request-state-answers-follow-the-lifecycle`), builds the next stage through `Domain.hs`, and persists it. A transition whose target records its source case is one use case: it accepts each source case, builds the target from the one it finds, and persists it under that case's guard.
+3. **Apply a Domain function over stored values:** one per `Domain.hs` function that decides among stored values (e.g. picking one of many candidates). It fetches the inputs, calls the function, and persists its result through use case 2's write.
+4. **Grow a sealed collection:** fetch the part of the stored collection the smart constructor needs to judge (`Persistence.hs`'s `fetch<Collection>Overlapping`, internal to this use case, never a public read), call it, and persist the new element. The database constraint is the backstop. The smart constructor's decline and the constraint's violation are the same fact, so they are the same outcome.
+5. **Read:** pass-throughs of `Persistence.hs` reads, under the same names, of these kinds:
+   - **by id:** one per entity. A missing id is `<Entity>NotFound`; for an entity deleted on consumption, `Nothing` ("no longer available");
+   - **all:** one per entity that is neither a sum type nor an element of a sealed collection (a small reference set);
+   - **by case:** one per non-terminal case of a sum-typed entity, as the case's payload type;
+   - **by time range:** a terminal case (nothing leaves it, so its rows only accumulate) is read by range only. The range is over a timestamp the case's stage adds to every row; if it adds none, over the timestamp of the stage it embeds. It takes two bounds, half-open `[from, to)`, and is named `fetch<Case><Entity>sBy<Field>`;
+   - **the sealed collection's elements:** a sealed value is opaque, so callers get its elements instead, as a list of the element type whose extent overlaps a time range `[from, to)`, read in one snapshot and sorted by start. It is named `fetch<Element>sOverlapping`.
 
-```
-Domain        — pure, sealed types, smart constructors, zero awareness of JSON/DB/anything external
-Persistence   — Row types matching storage shape, toDomain/fromDomain, fetch/store functions (triage-db-codegen)
-Service       — orchestration: composes Domain's pure functions with Persistence's fetch/store functions,
-                 one function per real-world use case (this skill)
-```
+   Anything narrower (one owner, one service) exists only when a use case needs it. A read `Persistence.hs` lacks is added there first.
 
-`Service.hs` imports both `Domain` and `Persistence` and is the only layer that does — it's where a `ConnectionPool` gets checked out, where new IDs get minted, and where a raw `Persistence.hs` outcome (a decode error, an affected-rows result) gets translated into something a caller reasons about in business terms.
+Every use case checks that each id it is given exists (`error-vs-outcome-types`). Before writing a function, propose its signature, and flag it.
 
-## `function-per-use-case` — One function per orchestration operation, named after what it does
+### `verifies-the-precondition`
+When a Service function and the `Domain.hs` function it calls could share a name, the name goes to whichever one verifies the precondition the name claims. A pure `Domain.hs` function cannot know where its input came from, so a name claiming a stored state (e.g. "submitted", "waitlist") belongs to the Service function that fetched and checked it. Reads have no `Domain.hs` counterpart; they keep `Persistence.hs`'s names.
 
-Established at `Service.hs`'s creation over alternatives (a generic command-dispatch function, a typeclass per aggregate): one function per real-world operation (`createDoctor`, `createPatient`, `createHealthcareService`, `createAvailableSlot`, `submitIntakeRequest`, `acceptSubmittedIntakeRequest`, `rejectSubmittedIntakeRequest`, `matchWaitlistToSlot`, `matchAcceptedIntakeRequestToSlot`, `markIntakeRequestStale`, `closeAppointedIntakeRequest`, `fetchDoctor`, `fetchPatient`, `fetchHealthcareService`, `fetchDoctors`, `fetchPatients`, `fetchHealthcareServices`, `fetchAvailableSlots`, `fetchAppointedIntakeRequests`, `fetchClosedIntakeRequests`, `fetchIntakeRequest`, `fetchIntakeWaitlist`, `fetchSubmittedIntakeRequests`, `fetchCalendarView`), each independently callable, each owning its own unit of work. Propose the shape of a new function's *signature* before writing it, and flag it explicitly, per the same discipline that shaped the first two functions in this file — this is exactly the kind of decision that's expensive to unwind once several functions exist against it.
+Names follow `Domain.hs`:
+- **a transition** with a `Domain.hs` function takes that function's name with the source case it verifies inserted before the entity (`acceptSubmittedIntakeRequest`, `matchAcceptedIntakeRequestToSlot`). One without is `<verb><SourceCase><Entity>`, the verb from the target constructor (an adjective takes `mark`, e.g. `markAcceptedIntakeRequestStale`). A transition from several source cases names none.
+- **a creation** is `create<Entity>`; the entry case of a sum type takes its constructor as a verb (e.g. submit); growing a sealed collection is `create<Element>`.
+- **a use case 3 function** takes the `Domain.hs` function's name with the stored input the caller names by id inserted after the verb (e.g. `matchAvailableSlotByPriority`).
 
-## `verifies-the-precondition` — Naming test for a Service.hs/Domain.hs verb pair
+## Answers
 
-When a `Service.hs` wrapper and the `Domain.hs` verb it calls could plausibly share a name, **the test is which one actually verifies the precondition a shared name would be claiming** — not "which layer is this," not "does this collide in Haskell's namespace." Whichever function performs the check that the name implies gets the name; the other keeps its own, unmodified name.
+### `error-vs-outcome-types`
+Two kinds of "this didn't simply succeed", never merged:
+- **`ServiceError`** (`Left`): the caller's mistake or a real failure.
+  - a decode failure: one constructor wrapping `Persistence.hs`'s `DecodeError`;
+  - an id that does not exist: `<Entity>NotFound`, one per entity type. It is checked in Service, never left to a foreign key (which would surface as an unhandled `SqlError`). Entities that are never deleted need no write-time guard for it. For an entity deleted on consumption, a missing id is an outcome ("no longer available"), not `<Entity>NotFound` (see below); its constructor is `<Entity>Consumed`, used by every use case that can find that fact.
+  - a request in a state that cannot follow the expected one: `<Entity>InWrongState`, carrying the value as it is;
+  - a `Domain.hs` function that declines inputs the caller chose: the inputs are fixed facts that don't fit, so it is the caller's mistake, one constructor named for what doesn't fit. One that declines over stored candidates (use case 3) is an outcome.
+- **An outcome** (`Right`): reality moved between two valid operations, which the caller reacts to.
+  - A transition with a single guard returns `TransitionOutcome a = Transitioned a | MovedOn <entity>`.
+  - A write whose `Persistence.hs` outcome has more constructors gets its own outcome type, one constructor per `Persistence.hs` constructor, translated one-to-one and named for the caller (e.g. a lost slot vs. a request that moved on).
+  - A use case 3 function's outcome wraps the outcome of the write it persists through: one constructor per way its Domain function declines, plus one carrying that write's outcome. No function's outcome type holds a constructor that function cannot return.
 
-**Worked example:** `Domain.acceptIntakeRequest` takes a bare `SubmittedIntakeRequest` — it has no way to check, and doesn't check, that it ever existed in a stored `Submitted` state; it's a pure transformation, agnostic to provenance. Naming it (or its wrapper) around "submitted" would claim a precondition it doesn't verify. The `Service.hs` wrapper, by contrast, is defined entirely by that check: it fetches the stored request, confirms `Right (Just (Submitted submitted))`, and answers `MovedOn` otherwise (every state comes after Submitted; see `error-vs-outcome-types`). So: `Domain.acceptIntakeRequest` stays unchanged (correctly named for what it verifies — nothing, beyond its own field types); the wrapper is `acceptSubmittedIntakeRequest` (correctly named for what it verifies — that the request is actually `Submitted` before accepting it).
+A lost race is never the caller's fault, so it is never a `ServiceError`. **An answer depends on the fact, not on which check found it.** A fact found before the write and the same fact found by the write's guard or constraint get the same outcome (e.g. a slot missing at fetch and a slot whose delete hits no row; a new element the smart constructor declines and one the constraint rejects). Only a fact no concurrent operation can change is a `ServiceError`. Service imports `Persistence` qualified, so its own types take the plain names; constructor names are distinct across every type the module defines or imports unqualified.
 
-**Checked retroactively against the other wrapper, already correctly named under this test:**
-- `matchByPriority` / `matchWaitlistToSlot`: `Domain.matchByPriority` takes a bare `[TriagedIntakeRequest]` — it has no way to check, and doesn't check, that the list it's given is actually "the waitlist" (`state = 'accepted'`, per `triage-db-codegen`'s `no-delete-on-consumption`), so its name doesn't claim it (it was once `checkIntakeWaitlist`, which did). `matchWaitlistToSlot` is what performs that real fetch (`Persistence.fetchIntakeWaitlist`) before scanning it, so it's the one entitled to "waitlist" in its own name.
+### `request-state-answers-follow-the-lifecycle`
+When a use case finds a stored value in a case other than the one it expects, it compares the two over `Domain.hs`'s transition graph:
+- **The current case is reachable from the expected one:** someone acted first. Answer `MovedOn` with the value as it is now.
+- **It is not reachable:** the caller could never have seen the case it acted on. Answer `<Entity>InWrongState`.
 
-(A third pair, `reassignSlot` / `reassignAppointmentSlot`, used to be checked here too, and later `reclaimIntakeRequest` / `reclaimAppointedIntakeRequest`. Both are gone — rescheduling is now a close plus a new request; see `docs/decisions.md`'s "Reclaim removed; displacing a patient is Closed + a new IntakeRequest" entry.)
+Where a case records the stage it came from, reachability follows that record: the value is reachable from the expected case only if its recorded source is, or is reachable from, the expected case.
 
-**A real, separate consequence, not the test itself:** Haskell's flat top-level namespace has no OOP-style receiver (no `appointment.reassignSlot(...)`) to disambiguate two identically-named functions the way a method call would in a language with one. If the precondition test alone left two functions with the same literal name, that name collision would still need resolving — but it doesn't dictate *which* alternate name to pick. That choice always comes from the precondition test above.
+Write each split as an exhaustive `case` with no wildcard, so a new case forces a decision. Derive it from the graph; never choose answers case by case.
 
-**Doesn't apply to the read-side functions.** `fetchDoctor`/`fetchPatient`/`fetchHealthcareService`/`fetchDoctors`/`fetchPatients`/`fetchHealthcareServices`/`fetchAvailableSlots`/`fetchAppointedIntakeRequests`/`fetchClosedIntakeRequests`/`fetchIntakeRequest`/`fetchIntakeWaitlist`/`fetchSubmittedIntakeRequests`/`fetchCalendarView` have no `Domain.hs` verb to be tested against in the first place: these are thin pass-throughs over `Persistence.hs`'s own fetch functions, with no fetch-then-act step and nothing to verify before returning. The test's premise — a `Service.hs`/`Domain.hs` verb pair that could plausibly share a name — simply doesn't hold for a function with no `Domain.hs` counterpart at all. This is why these thirteen keep their `Persistence.hs` counterparts' names verbatim rather than needing a precondition-driven rename; see `Service.hs`'s own READS section comment for the fuller reasoning. (`fetchIntakeRequest`/`fetchIntakeWaitlist` specifically were already in internal use by several mutation wrappers — see those two functions' own `error-vs-outcome-types`/`guard-every-fetch-then-write-gap`-driven fetch-then-check steps — before being exposed as their own top-level reads; the internal call sites now go through the qualified `Persistence.fetchIntakeRequest`/`Persistence.fetchIntakeWaitlist` to avoid colliding with these two Service.hs-level definitions of the same name.)
+## Writes
 
-## `error-vs-outcome-types` — ServiceError vs. named outcome types, kept strictly separate
+### `guard-every-fetch-then-write-gap`
+A use case that fetches, checks, then writes has a gap in which another operation can invalidate the check. The write's guard (`Persistence.hs`'s affected-rows outcome) closes it. When the write reports a lost race, read the value once more and answer `MovedOn` with what it is now; since cases only move forward, that read always finds a later case. Never retry: the caller decided from what it saw. The one exception: a use case that accepts several source cases continues from another of its source cases when the re-read finds one (cases only move forward, so this ends); otherwise it answers `MovedOn`. Its write keeps the exact source guard, never `state IN (…)`: the guard also proves the row is what the value was built from. The guards protect the rows written. The candidates a decision was made from are a snapshot: one that arrives after the read is served by the next decision, as if it had arrived after the write. Undoing such a decision is a domain action (close and re-offer), never a mechanism. When proposing any fetch-then-write function, state what can change in the gap as part of the proposal.
 
-Two categories of "this didn't just succeed," never merged:
+### `pool-in-connection-scoped`
+Every public function takes `ConnectionPool`, checks out one `Connection` with `withResource`, and uses it for every `Persistence.hs` call it makes. Service functions are the composition root; nothing composes them.
 
-- **`ServiceError`** (returned as `Left`): a bug, a caller's wrong assumption about a resource's state, or a genuine infrastructure failure. Live cases: `PersistenceDecodeError` (wraps `Persistence.DecodeError`), `RequestNotFound`, `RequestInWrongState` (carries the request as it is), `HealthcareServiceNotFound`, `DoctorNotFound`, `PatientNotFound`. An id that doesn't exist is checked in Service and reported this way — never left to a foreign key, which would surface as an unhandled `SqlError` (a 500). Doctors, patients and services are never deleted, so that check needs no guard at write time.
-- **Named outcome types** (`MatchOutcome`, ...): a legitimate branch of business logic the caller reacts to, typically differently per constructor — never an error, never folded into `Left`. Live cases: `Matched`, `NoEligibleRequest`, `RequestIneligible`, `SlotAlreadyClaimed`, `RequestMovedOn`; and `TransitionOutcome a = Transitioned a | MovedOn IntakeRequest`, the outcome of every state transition that has no outcome type of its own (accept, reject, mark stale, close).
+## Parameters
 
-The dividing line is not "did `Persistence.hs` report a problem" — both categories can originate there. It's whether the caller is being told about *its own mistake or a real failure* (`ServiceError`) or about *reality moving between two valid, concurrent operations* (an outcome constructor). A lost concurrency race is never the caller's fault and never a bug, so it is never a `ServiceError`.
+### `caller-supplied-facts`
+A fact the caller is the authority on (a timestamp it observed, a reason, a triage judgment, the fields of something being created) is a parameter. Service never calls `getCurrentTime`. Where the caller is the authority on a whole `Domain.hs` value, take it whole rather than as its fields. Ids are different: they carry no meaning, so Service mints them.
 
-**Request-state answers follow the lifecycle.** When an operation finds a request in a state other than the one it expects, compare the two using `Domain.hs`'s transitions (see `docs/decisions.md`, "Request-state answers follow the lifecycle"):
-
-- **The current state comes after the expected one** — someone else acted first: the outcome `MovedOn` (or `RequestMovedOn` in `MatchOutcome`), carrying the request as it is now. The same answer whether the fetch noticed or the write did; after a lost write, read the request once more (`refetchAfterLostWrite`), which always finds a later state since states only move forward.
-- **The current state can't come after it** — the caller could never have seen the state it acted on: the `ServiceError` `RequestInWrongState`, carrying the request.
-
-Today: every state comes after Submitted (accept/reject only ever answer `MovedOn`); Appointed, Stale, `WithdrawnFromAccepted` and Closed come after Accepted, while Submitted, Rejected and `WithdrawnFromSubmitted` don't (match, mark stale); only Closed comes after Appointed (close). Spell each operation's split out as an exhaustive `case` with no wildcard over the cases that differ, so a new `IntakeRequest` case forces a decision. Re-derive the split from the transition table when `Domain.hs` changes; don't choose answers case by case.
-
-Distinct constructor names throughout — Haskell data constructors share one namespace per module (unlike record fields under `DuplicateRecordFields`), so the same name can't be reused across two sum types in the same module, nor across modules once both are imported unqualified.
-
-## `pool-in-connection-scoped` — ConnectionPool in, one Connection held for the whole operation
-
-Every public `Service.hs` function takes `ConnectionPool`, never a bare `Connection` — this is `Persistence.hs`'s own stated reason for `ConnectionPool` existing at all (see its module header). Each function checks out exactly one `Connection` via `withResource pool $ \conn -> ...` and threads that same `conn` through every `Persistence.hs` call it makes, including any internal `withTransaction`. A function that took `Connection` directly could only ever be composed by a caller that already had one checked out — `Service.hs` functions are meant to be the composition root, not something composed into a larger one.
-
-## `guard-every-fetch-then-write-gap` — Flag concurrency guards when proposing, not after being caught
-
-Any `Service.hs` operation shaped "fetch a row, check something about it, then write" has a gap between the check and the write where a concurrent operation can invalidate what was checked. This needs an affected-rows or existence guard on the write itself — regardless of whether a literal `UNIQUE` constraint or other DB-level rule sits underneath. For `intake_requests` transitions, the guard is the source state the fetch confirmed (`WHERE state = 'A'`), which also proves the row hasn't changed since the fetch (`triage-db-codegen`'s `state-guard-is-freshness`). When that write matches zero rows, the request has moved on to a later state: read it again and report `MovedOn` (or `RequestMovedOn` in `MatchOutcome`) with what it is now — never a `ServiceError`, and never retry: the caller decided from what it saw and has to look again. See also `triage-db-codegen`'s `uniqueness-races-are-outcomes`, which states the `Persistence.hs`-side mechanism (`deleteSlot`'s existence check on a slot; the state guard on every `intake_requests` transition).
-
-**The process failure this rule is actually about:** twice in this codebase's history so far, this gap was found only *after* a function was proposed and half-built without it (the `healthcare_request_id` race in `persistMatchedAppointment`, and the double-close race in `closeAppointment`), not during the initial proposal. The fix is procedural, not just technical: **when proposing any new `Service.hs` function that fetches then writes, explicitly ask "what changes between the fetch and the write, and does it matter" as part of the proposal itself** — the same way a signature or an error type gets proposed and flagged before implementation. Don't wait for it to surface in review.
-
-## `caller-supplied-facts` — Timestamps, reasons, and similar facts are parameters, never minted internally
-
-No `Service.hs` function calls `getCurrentTime` (or equivalent) internally to produce a `UTCTime` it then persists. `createdAt`, `triagedAt`, and `CloseReason`'s `Cancelled`-carried timestamp are all caller-supplied parameters — as in `submitIntakeRequest`, `acceptSubmittedIntakeRequest`, `markIntakeRequestStale` and `closeAppointedIntakeRequest`, whose timestamps `Api.hs`'s handlers supply. This is a different category from ID generation (`newIntakeRequestId`, `newSlotId` and friends, minted internally per `Persistence.hs`'s own note on why that responsibility moved to `Service.hs`): an ID is arbitrary and has no meaning outside being unique, so minting it here is pure orchestration; a timestamp asserts *when something actually happened*, which the caller is closer to and more authoritative about than this layer — minting it here would silently substitute "when this function happened to run" for "when the event actually occurred," which are not always the same moment.
-
-Where the caller is the authority on a whole `Domain.hs` value (e.g. `CloseReason`, including its `Cancelled` timestamp), take that value whole rather than decomposing it into separate parameters and reconstructing it — re-threading its fields individually only invites the two copies drifting apart. This applies only to facts the caller is the authority on. A value describing something that already exists in storage is never taken from the caller; see `stored-facts-by-reference`.
-
-## `stored-facts-by-reference` — Existing entities come in as IDs and are fetched, never passed in whole
-
-When a `Service.hs` operation acts on something that already exists in storage (a slot being matched, a request being accepted), its signature takes that thing's ID and the function fetches the stored value itself. It never takes the entity's fields, or a whole `Domain.hs` value assembled by the caller: the caller is not the authority on facts the database already holds. The test for each parameter: is the caller the authority on this fact (a timestamp it observed, a reason, a triage judgment, the fields of something being *created*), or is the database (anything about an entity that already exists)? The second kind is fetched.
-
-**Why this is a named rule:** `matchAcceptedIntakeRequestToSlot` used to take an `AvailableSlot` from its caller. `persistMatchedIntakeRequest` deleted the stored slot by `slot.id` but wrote the appointment from the caller's `doctorId`/`start`/`duration`, so an API client could book a request at a time of its choosing. No rule stated this, and the old wording of `caller-supplied-facts` pointed the other way. Fixed in commit `452969e`; see `docs/decisions.md`.
-
-**Known exception:** `matchWaitlistToSlot` still takes an `AvailableSlot` and has no caller today. It's safe only when the slot passed in was produced by the server itself, e.g. the value `createAvailableSlot` just stored. It must never receive a slot decoded from a request.
+### `stored-facts-by-reference`
+Something that already exists in storage comes in as its id and is fetched. The caller never supplies its fields or a whole value of it: the database is the authority on facts it holds.
 
 ## When unsure
-
-If a rule above doesn't cover a case that comes up, prefer the option that mirrors an existing `Service.hs` function's shape most directly, and flag the ambiguity to the user rather than inventing a convention silently — same standard as `triage-db-codegen`. When adding a genuinely new rule, give it a name in this same style before writing content under it.
+Prefer the option that mirrors `Domain.hs` most directly, and flag the ambiguity rather than inventing a convention. A new rule gets a kebab-case name before its text.

@@ -22,17 +22,23 @@ Toolchain is **cabal** (no `stack.yaml`). `cabal.project` pins
 `with-compiler: ghc-9.10.3`, which must already be on PATH
 (e.g. `ghcup install ghc 9.10.3`).
 
-Run successfully when this file was last updated (2026-09-28):
+Run successfully when this file was last updated (2026-09-30):
 - `cabal build all`
-- `cabal test` — runs both suites below.
+- `cabal test` — runs the three suites below.
   - `cabal test triage-test` — hspec/QuickCheck: pure `Domain` properties
-    plus a check that every API body's `ToJSON` matches its Swagger
-    schema. No database needed.
+    plus a check that every DTO's and request body's `ToJSON` matches its
+    own Swagger schema. No database needed. Run 2026-09-30: 27 examples,
+    0 failures.
   - `cabal test triage-db-test` — the SQL behind Persistence/Service against
     a real PostgreSQL (`test-db/Spec.hs`): creates a throwaway database,
     applies `migrations/0001_init.sql`, drops it afterwards. Needs a local
     server the current user can create databases on; extra libpq keywords
-    via `TRIAGE_TEST_PG`. Run 2026-09-28: 24 examples, 0 failures.
+    via `TRIAGE_TEST_PG`. Run 2026-09-30: 32 examples, 0 failures.
+  - `cabal test triage-schema-test` — the CHECK constraints on
+    `intake_requests` against a real PostgreSQL, raw SQL only (no
+    dependency on the library): each case's column shape from a
+    classification table written from `Domain.hs`. `TRIAGE_SCHEMA_FILE`
+    overrides the schema file. Run 2026-09-29: 20 examples, 0 failures.
 - `cd frontend && npm run build` (`tsc -b && vite build`)
 
 Inferred from configuration, not run:
@@ -72,9 +78,9 @@ Direct imports between internal modules (no cycles):
   timestamps as parameters. Reports caller mistakes/failures as
   `ServiceError` and legitimate concurrent results as outcome types
   (`TransitionOutcome`, `MatchOutcome`, `SlotCreationOutcome`). A request found
-  past the state an operation expects is `MovedOn`/`RequestMovedOn`;
-  one in a state that can't follow it is `RequestInWrongState`. Also
-  exposes read pass-throughs and the `CalendarEntry` view.
+  past the state an operation expects is `MovedOn`/`IntakeRequestMovedOn`;
+  one in a state that can't follow it is `IntakeRequestInWrongState`. Also
+  exposes read pass-throughs and the `DoctorCalendarEntry` view.
 - **`src/Transport.hs`** — aeson DTO twin types with hand-written
   `ToJSON`/`FromJSON`/`ToSchema` and JSON-shaped `toDomainX`/`fromDomainX`.
   Domain types carry no JSON instances.
@@ -92,7 +98,8 @@ or protects against races. Enforcement is split:
 
 - **Types / smart constructors (Domain):** each lifecycle stage embeds its
   predecessor whole, so an `AppointedIntakeRequest` can't be built without
-  a `TriagedIntakeRequest`. `mkRoutineWithin` enforces `from <= to`.
+  a `TriagedIntakeRequest`. `mkRoutineWindow` enforces
+  `routineNotBefore <= routineNotAfter`.
   `mkDoctorCalendar`/`addAvailableSlot` enforce no overlap per doctor
   within a `DoctorCalendar` value; `addAvailableSlot` creates a new slot
   with its service's duration. Types do *not* prove a value matches
@@ -117,22 +124,24 @@ or protects against races. Enforcement is split:
   The state guard gives both legality and freshness because no transition
   leads back to an earlier state and every update changes the state.
   Matching (delete slot + update request) runs in one transaction with
-  rollback (`persistMatchedIntakeRequest`).
+  rollback (`persistAppointedIntakeRequest`).
 - **Database:** a `CHECK` on `intake_requests` enforces each state's column
   shape, plus the tier/deadline and close-reason shapes; durations limited
   to 15/30/60 minutes; foreign keys. `doctor_calendar` (maintained by
   triggers) plus an `EXCLUDE` constraint prevents overlapping slot or
   appointment intervals per doctor. A `CHECK` also enforces
-  `RoutineWithin`'s `from <= to` (Persistence and Transport re-check it
-  when decoding). The DB does **not** check transition order.
+  `RoutineWindow`'s `routineNotBefore <= routineNotAfter` (Persistence and
+  Transport re-check it when decoding). The DB does **not** check transition order.
 
 ## Sealing in Domain.hs — selective, and that's the point
 
 Constructors are hidden only where an identified invariant needs
 protection. Currently two sealed cases:
-- `RoutineDue`'s `RoutineWithin` — built only via `mkRoutineWithin`
-  (`from <= to`). The read-only `routineWithinBounds` exists so other
-  layers can encode it without the constructor.
+- `RoutineWindow` (carried by `RoutineDue`'s `RoutineWithin`) — built only
+  via `mkRoutineWindow` (`routineNotBefore <= routineNotAfter`). It has no
+  record fields, since record update would bypass the check; the named,
+  read-only accessors `routineNotBefore`/`routineNotAfter` let other layers
+  encode it.
 - `DoctorCalendar` — built only via `mkDoctorCalendar` and grown only via
   `addAvailableSlot` (no two entries of a doctor overlap). This invariant
   spans stored rows, so the database (`doctor_calendar`'s `EXCLUDE`) is
@@ -150,7 +159,7 @@ protects, and never derive `FromJSON` generically on a sealed type.
 
 - `triage-db-codegen` — migration + `Persistence.hs`
 - `triage-service-codegen` — `Service.hs`
-- `triage-api-codegen` — `Transport.hs` + `Api.hs` (plus its `references/`)
+- `triage-api-codegen` — `Transport.hs` + `Api.hs`
 - `triage-ui-codegen` — `frontend/`
 
 Skill text can fall behind the code; it has before. Where a skill's

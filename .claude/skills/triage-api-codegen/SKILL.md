@@ -1,142 +1,99 @@
 ---
 name: triage-api-codegen
-description: Conventions for generating a REST, GraphQL, or RPC API from triage's Domain.hs — the medical appointment scheduling domain model. Use this skill whenever designing, generating, or scaffolding API endpoints, routes, request/response schemas, or service methods derived from Domain.hs types. Trigger this even if the user just says "build the API" or "add an endpoint for booking" without mentioning Domain.hs explicitly, as long as the triage domain model is the source. Do not use this skill for database schema or UI generation — see triage-db-codegen and triage-ui-codegen instead.
+description: Generate the HTTP API — src/Transport.hs (JSON DTOs) and src/Api.hs (Servant routes and handlers) — from triage's Domain.hs and Service.hs. Use this skill whenever designing, generating, or extending API endpoints, routes, request/response bodies, JSON encodings or Swagger schemas for the triage domain model. Trigger this even if the user just says "build the API" or "add an endpoint for X" without mentioning Domain.hs explicitly. Do not use this skill for database schema, Persistence or Service generation (triage-db-codegen, triage-service-codegen) or for the UI (triage-ui-codegen).
 ---
 
 # triage-api-codegen
 
-`Domain.hs` is the single source of truth for the `triage` scheduling domain, with `Service.hs` as the orchestration layer above it. The API surface should be **derived** from both, not designed independently — read `Domain.hs` and `Service.hs` fresh before generating or extending anything here, rather than trusting this skill's own worked examples, which have already gone stale once before (an earlier version described an offer/decline waitlist mechanism — `freeSlot`, `bookAppointment`, `giveOffer`, `declineOffer` — that predates the current six-state `IntakeRequest` model entirely).
+Derive `src/Transport.hs` and `src/Api.hs` from two sources:
+- **`Domain.hs`** gives every name and every shape on the wire.
+- **`Service.hs`** gives the operations: one endpoint per public function, with its parameters, and its errors and outcomes.
 
-**The API layer exists:** `src/Transport.hs` (aeson DTO twin types with hand-written `ToJSON`/`FromJSON`/`ToSchema`) and `src/Api.hs` (Servant routes, handlers, Swagger). The rules below describe it and govern changes to it. Several were first settled in design conversations before any code existed; where a rule's text and the code disagree, trust the code and flag the disagreement rather than silently following either.
+This skill says only how those become JSON and routes. It names no Domain type or Service function; `e.g.` marks an illustration, never a requirement.
 
-**Rules are identified by name, not number.** Always cross-reference by name (e.g. `match-by-priority-not-an-endpoint`), never by position in the table below.
+- Read both files fresh every time. Existing `Transport.hs`/`Api.hs` are output to check against these rules, never examples to copy.
+- These are decisions already made: apply them, don't offer alternatives. Reasons are in `docs/decisions.md`.
+- The API never reaches past `Service.hs` into `Persistence.hs`, and adds no logic of its own beyond parsing, supplying the current time, and rendering answers. The one import from `Persistence` is the `ConnectionPool` type, which Service's signatures use.
+- If the sources leave something a rule needs undetermined, stop and ask. The fix belongs in `Domain.hs` or `Service.hs`.
+- Rules apply to existing code. After a rule or a source changes, check every type and handler against every rule.
+- The strategy is REST over HTTP. Event sourcing was explored and rejected (`docs/decisions.md`).
 
-| Name | One-line summary |
+## Wire format (`Transport.hs`)
+
+### `names-come-from-domain`
+- **Keys** are `Domain.hs` names: a record field's name, a sealed type's read-only accessor's name, or for a single-field constructor, the constructor's name in lowerCamelCase. The innermost name above a value wins; an ID newtype is not a name.
+- **A request body's keys** are the names of the `Domain.hs` fields their values land in, not Service's parameter names. An ID with no field of its own takes its ID type's name in lowerCamelCase (e.g. `slotId`).
+- **Discriminator values** are constructor names in lowerCamelCase.
+- There is no independent wire vocabulary: a rename in `Domain.hs` changes the wire, and every client is regenerated from the API's schema.
+
+### `tagged-flat-serialization`
+- **Sum types:** one flat JSON object per case, discriminated by a key named `"type"` at every nesting level. Never a nested `contents` wrapper, never a case-specific discriminator key.
+- **Embedded stages** are flattened into their case's object: a case carries its own fields and every field of the stages it embeds, under the same keys wherever they appear.
+- **A nested value** (a sum type or record held in a field) is an object under its field's key.
+- **A single-field constructor** whose payload is a record or newtype is flattened into its case's object; one whose payload is a sum type is nested under the constructor's name, since one object can't hold two `"type"` keys.
+- **A field whose sum type's cases each carry a stage** is flattened: the stage's fields join the enclosing case's object, and the field keeps only `{"type": <case>}`.
+- **An enumeration** is an object with only `"type"`.
+- **No key is `null` for "hasn't reached this stage yet"**: a case's object has exactly its own keys. A `Maybe` field's key is always present; an absent value is `null`.
+
+### `opaque-uuid-ids`
+Every ID is a plain UUID string, never wrapped. Distinct ID types stay distinct in the schema and in path parameter names.
+
+### Transport types
+- One DTO per `Domain.hs` type that crosses the wire, named `<Type>DTO`, with hand-written `ToJSON`, `FromJSON` and `ToSchema`. Never `Generic`-derived, and never an instance on a `Domain.hs` type.
+- `toDomain<Type>` / `fromDomain<Type>` convert at the boundary. A sealed type is decoded only through its smart constructor; a refusal is a parse failure (`400`).
+- A request body is a `<Function>Request` type, named after its Service function, holding exactly that function's caller-supplied facts; a function with none takes no body. A `Domain.hs` value the caller supplies whole but that contains a time the server records gets a request type without that time, converted once the handler has it.
+- **Check:** a test validates every body type's `ToJSON` against its `ToSchema` (`triage-test`).
+
+## Routes (`Api.hs`)
+
+### `routes-follow-use-cases`
+Every public `Service.hs` function gets exactly one endpoint, derived from its kind (`triage-service-codegen`'s `function-per-use-case`). `<table>` is the entity's table name in kebab-case (`triage-db-codegen`'s `names-come-from-domain`).
+
+| Use case | Route |
 |---|---|
-| `commands-vs-queries-naming` | Settled — reads are `fetch`-prefixed, name-identical to their `Persistence.hs` counterparts; every `Persistence.hs` read now has a `Service.hs` wrapper, no exceptions remaining |
-| `match-by-priority-not-an-endpoint` | `matchByPriority` never gets its own route — it's the body of whatever handler responds to a slot becoming available |
-| `opaque-uuid-ids` | IDs are plain UUID strings on the wire, never wrapped |
-| `tagged-flat-serialization` | Every discriminated `Domain.hs` type serializes as one flat JSON object per case with a uniform `"type"` field — never a nested `contents` wrapper, never a case-specific discriminator name |
-| `verb-minimalism` | `GET`/`POST` only — no `PUT`, `PATCH`, `DELETE`, or `HEAD`; both excluded verbs are structurally absent from the domain, not just unused |
-| `action-endpoints-not-generic-patch` | Mutations route as action-suffixed `POST`s (`/accept`, `/reject`, ...), never `PATCH` with a state field |
-| `error-vs-outcome-mapping` | Decided — `400` malformed request, `404` unknown route, `200` for every `Service.hs` answer (success or `ServiceError`/outcome, discriminated in-body), `500` outside the domain's vocabulary |
+| create | `POST /<table>` |
+| grow a sealed collection | `POST /<element table>` |
+| transition | `POST /<table>/:id/<action>`, the action being the function name minus its source case and entity, in kebab-case |
+| Domain function over stored values | `POST /<table of the input the caller names>/:id/<action>`, the action being the function name minus the entity, in kebab-case |
+| read by id | `GET /<table>/:id` |
+| read all | `GET /<table>` |
+| read by case | `GET /<table>/<case>` |
+| read a terminal case by range | `GET /<table>/<case>?from=…&to=…` |
+| read a sealed collection's elements | `GET /<collection>?from=…&to=…`, the collection type's name in kebab-case |
 
-## Architecture this skill fits into
+A narrower read's filters are query parameters. Path segments only ever identify a resource; a path parameter is named after its ID type in lowerCamelCase (e.g. `{intakeRequestId}`).
 
-```
-Domain        — pure, sealed types, smart constructors, zero awareness of JSON/DB/anything external
-Persistence   — Row types matching storage shape, toDomain/fromDomain at the boundary (triage-db-codegen)
-Service       — orchestration: composes Domain's pure functions with Persistence's fetch/store functions
-                 (triage-service-codegen)
-Transport     — DTOs for wire formats (JSON), toDomain/fromDomain at the boundary (src/Transport.hs);
-                 generating it is this skill's responsibility, not a separate skill's (see below)
-API           — routes/resolvers/RPC handlers over Service.hs (this skill)
-```
+### `verb-minimalism`
+`GET` and `POST` only. Nothing is replaced wholesale (no `PUT`), no caller deletes anything (no `DELETE`), and a transition is an operation with a precondition, not a field update (no `PATCH`).
 
-`Domain.hs` has no serialization of any kind — no `ToJSON`/`FromJSON`, no `Generic` deriving for that purpose — and nothing generated from this skill should assume otherwise or reintroduce that coupling.
+### Timestamps
+Every time a Service function takes as "when this happened" is supplied by the handler (`getCurrentTime`), never by the request body: it records when the action was recorded. Service's caller is the handler: it supplies the current time, including inside a whole Domain value it builds.
 
-**`Transport.hs` is this skill's responsibility, not a separate `triage-transport-codegen` skill — resolved.** Unlike `Persistence.hs` (needed regardless of whether an API ever exists, since the domain must be stored either way) and `Service.hs` (needed to orchestrate `Domain`+`Persistence` regardless of whether an API exists), `Transport.hs` has no independent reason to exist except to serve an API — a DTO layer with no consumer is inert. `triage-db-codegen` and `triage-service-codegen` split cleanly along layer boundaries because each of those layers has an independent reason to exist; `Transport` doesn't, so generating it is part of API design rather than a peer layer earning its own skill.
+## Answers
 
-## `commands-vs-queries-naming` — Settled: reads are `fetch`-prefixed, name-identical to Persistence.hs
+### `error-vs-outcome-mapping`
+| Status | When |
+|---|---|
+| `400` | the request never reached Service: malformed JSON, a wrong, missing or unknown field, an invalid ID, a sealed value its smart constructor refuses |
+| `404` | the route itself doesn't exist (decided by the router) |
+| `200` | Service ran and answered: success, every outcome, and every `ServiceError` except a decode failure, discriminated in the body |
+| `500` | outside the domain's vocabulary: a decode failure, a database failure, anything unexpected |
 
-An earlier version of this rule claimed the Command/Query split was mechanically derivable from `Domain.hs`'s export list, which used to group functions under `-- Commands` and `-- Queries` section comments. **That grouping no longer exists.** The current export list groups by domain concept instead (`ID wrappers`, `Priority / Due constraints`, `Intake Request`, `Slot`, `Protocol`, ...) — there is nothing left to mechanically derive a Command/Query naming convention from that way.
+An id that doesn't exist is a `200` with its not-found answer, never a `404`: Service ran a query to find that out. A `500` body is plain text and exposes no internals.
 
-**This rule used to be blocked on `Service.hs` exporting zero pure reads. That premise no longer holds.** `Service.hs` exports thirteen read functions: `fetchDoctor`, `fetchPatient`, `fetchHealthcareService`, `fetchDoctors`, `fetchPatients`, `fetchHealthcareServices`, `fetchAvailableSlots`, `fetchAppointedIntakeRequests`, `fetchClosedIntakeRequests`, `fetchIntakeRequest`, `fetchIntakeWaitlist`, `fetchSubmittedIntakeRequests`, `fetchCalendarView`. All of them keep their `Persistence.hs` counterparts' names verbatim — `fetch`-prefixed, no Command/Query-style renaming, no precondition-driven divergence — because per `triage-service-codegen`'s `verifies-the-precondition` rule (see that skill's own note on why it doesn't apply to reads), these pass-throughs have no `Domain.hs` verb to collide with in the first place, so there was never a naming decision to make for them beyond "keep the `Persistence.hs` name."
+### The response envelope
+- **Every** `200` body, for mutations and reads alike, is `{"outcome": <tag>, "detail": <payload or null>}`, so a client parses every answer the same way.
+- **The tag** is the answer's constructor name in lowerCamelCase: each outcome constructor (e.g. `transitioned`, `movedOn`) and each `ServiceError` constructor. An answer that is a plain value with no constructor of its own (a created entity, a read's result) has the tag `ok`. A `Nothing` from a by-id read of an entity deleted on consumption has the tag `<entity>Consumed`, the same as Service's outcome for that fact, and detail `null`.
+- **The detail** is the payload rendered by its DTO, or `null` when there is none. A payload that is itself an answer type is rendered as a nested envelope.
 
-**The naming convention itself is settled, not an open question anymore:** every `Service.hs` read is `fetch<Noun>`, singular or plural depending on cardinality (`fetchDoctor` vs. `fetchDoctors`), matching its `Persistence.hs` counterpart's name exactly. An API layer generated today has a real, checkable pattern to mirror for all thirteen — a `GET` endpoint's handler/route name can derive directly from the `Service.hs` function name.
+The rendering of each Service answer type is written once, as one exhaustive function with no wildcard, and shared by every handler that returns it. Only a decode failure becomes a `500`.
 
-**The one remaining gap flagged in the previous version of this rule is now closed.** `fetchIntakeRequest` and `fetchIntakeWaitlist` — previously imported unqualified into `Service.hs` and used only internally by `acceptSubmittedIntakeRequest`, `rejectSubmittedIntakeRequest`, `matchAcceptedIntakeRequestToSlot`, `markIntakeRequestStale`, `closeAppointedIntakeRequest` (`fetchIntakeRequest`), and `matchWaitlistToSlot` (`fetchIntakeWaitlist`) — now both have their own `Service.hs`-level wrappers in the READS section, same thin `fetch`-prefixed pass-through shape as the other nine. **Every `Persistence.hs` read now has a `Service.hs` wrapper, no exceptions remaining.** An API layer generated today can build a `GET /intake-requests/:id` and a waitlist-listing route against `Service.fetchIntakeRequest`/`Service.fetchIntakeWaitlist` directly, without reaching past `Service.hs` into `Persistence.hs` — the situation this rule originally warned about no longer exists for any current read.
-
-## `match-by-priority-not-an-endpoint` — `matchByPriority` is a protocol decision, not an endpoint
-
-`matchByPriority :: AvailableSlot -> [TriagedIntakeRequest] -> Maybe AppointedIntakeRequest` belongs inside the handler for "a slot just became available" — never exposed as a public endpoint on its own. In the current codebase, its real caller is `Service.matchWaitlistToSlot :: ConnectionPool -> AvailableSlot -> IO (Either ServiceError MatchOutcome)`, which fetches the waitlist, runs `matchByPriority` over it, and persists the result atomically. Whatever handler creates a new `AvailableSlot` (i.e. whatever calls `Service.createAvailableSlot`) is the natural place to also call `matchWaitlistToSlot` — expose the event ("a slot was created"), not the scan itself.
-
-**This is a statement about which handler is responsible for triggering the scan at all, not about response routing.** "The natural place to also *call* `matchWaitlistToSlot`" is a separate question from "whether to *combine* both calls' results into one HTTP response" — the latter was considered and rejected; see `references/servant-implementation.md`'s section 4 for the full reasoning (`POST /slots`'s response reflects only `createAvailableSlot`'s own `SlotCreationOutcome`, full stop).
-
-## `opaque-uuid-ids` — IDs are opaque UUID strings on the wire
-
-Request and response bodies use plain UUID strings for `DoctorId`, `PatientId`, `HealthcareServiceId`, `IntakeRequestId`, `SlotId` — never a wrapped object, never the Haskell type name as a JSON key. Different ID types must stay distinguishable in the API's type system (e.g. branded types in TypeScript, distinct path parameter names) even though they share a wire format.
-
-`Transport.hs` follows this: every ID field is a bare UUID string (`UUID.toText` on the way out, `parseUUIDField` on the way in), and the generated frontend types see plain strings.
-
-## `tagged-flat-serialization` — One flat JSON object per case, discriminated by a uniform `"type"` field — resolved
-
-Every discriminated `Domain.hs` type — `IntakeRequest`'s seven states, `IntakeRequestPriority`'s three tiers, `RoutineDue`'s four cases, `CloseReason`'s three reasons, `AppointmentParty`'s two parties — serializes as **one flat JSON object per case**, never a nested `"contents"`-style wrapper. The discriminator field is named `"type"` **uniformly at every nesting level** — not `"state"` for `IntakeRequest`, `"tier"` for priority, and so on. One parsing rule applies at every depth of the wire format, not one rule per type.
-
-**Field name: `"type"`, not `"tag"`.** `"type"` was chosen specifically because it's the more broadly recognized convention across client stacks — it matches JSON Schema/OpenAPI's own discriminator examples and common real-world API precedent (e.g. Stripe's object-typing fields, GeoJSON's `"type"` member) more closely than `"tag"` would, which reads as more of an FP-ecosystem convention (e.g. Haskell `aeson`'s `TaggedObject` default field name) than a general API-design one. This API's consumers aren't assumed to be Haskell clients, so the wire vocabulary should follow general API convention over the serialization library's own internal naming default.
-
-Fields shared across states/cases use **identical JSON keys everywhere they appear** — e.g. every `IntakeRequest` state that carries a `patientId` calls it `"patientId"` in every one of those states' shapes, never renamed per-state. This is what makes flattening safe for a client: a field's meaning and name never depend on which case produced it.
-
-**The discriminator's *value* (e.g. `"appointed"`, `"routine"`) is a separate, independently-chosen small wire vocabulary — not required to match the Haskell constructor name verbatim.** Coupling the wire value to the exact constructor name would break API clients on a future internal-only rename; this codebase has already renamed constructors/types for naming-precision reasons unrelated to any API concern (e.g. the `HealthcareRequestId` → `IntakeRequestId` rename, per `docs/decisions.md`'s "IntakeRequest: Appointment folded into one sum type, one identity" entry). The wire format should stay insulated from that kind of internal rename, the same way `Persistence.hs`'s row types are already independent of `Domain.hs`'s exact field names rather than mirroring them verbatim.
-
-**No field is ever spuriously `null` standing in for "hasn't reached this stage yet."** A single-object-with-many-nullable-fields encoding was considered and rejected: it would reintroduce, at the wire boundary, exactly the anti-pattern `Domain.hs`'s own embedding chain (`SubmittedIntakeRequest -> TriagedIntakeRequest -> AppointedIntakeRequest`) was built to prevent at the type level. The wire format must be at least as precise as the domain model it's derived from, not less.
-
-**Worked example** — an `Appointed` request with a `Routine`/`RoutineWithin` priority, showing recursive discrimination at three nesting levels (`IntakeRequest`'s own `"type"`, `priority`'s, `RoutineDue`'s):
-
-```json
-{
-  "type": "appointed",
-  "id": "...",
-  "patientId": "...",
-  "narrative": "...",
-  "createdAt": "...",
-  "healthcareServiceId": "...",
-  "priority": { "type": "routine", "due": { "type": "routineWithin", "from": "...", "to": "..." } },
-  "doctorRequirement": {...},
-  "triagedAt": "...",
-  "doctorId": "...",
-  "start": "...",
-  "duration": 30
-}
-```
-
-A `Closed` request carries everything an `Appointed` one does, plus a top-level `closeReason` field following the same pattern:
-
-```json
-"closeReason": { "type": "cancelled", "by": {"type": "byPatient"}, "cancelledAt": "...", "note": "..." }
-```
-
-**Implementation cost, deliberately accepted:** this requires six hand-written `ToJSON`/`FromJSON` cases for `IntakeRequest` — not a single mechanical `deriving (Generic, ToJSON)` with `aeson`'s default encoding — plus similarly hand-written instances for `IntakeRequestPriority`/`RoutineDue`/`CloseReason`. More implementation cost than a default derivation, accepted because it's the only option of those considered that sacrifices neither wire-format flatness (rejected: a nested `"contents"`-wrapper tagged sum, `aeson`'s default `TaggedObject` `sumEncoding`) nor domain precision (rejected: one object with every field present, nullable per state). This is a distinct concern from, but consistent with, `docs/decisions.md`'s "Generic-derived FromJSON on sealed types: rejected as a pattern" entry — that entry blocks `Generic` derivation on sealed `Domain.hs` types for a validation-bypass reason; this rule requires hand-written `Transport.hs` instances even on non-sealed types, for a wire-shape reason.
-
-## `verb-minimalism` — GET and POST only; no PUT, PATCH, DELETE, or HEAD
-
-This API uses exactly two HTTP verbs. Not a stylistic default — checked against the actual domain, and both excluded mutating verbs are structurally absent, not merely unused by convention:
-
-- **No `PUT`.** `PUT`'s overwrite semantics have no referent here — nothing in this domain is a full-resource replace. Every mutation is a state transition with its own precondition (e.g. `state = 'appointed'` for close) and its own outcome set (e.g. `requestMovedOn` if another close got there first), not an unconditional overwrite of a resource's fields.
-- **No `DELETE`.** The domain is `no-delete-on-consumption` throughout (see `triage-db-codegen`): `intake_requests` rows are never deleted, only transitioned between states. `slots` rows are deleted, but only as an internal side effect of `matchWaitlistToSlot`/`matchAcceptedIntakeRequestToSlot` matching a slot — never via a caller-facing delete intent. There is no operation in `Service.hs` a caller would reach for `DELETE` to express.
-- **No `PATCH`, no `HEAD`.** See `action-endpoints-not-generic-patch` below for why `PATCH` specifically is excluded, not just unused.
-
-## `action-endpoints-not-generic-patch` — Action-suffixed POSTs, not PATCH with a state field
-
-`Service.hs`'s 11 mutations are operations with their own precondition contracts (`triage-service-codegen`'s `verifies-the-precondition`), not field-level resource updates. `acceptSubmittedIntakeRequest` isn't "set `state` to `accepted`" — it's an operation with a defined precondition (the request must currently be `Submitted`) and a defined outcome set (`Right TriagedIntakeRequest`, or a specific `ServiceError`). Representing it as `PATCH /intake-requests/:id` with a `{"state": "accepted"}` body would force the API layer to reconstruct an operation-shaped contract from a field-diff at request time — either duplicating `Service.hs`'s precondition logic in the API layer, or becoming RPC wearing a REST verb.
-
-Route each mutation as an action-suffixed `POST` instead: `POST /intake-requests/:id/accept`, `/reject`, `/match`, `/mark-stale`, `/close`.
-
-There is no `/reclaim` route: reclaim was removed from the domain (see `docs/decisions.md`, 2026-09-28). Rescheduling is `/close` followed by a new request — composed by the caller from existing endpoints, not a dedicated endpoint.
-
-## `error-vs-outcome-mapping` — Decided: four HTTP status codes, each answering a different question
-
-`Service.hs` already draws a hard line between two categories of "this didn't just succeed" (its own `error-vs-outcome-types` convention, see `triage-service-codegen`) — `ServiceError` (`PersistenceDecodeError`, `RequestNotFound`, `RequestInWrongState`, `HealthcareServiceNotFound`, `DoctorNotFound`, `PatientNotFound`) vs. named outcome types (`MatchOutcome`'s `Matched`/`NoEligibleRequest`/`RequestIneligible`/`SlotAlreadyClaimed`/`RequestMovedOn`; `TransitionOutcome`'s `Transitioned`/`MovedOn`, both moved-on cases on the wire as `"requestMovedOn"` with the current request as detail; `SlotCreationOutcome`'s `SlotCreated`/`SlotConflict`). The wire mapping for that split is now decided:
-
-- **`400`** — the request never reached a state where `Service.hs` could evaluate it: malformed JSON, a field with the wrong type, a missing required field, an ID that isn't even a valid UUID shape. Rejected before any `Service.hs` function is called.
-- **`404`** — the route/path itself doesn't resolve to any known resource *shape* at all — decided entirely by the router, before any `Service.hs` call (e.g. a path segment that isn't a resource this API has).
-- **`200`** — `Service.hs` actually ran and produced an answer. This covers **both** success and every `ServiceError`/outcome-type constructor, discriminated by a field in the response body, never by status code. This includes `RequestNotFound`: a request for a well-formed, syntactically valid `IntakeRequestId` that doesn't correspond to any stored row still reaches `Service.hs`, runs `fetchIntakeRequest`, and gets a real `Right Nothing` — a genuine domain answer, not an absence of one. Despite the name, `RequestNotFound` is **not** a `404`. The distinguishing test is whether `Service.hs` had to actually run a query to produce the answer, not whether the English description of the constructor sounds like "not found." This is a deliberate, reasoned departure from the common REST instinct of id-not-found → `404`, not an oversight — stated explicitly here because it's the specific case most likely to get "fixed" back to `404` by default in a future pass without this context.
-- **`500`** — outside the domain's vocabulary entirely: `PersistenceDecodeError`, a DB connection failure, anything genuinely unexpected that no `ServiceError`/outcome constructor was written to describe.
-
-## Strategy: REST — decided, not event-sourced
-
-Previously framed as "pick one, or ask the user." Settled, for three independent reasons:
-
-- Every `Service.hs` function is synchronous request/response — there is no subscribe/replay concept anywhere in the current domain model to motivate an event-driven API shape.
-- `docs/decisions.md`'s "Event sourcing: explored, rejected (2026-06)" entry already rejected the harder operational cost (event store, replay, projection maintenance) at the *persistence* layer, on cost grounds at 2-3 doctor scale. Choosing event sourcing for the *API* layer now would reintroduce that same cost one layer up, with no new justification beyond what was already weighed and rejected once.
-- The audit-trail motivation that would normally argue for event sourcing — "why was this patient offered this slot" — is already addressed structurally, without an event log: every lifecycle path is one-way, a cancelled appointment stays on record as `Closed (Cancelled …)`, and a displaced patient's new request carries its own triage decision (see `docs/decisions.md`'s "Reclaim removed; displacing a patient is Closed + a new IntakeRequest" entry). `references/event-sourced.md`'s own "When to choose this" motivating case no longer applies to this domain.
-
-Use `references/rest.md`. `references/event-sourced.md` is retained as a documented, available option — not currently favored, not partially adopted — revisit only if scale assumptions genuinely change, per `docs/decisions.md`'s own closing note on that entry.
-
-**Framework and implementation specifics are settled too:** `references/servant-implementation.md` covers the concrete Servant implementation of the strategy `rest.md` describes — framework choice, `Api.hs` file organization, the `AppM` handler environment, the `runRead`/`runService` error-translation middleware, request-body DTO shapes, and `main`/wiring. Read `rest.md` first for *what* the routes and status codes are, then `servant-implementation.md` for *how* they're actually built in Haskell.
-
-**Worth being aware of, not silently normalized:** `servant-implementation.md` is currently the *only* implementation-level reference in this skill — `rest.md` and `event-sourced.md` both describe wire/routing *strategy* (what a route or event looks like), not framework-specific code patterns (what the Haskell that serves it looks like). There is no equivalent implementation-level document for the event-sourced strategy, because that strategy isn't the one in use — this asymmetry is a direct consequence of only one strategy having been carried to implementation, not an oversight to fix by writing a matching event-sourced implementation doc nobody needs yet.
+## Servant implementation
+- **Framework:** Servant: routes and handlers correspond at compile time.
+- **One module, `Api.hs`,** with the API type grouped per resource (one sub-API per table, composed with `:<|>`). Each resource's route type, handlers and server sit together in a banner-commented section, because Servant matches handlers to routes by position and small groups contain a misordering.
+- **Handlers** run in `AppM = ReaderT ConnectionPool Handler`, with no environment record; `hoistServer` supplies the pool once.
+- **Configuration:** `TRIAGE_DB_URL` (default `postgresql://localhost/triage`) and `TRIAGE_PORT` (default 8080; a malformed value fails at startup). The pool holds 10 connections with a 60-second idle timeout. CORS allows the frontend's origin. Swagger UI is at `/swagger-ui`, and the spec at `/swagger.json`.
+- **`main` only serves.** Migrations are a separate, manual step.
 
 ## When unsure
-
-Prefer the option that keeps the API a thin, faithful mirror of `Service.hs`'s actual operations and their real error/outcome split over one that reshapes it for convenience. Flag ambiguity to the user rather than silently picking — every rule above was settled through a dedicated design conversation rather than found already true of working code, unlike `triage-db-codegen`/`triage-service-codegen`'s rules, so treat that gap with appropriate caution when generating from this skill for the first time.
+Prefer the option that keeps the API a thin, faithful mirror of `Service.hs`, and flag the ambiguity rather than inventing a convention. A new rule gets a kebab-case name before its text.

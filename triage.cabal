@@ -88,3 +88,18 @@ test-suite triage-db-test
     , uuid
   default-language:     Haskell2010
   ghc-options:          -Wall -threaded
+
+-- Needs a running PostgreSQL; see test-schema/Spec.hs. Raw SQL only: no
+-- dependency on the triage library.
+test-suite triage-schema-test
+  type:                 exitcode-stdio-1.0
+  main-is:              Spec.hs
+  hs-source-dirs:       test-schema
+  build-depends:
+      base
+    , bytestring
+    , hspec
+    , postgresql-simple
+    , uuid
+  default-language:     Haskell2010
+  ghc-options:          -Wall -threaded

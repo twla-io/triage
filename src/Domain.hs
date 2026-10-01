@@ -32,19 +32,26 @@ module Domain
   , DoctorRequirement (..)
 
   -- ── Priority / Due constraints ───────────────────────────────────────────
-  , EmergencyDue (..)
-  , UrgentDue (..)
-  , RoutineDue (RoutineAnytime, RoutineNotBefore, RoutineNotAfter)
-  , mkRoutineWithin
-  , routineWithinBounds
+  , MustBeSeenBy (..)
+  , RoutineDue (..)
+  , RoutineWindow                -- sealed: routineNotBefore <= routineNotAfter
+  , mkRoutineWindow
+  , routineNotBefore
+  , routineNotAfter
   , IntakeRequestPriority (..)
 
   -- ── Intake Request ───────────────────────────────────────────────────────
   , SubmittedIntakeRequest (..)  -- constructor open — no invariant to protect
+  , RejectedIntakeRequest (..)   -- constructor open — no invariant to protect
   , TriagedIntakeRequest (..)    -- constructor open — no invariant to protect
   , AppointedIntakeRequest (..)  -- constructor open — no invariant to protect
   , WithdrawnIntakeRequest (..)  -- constructor open — no invariant to protect
+  , WithdrawnFrom (..)
+  , StaleIntakeRequest (..)      -- constructor open — no invariant to protect
+  , ClosedIntakeRequest (..)     -- constructor open — no invariant to protect
   , AppointmentParty (..)
+  , Cancellation (..)
+  , Absence (..)
   , CloseReason (..)
   , IntakeRequest (..)           -- constructor open — no invariant to protect
   , acceptIntakeRequest
@@ -53,8 +60,8 @@ module Domain
   , AvailableSlot (..)
 
   -- ── Doctor Calendar ──────────────────────────────────────────────────────
-  , CalendarEntry (..)
-  , calendarEntryStart
+  , DoctorCalendarEntry (..)
+  , doctorCalendarEntryStart
   , DoctorCalendar             -- sealed: a doctor's entries never overlap
   , mkDoctorCalendar
   , addAvailableSlot
@@ -93,7 +100,7 @@ data Duration
   = QuarterOfAnHour
   | HalfAnHour
   | OneHour
-  deriving (Show, Eq)
+  deriving (Show, Eq, Enum, Bounded)
 
 durationToNominalDiffTime :: Duration -> NominalDiffTime
 durationToNominalDiffTime QuarterOfAnHour = 900
@@ -152,36 +159,36 @@ data DoctorRequirement
 -- Urgent express "must be seen by X"; Routine expresses the appointment
 -- window (or Anytime).
 --
--- RoutineWithin excluded from exports — use mkRoutineWithin (enforces
--- from <= to).
+-- A constructor with a single field names that field's value
+-- (RoutineNotBefore t: t is the routine's not-before bound).
+--
+-- RoutineWindow's constructor excluded from exports — use mkRoutineWindow
+-- (enforces routineNotBefore <= routineNotAfter).
 -- ═══════════════════════════════════════════════════════════════════════════
 
-newtype EmergencyDue = EmergencyDue UTCTime
-  deriving (Show, Eq, Ord)
-
-newtype UrgentDue = UrgentDue UTCTime
+newtype MustBeSeenBy = MustBeSeenBy UTCTime
   deriving (Show, Eq, Ord)
 
 data RoutineDue
   = RoutineAnytime
   | RoutineNotBefore UTCTime
   | RoutineNotAfter  UTCTime
-  | RoutineWithin    UTCTime UTCTime
+  | RoutineWithin    RoutineWindow
   deriving (Show, Eq)
 
-mkRoutineWithin :: UTCTime -> UTCTime -> Maybe RoutineDue
-mkRoutineWithin from to
-  | from <= to = Just (RoutineWithin from to)
-  | otherwise  = Nothing
+-- Positional, constructor not exported: record fields would let record
+-- update bypass mkRoutineWindow. The accessors below name its values.
+data RoutineWindow = RoutineWindow UTCTime UTCTime
+  deriving (Show, Eq)
 
--- Read-only extraction over an already-valid value — cannot construct or
--- fabricate a RoutineWithin, so this does not reopen mkRoutineWithin's
--- from <= to invariant. Exists so downstream layers (e.g. Persistence) can
--- encode an in-memory RoutineDue without needing RoutineWithin's
--- constructor exported.
-routineWithinBounds :: RoutineDue -> Maybe (UTCTime, UTCTime)
-routineWithinBounds (RoutineWithin from to) = Just (from, to)
-routineWithinBounds _                       = Nothing
+mkRoutineWindow :: UTCTime -> UTCTime -> Maybe RoutineWindow
+mkRoutineWindow notBefore notAfter
+  | notBefore <= notAfter = Just (RoutineWindow notBefore notAfter)
+  | otherwise             = Nothing
+
+routineNotBefore, routineNotAfter :: RoutineWindow -> UTCTime
+routineNotBefore (RoutineWindow notBefore _) = notBefore
+routineNotAfter  (RoutineWindow _ notAfter)  = notAfter
 
 -- Tighter/earlier constraints rank before looser ones.
 -- RoutineWithin < RoutineNotAfter < RoutineNotBefore < RoutineAnytime
@@ -189,10 +196,10 @@ routineWithinBounds _                       = Nothing
 -- upper bounds, the narrower window (later lower bound) first. Compares
 -- EQ exactly when the windows are equal, consistent with derived Eq.
 instance Ord RoutineDue where
-  compare (RoutineWithin llo lhi) (RoutineWithin rlo rhi) =
-    compare lhi rhi <> compare rlo llo
-  compare (RoutineWithin _ _)   _                     = LT
-  compare _                     (RoutineWithin _ _)   = GT
+  compare (RoutineWithin l) (RoutineWithin r) =
+    compare (routineNotAfter l) (routineNotAfter r) <> compare (routineNotBefore r) (routineNotBefore l)
+  compare (RoutineWithin _)     _                     = LT
+  compare _                     (RoutineWithin _)     = GT
   compare (RoutineNotAfter l)   (RoutineNotAfter r)   = compare l r
   compare (RoutineNotAfter _)   _                     = LT
   compare _                     (RoutineNotAfter _)   = GT
@@ -202,8 +209,8 @@ instance Ord RoutineDue where
   compare RoutineAnytime        RoutineAnytime         = EQ
 
 data IntakeRequestPriority
-  = Emergency EmergencyDue
-  | Urgent    UrgentDue
+  = Emergency MustBeSeenBy
+  | Urgent    MustBeSeenBy
   | Routine   RoutineDue
   deriving (Show, Eq)
 
@@ -245,6 +252,13 @@ data SubmittedIntakeRequest = SubmittedIntakeRequest
   }
   deriving (Show, Eq)
 
+data RejectedIntakeRequest = RejectedIntakeRequest
+  { submitted       :: SubmittedIntakeRequest
+  , rejectedAt      :: UTCTime
+  , rejectionReason :: Text
+  }
+  deriving (Show, Eq)
+
 data TriagedIntakeRequest = TriagedIntakeRequest
   { submitted           :: SubmittedIntakeRequest
   , healthcareServiceId :: HealthcareServiceId
@@ -262,21 +276,50 @@ data AppointedIntakeRequest = AppointedIntakeRequest
   }
   deriving (Show, Eq)
 
--- Only two cases, deliberately. Withdrawal only exists as a concept BEFORE
--- an appointment exists. There is no WithdrawnFromAppointed — ending an
--- Appointed request is always Closed (Cancelled ByPatient ...), since that
--- already asserts the identical fact (same precondition type, same
--- timestamp, "who ended it" already answered by AppointmentParty). Do not
--- add a third case here.
-data WithdrawnIntakeRequest
-  = WithdrawnFromSubmitted SubmittedIntakeRequest UTCTime (Maybe Text)
-  | WithdrawnFromAccepted  TriagedIntakeRequest   UTCTime (Maybe Text)
+data WithdrawnIntakeRequest = WithdrawnIntakeRequest
+  { withdrawnFrom  :: WithdrawnFrom
+  , withdrawnAt    :: UTCTime
+  , withdrawalNote :: Maybe Text
+  }
   deriving (Show, Eq)
 
--- ByDoctor/ByPatient avoid collision with the real Doctor/Patient entity types.
+-- Only two cases, deliberately. Withdrawal only exists as a concept BEFORE
+-- an appointment exists. There is no FromAppointed — ending an Appointed
+-- request is always Closed with a Cancellation cancelledBy PatientParty,
+-- which already asserts the identical fact. Do not add a third case here.
+data WithdrawnFrom
+  = FromSubmitted SubmittedIntakeRequest
+  | FromAccepted  TriagedIntakeRequest
+  deriving (Show, Eq)
+
+data StaleIntakeRequest = StaleIntakeRequest
+  { triaged :: TriagedIntakeRequest
+  , staleAt :: UTCTime
+  }
+  deriving (Show, Eq)
+
+-- DoctorParty/PatientParty avoid collision with the Doctor/Patient entity
+-- constructors.
 data AppointmentParty
-  = ByDoctor
-  | ByPatient
+  = DoctorParty
+  | PatientParty
+  deriving (Show, Eq, Enum, Bounded)
+
+-- cancelledAt is when the cancellation occurred, not the appointment's own
+-- start — not validated against it. Cancelled vs. NoShow is the booking
+-- manager's judgment call, recorded as given.
+data Cancellation = Cancellation
+  { cancelledBy      :: AppointmentParty
+  , cancelledAt      :: UTCTime
+  , cancellationNote :: Maybe Text
+  }
+  deriving (Show, Eq)
+
+-- What absentParty means is an open question for the domain expert
+-- (docs/decisions.md): it is kept a separate fact from cancelledBy.
+newtype Absence = Absence
+  { absentParty :: AppointmentParty
+  }
   deriving (Show, Eq)
 
 -- Stays nested under Closed, deliberately not flattened into top-level
@@ -284,17 +327,16 @@ data AppointmentParty
 -- orthogonal axis to "what lifecycle stage this is," and flattening would
 -- mix those two axes at one level. Do not promote Completed/Cancelled/
 -- NoShow to IntakeRequest constructors.
---
--- Cancelled's UTCTime records when the cancellation occurred, distinct from
--- the appointment's own scheduled date (embedded via AppointedIntakeRequest
--- below) — not validated against it structurally; whether something is
--- Cancelled vs. NoShow is entirely the booking manager's judgment call,
--- recorded as given. The trailing Maybe Text on Cancelled is an optional
--- free-text reason, same shape as Rejected's/Withdrawn's own free-text notes.
 data CloseReason
   = Completed
-  | Cancelled AppointmentParty UTCTime (Maybe Text)
-  | NoShow    AppointmentParty
+  | Cancelled Cancellation
+  | NoShow    Absence
+  deriving (Show, Eq)
+
+data ClosedIntakeRequest = ClosedIntakeRequest
+  { appointed   :: AppointedIntakeRequest
+  , closeReason :: CloseReason
+  }
   deriving (Show, Eq)
 
 -- All of Rejected/Withdrawn/Stale/Closed are permanently terminal — no
@@ -312,17 +354,17 @@ data CloseReason
 -- Submitted — a due date doesn't exist before triage, so "stale" is
 -- structurally meaningless there. No dedicated markIntakeRequestStale
 -- function exists in this module — direct construction only
--- (Stale triaged staleAt), same precedent as Rejected. Its only
--- precondition is "this was Accepted", which belongs in Service.hs's
--- fetch-then-check wrapper, not here.
+-- (Stale StaleIntakeRequest { triaged, staleAt }), same precedent as
+-- Rejected. Its only precondition is "this was Accepted", which belongs in
+-- Service.hs's fetch-then-check wrapper, not here.
 data IntakeRequest
   = Submitted SubmittedIntakeRequest
-  | Rejected  SubmittedIntakeRequest UTCTime Text
+  | Rejected  RejectedIntakeRequest
   | Accepted  TriagedIntakeRequest
   | Appointed AppointedIntakeRequest
   | Withdrawn WithdrawnIntakeRequest
-  | Stale     TriagedIntakeRequest UTCTime
-  | Closed    AppointedIntakeRequest CloseReason
+  | Stale     StaleIntakeRequest
+  | Closed    ClosedIntakeRequest
   deriving (Show, Eq)
 
 acceptIntakeRequest
@@ -336,9 +378,9 @@ acceptIntakeRequest submitted healthcareServiceId priority doctorRequirement tri
   TriagedIntakeRequest { submitted, healthcareServiceId, priority, doctorRequirement, triagedAt }
 
 -- No rejectIntakeRequest function. Rejection is direct construction —
--- Rejected submitted rejectedAt reason — same precedent as
--- ClosedAppointment in prior revisions of this file: callers construct
--- directly, no dedicated close/reject function.
+-- Rejected RejectedIntakeRequest { submitted, rejectedAt, rejectionReason }
+-- — as closing is: callers construct directly, no dedicated close/reject
+-- function.
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SLOT
@@ -376,35 +418,35 @@ data AvailableSlot = AvailableSlot
 -- needs this same invariant enforced where it lives.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data CalendarEntry
+data DoctorCalendarEntry
   = Slot        AvailableSlot
   | Appointment AppointedIntakeRequest
   deriving (Show, Eq)
 
-calendarEntryDoctor :: CalendarEntry -> DoctorId
-calendarEntryDoctor (Slot s)        = s.doctorId
-calendarEntryDoctor (Appointment a) = a.doctorId
+doctorCalendarEntryDoctor :: DoctorCalendarEntry -> DoctorId
+doctorCalendarEntryDoctor (Slot s)        = s.doctorId
+doctorCalendarEntryDoctor (Appointment a) = a.doctorId
 
-calendarEntryStart :: CalendarEntry -> UTCTime
-calendarEntryStart (Slot s)        = s.start
-calendarEntryStart (Appointment a) = a.start
+doctorCalendarEntryStart :: DoctorCalendarEntry -> UTCTime
+doctorCalendarEntryStart (Slot s)        = s.start
+doctorCalendarEntryStart (Appointment a) = a.start
 
-calendarEntryDuration :: CalendarEntry -> Duration
-calendarEntryDuration (Slot s)        = s.duration
-calendarEntryDuration (Appointment a) = a.duration
+doctorCalendarEntryDuration :: DoctorCalendarEntry -> Duration
+doctorCalendarEntryDuration (Slot s)        = s.duration
+doctorCalendarEntryDuration (Appointment a) = a.duration
 
-calendarEntryEnd :: CalendarEntry -> UTCTime
-calendarEntryEnd e =
-  addUTCTime (durationToNominalDiffTime (calendarEntryDuration e)) (calendarEntryStart e)
+doctorCalendarEntryEnd :: DoctorCalendarEntry -> UTCTime
+doctorCalendarEntryEnd e =
+  addUTCTime (durationToNominalDiffTime (doctorCalendarEntryDuration e)) (doctorCalendarEntryStart e)
 
 -- Keyed by start within each doctor: non-overlapping entries of non-zero
 -- duration never share a start.
 newtype DoctorCalendar =
-  DoctorCalendar (Map DoctorId (Map UTCTime CalendarEntry))
+  DoctorCalendar (Map DoctorId (Map UTCTime DoctorCalendarEntry))
   deriving (Show, Eq)
 
-mkDoctorCalendar :: [CalendarEntry] -> Maybe DoctorCalendar
-mkDoctorCalendar = foldM addCalendarEntry (DoctorCalendar Map.empty)
+mkDoctorCalendar :: [DoctorCalendarEntry] -> Maybe DoctorCalendar
+mkDoctorCalendar = foldM addDoctorCalendarEntry (DoctorCalendar Map.empty)
 
 -- A new slot for this doctor at this time, lasting as long as its service.
 -- Nothing if it would overlap one of the doctor's entries.
@@ -412,7 +454,7 @@ addAvailableSlot
   :: DoctorCalendar -> SlotId -> DoctorId -> HealthcareService -> UTCTime
   -> Maybe (AvailableSlot, DoctorCalendar)
 addAvailableSlot calendar slotId doctorId service start =
-  (\grown -> (slot, grown)) <$> addCalendarEntry calendar (Slot slot)
+  (\grown -> (slot, grown)) <$> addDoctorCalendarEntry calendar (Slot slot)
   where
     slot = AvailableSlot
       { id = slotId, doctorId, healthcareServiceId = service.id, start, duration = service.duration }
@@ -420,18 +462,18 @@ addAvailableSlot calendar slotId doctorId service start =
 -- Only the nearest neighbour on each side needs checking: the existing
 -- entries already don't overlap, so the one starting just before ends
 -- latest among all earlier ones.
-addCalendarEntry :: DoctorCalendar -> CalendarEntry -> Maybe DoctorCalendar
-addCalendarEntry (DoctorCalendar calendar) entry
+addDoctorCalendarEntry :: DoctorCalendar -> DoctorCalendarEntry -> Maybe DoctorCalendar
+addDoctorCalendarEntry (DoctorCalendar calendar) entry
   | clashesWithPrevious || clashesWithNext = Nothing
   | otherwise = Just . DoctorCalendar $
       Map.insert doctor (Map.insert start entry own) calendar
   where
-    doctor = calendarEntryDoctor entry
-    start  = calendarEntryStart entry
-    end    = calendarEntryEnd entry
+    doctor = doctorCalendarEntryDoctor entry
+    start  = doctorCalendarEntryStart entry
+    end    = doctorCalendarEntryEnd entry
     own    = Map.findWithDefault Map.empty doctor calendar
     clashesWithPrevious =
-      maybe False (\(_, prev) -> calendarEntryEnd prev > start) (Map.lookupLT start own)
+      maybe False (\(_, prev) -> doctorCalendarEntryEnd prev > start) (Map.lookupLT start own)
     clashesWithNext =
       maybe False (\(next, _) -> next < end) (Map.lookupGE start own)
 
@@ -444,13 +486,13 @@ matchesDoctorRequirement _    AnyDoctor              = True
 matchesDoctorRequirement slot (SpecificDoctor reqId) = slot.doctorId == reqId
 
 matchesTime :: IntakeRequestPriority -> UTCTime -> Bool
-matchesTime (Emergency (EmergencyDue deadline))       slotStart = slotStart <= deadline
-matchesTime (Urgent    (UrgentDue    deadline))       slotStart = slotStart <= deadline
+matchesTime (Emergency (MustBeSeenBy deadline))       slotStart = slotStart <= deadline
+matchesTime (Urgent    (MustBeSeenBy deadline))       slotStart = slotStart <= deadline
 matchesTime (Routine   RoutineAnytime)                _         = True
 matchesTime (Routine   (RoutineNotBefore earliest))   slotStart = slotStart >= earliest
 matchesTime (Routine   (RoutineNotAfter  latest))     slotStart = slotStart <= latest
-matchesTime (Routine   (RoutineWithin earliest latest)) slotStart =
-  slotStart >= earliest && slotStart <= latest
+matchesTime (Routine   (RoutineWithin window))       slotStart =
+  slotStart >= routineNotBefore window && slotStart <= routineNotAfter window
 
 matches :: AvailableSlot -> TriagedIntakeRequest -> Bool
 matches slot TriagedIntakeRequest { healthcareServiceId, priority, doctorRequirement } =

@@ -17,39 +17,15 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 import Data.Maybe (isJust)
-import Data.Proxy (Proxy (..))
+
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian, addUTCTime)
 import Data.UUID (UUID)
-import Servant.Swagger.Test (validateEveryToJSON)
-import qualified Data.Text as Text
 import qualified Data.UUID as UUID
 import Domain
-import Api (API)
-import Transport
-  ( AcceptIntakeRequestRequest (..)
-  , AppointedIntakeRequestDTO (..)
-  , AppointmentPartyDTO (..)
-  , AvailableSlotDTO (..)
-  , CalendarEntryDTO (..)
-  , CloseReasonDTO (..)
-  , CloseReasonRequestDTO (..)
-  , CreateAvailableSlotRequest (..)
-  , CreateDoctorRequest (..)
-  , CreateHealthcareServiceRequest (..)
-  , CreatePatientRequest (..)
-  , DoctorDTO (..)
-  , DoctorRequirementDTO (..)
-  , DurationDTO (..)
-  , HealthcareServiceDTO (..)
-  , IntakeRequestDTO (..)
-  , IntakeRequestPriorityDTO (..)
-  , PatientDTO (..)
-  , MatchIntakeRequestRequest (..)
-  , RejectIntakeRequestRequest (..)
-  , RoutineDueDTO (..)
-  , SubmitIntakeRequestRequest (..)
-  )
+import Data.Aeson (ToJSON)
+import Data.Swagger (ToSchema, validateToJSON)
+import qualified Transport as T
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- GENERATORS
@@ -97,17 +73,17 @@ genPriority :: Gen IntakeRequestPriority
 genPriority = do
   deadline <- genMoment
   elements
-    [ Emergency (EmergencyDue deadline)
-    , Urgent    (UrgentDue    deadline)
+    [ Emergency (MustBeSeenBy deadline)
+    , Urgent    (MustBeSeenBy deadline)
     , Routine   RoutineAnytime
     ]
 
--- Only for bounds already known to satisfy from <= to; goes through
--- mkRoutineWithin since RoutineWithin's constructor isn't exported.
+-- Only for bounds already known to satisfy notBefore <= notAfter; goes
+-- through mkRoutineWindow since RoutineWindow's constructor isn't exported.
 validWithin :: UTCTime -> UTCTime -> RoutineDue
-validWithin from to = case mkRoutineWithin from to of
-  Just due -> due
-  Nothing  -> error "validWithin: from > to"
+validWithin notBefore notAfter = case mkRoutineWindow notBefore notAfter of
+  Just window -> RoutineWithin window
+  Nothing     -> error "validWithin: notBefore > notAfter"
 
 -- Offsets by whole days, so ordered bounds are built rather than filtered
 -- for (a suchThat on genMoment's finite range can loop forever).
@@ -152,8 +128,8 @@ genAvailableSlotAt did moment dur = do
     { id = newSlotId, doctorId = did
     , healthcareServiceId = sid, start = moment, duration = dur }
 
-genCalendarEntryAt :: DoctorId -> UTCTime -> Duration -> Gen CalendarEntry
-genCalendarEntryAt did moment dur = oneof
+genDoctorCalendarEntryAt :: DoctorId -> UTCTime -> Duration -> Gen DoctorCalendarEntry
+genDoctorCalendarEntryAt did moment dur = oneof
   [ Slot <$> genAvailableSlotAt did moment dur
   , do req <- arbitrary >>= genTriagedRequestFor
        pure $ Appointment AppointedIntakeRequest
@@ -167,198 +143,116 @@ genGridMoment = do
   quarter <- choose (0, 12 :: Integer)
   pure (addUTCTime (fromIntegral quarter * 900) (UTCTime (fromGregorian 2026 1 1) 0))
 
-genCalendarEntryFor :: DoctorId -> Gen CalendarEntry
-genCalendarEntryFor did = do
+genDoctorCalendarEntryFor :: DoctorId -> Gen DoctorCalendarEntry
+genDoctorCalendarEntryFor did = do
   moment <- genGridMoment
-  genCalendarEntryAt did moment =<< arbitrary
+  genDoctorCalendarEntryAt did moment =<< arbitrary
 
 -- Short lists: on a thirteen-start grid, long ones almost always overlap.
-genCalendarEntries :: Gen [CalendarEntry]
-genCalendarEntries = do
+genDoctorCalendarEntries :: Gen [DoctorCalendarEntry]
+genDoctorCalendarEntries = do
   doctors <- vectorOf 2 arbitrary
   n       <- choose (0, 4)
-  vectorOf n (elements doctors >>= genCalendarEntryFor)
+  vectorOf n (elements doctors >>= genDoctorCalendarEntryFor)
 
-calendarEntryDoctorOf :: CalendarEntry -> DoctorId
-calendarEntryDoctorOf (Slot s)        = s.doctorId
-calendarEntryDoctorOf (Appointment a) = a.doctorId
+doctorCalendarEntryDoctorOf :: DoctorCalendarEntry -> DoctorId
+doctorCalendarEntryDoctorOf (Slot s)        = s.doctorId
+doctorCalendarEntryDoctorOf (Appointment a) = a.doctorId
 
-calendarEntryEndOf :: CalendarEntry -> UTCTime
-calendarEntryEndOf e = addUTCTime (durationToNominalDiffTime (dur e)) (calendarEntryStart e)
+doctorCalendarEntryEndOf :: DoctorCalendarEntry -> UTCTime
+doctorCalendarEntryEndOf e = addUTCTime (durationToNominalDiffTime (dur e)) (doctorCalendarEntryStart e)
   where
     dur (Slot s)        = s.duration
     dur (Appointment a) = a.duration
 
 -- Reference definition, checked against every existing entry: same
 -- doctor, half-open intervals intersect.
-overlapsNaive :: CalendarEntry -> CalendarEntry -> Bool
+overlapsNaive :: DoctorCalendarEntry -> DoctorCalendarEntry -> Bool
 overlapsNaive a b =
-     calendarEntryDoctorOf a == calendarEntryDoctorOf b
-  && calendarEntryStart a < calendarEntryEndOf b
-  && calendarEntryStart b < calendarEntryEndOf a
+     doctorCalendarEntryDoctorOf a == doctorCalendarEntryDoctorOf b
+  && doctorCalendarEntryStart a < doctorCalendarEntryEndOf b
+  && doctorCalendarEntryStart b < doctorCalendarEntryEndOf a
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- TRANSPORT DTO ARBITRARY INSTANCES
--- Transport.hs's DTOs are different types from their Domain.hs
--- counterparts (even where structurally similar), so these are their own
--- instances, not reused via toDomain/fromDomain -- generated straight
--- from each DTO's own field list, same shape discipline as
--- genSubmittedIntakeRequest/genAvailableSlotFor above. Needed for
--- validateEveryToJSON below, which requires a genuine Arbitrary instance
--- (not just a Gen helper function) per type used as a request/response
--- body anywhere in Api.API.
---
--- RoutineWithinDTO's from/to are generated independently, with no
--- from <= to ordering enforced -- unlike Domain.hs's sealed
--- RoutineWithin, RoutineWithinDTO's own constructor is open, and this
--- test never calls toDomainRoutineDue/mkRoutineWithin at all (it only
--- checks ToJSON's output against ToSchema, a wire-shape check, not a
--- domain-invariant one), so an unordered pair is a legitimate value to
--- generate here.
+-- WIRE-FORMAT GENERATORS
+-- Every lifecycle case and nested sum, so each DTO is checked on real
+-- Domain values converted by its fromDomain function.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-genText :: Gen Text
-genText = Text.pack <$> listOf1 (elements (['a' .. 'z'] ++ ['A' .. 'Z'] ++ ['0' .. '9'] ++ " "))
+genAnyPriority :: Gen IntakeRequestPriority
+genAnyPriority = oneof
+  [ Emergency . MustBeSeenBy <$> genMoment
+  , Urgent    . MustBeSeenBy <$> genMoment
+  , Routine <$> genRoutineDue
+  ]
 
-genMaybeText :: Gen (Maybe Text)
-genMaybeText = oneof [pure Nothing, Just <$> genText]
+genDoctorRequirement :: Gen DoctorRequirement
+genDoctorRequirement = oneof [pure AnyDoctor, SpecificDoctor <$> arbitrary]
 
-instance Arbitrary DoctorDTO where
-  arbitrary = DoctorDTO <$> genUUID <*> genText
+genAnyTriaged :: Gen TriagedIntakeRequest
+genAnyTriaged =
+  acceptIntakeRequest <$> genSubmittedIntakeRequest <*> arbitrary <*> genAnyPriority
+                      <*> genDoctorRequirement <*> genMoment
 
-instance Arbitrary PatientDTO where
-  arbitrary = PatientDTO <$> genUUID <*> genText
+genAppointed :: Gen AppointedIntakeRequest
+genAppointed = AppointedIntakeRequest <$> genAnyTriaged <*> arbitrary <*> genMoment <*> arbitrary
 
-instance Arbitrary CreateDoctorRequest where
-  arbitrary = CreateDoctorRequest <$> genText
+genAnySlot :: Gen AvailableSlot
+genAnySlot = do
+  sid <- arbitrary
+  did <- arbitrary
+  genAvailableSlotFor sid did
 
-instance Arbitrary CreatePatientRequest where
-  arbitrary = CreatePatientRequest <$> genText
+genParty :: Gen AppointmentParty
+genParty = elements [minBound .. maxBound]
 
-instance Arbitrary DurationDTO where
-  arbitrary = elements [QuarterOfAnHourDTO, HalfAnHourDTO, OneHourDTO]
+genNote :: Gen (Maybe Text)
+genNote = elements [Nothing, Just "a note"]
 
-instance Arbitrary HealthcareServiceDTO where
-  arbitrary = HealthcareServiceDTO <$> genUUID <*> genText <*> arbitrary
+genCloseReason :: Gen CloseReason
+genCloseReason = oneof
+  [ pure Completed
+  , Cancelled <$> (Cancellation <$> genParty <*> genMoment <*> genNote)
+  , NoShow . Absence <$> genParty
+  ]
 
-instance Arbitrary CreateHealthcareServiceRequest where
-  arbitrary = CreateHealthcareServiceRequest <$> genText <*> arbitrary
+genIntakeRequest :: Gen IntakeRequest
+genIntakeRequest = oneof
+  [ Submitted <$> genSubmittedIntakeRequest
+  , Rejected <$> (RejectedIntakeRequest <$> genSubmittedIntakeRequest <*> genMoment <*> pure "no")
+  , Accepted <$> genAnyTriaged
+  , Appointed <$> genAppointed
+  , Withdrawn <$> (WithdrawnIntakeRequest
+                    <$> oneof [FromSubmitted <$> genSubmittedIntakeRequest, FromAccepted <$> genAnyTriaged]
+                    <*> genMoment <*> genNote)
+  , Stale <$> (StaleIntakeRequest <$> genAnyTriaged <*> genMoment)
+  , Closed <$> (ClosedIntakeRequest <$> genAppointed <*> genCloseReason)
+  ]
 
-instance Arbitrary AvailableSlotDTO where
-  arbitrary = AvailableSlotDTO <$> genUUID <*> genUUID <*> genUUID <*> genMoment <*> arbitrary
+genCloseReasonRequest :: Gen T.CloseReasonRequest
+genCloseReasonRequest = oneof
+  [ pure T.CompletedRequest
+  , T.CancelledRequest <$> (T.CancellationRequest <$> (T.fromDomainAppointmentParty <$> genParty) <*> genNote)
+  , T.NoShowRequest . T.fromDomainAbsence . Absence <$> genParty
+  ]
 
-instance Arbitrary CreateAvailableSlotRequest where
-  arbitrary = CreateAvailableSlotRequest <$> genUUID <*> genUUID <*> genMoment
+-- A value's JSON is valid against its own schema.
+matchesSchema :: (ToJSON a, ToSchema a) => a -> Property
+matchesSchema x = validateToJSON x === []
 
-instance Arbitrary AppointmentPartyDTO where
-  arbitrary = elements [ByDoctorDTO, ByPatientDTO]
-
-instance Arbitrary RoutineDueDTO where
-  arbitrary = oneof
-    [ pure RoutineAnytimeDTO
-    , RoutineNotBeforeDTO <$> genMoment
-    , RoutineNotAfterDTO  <$> genMoment
-    , RoutineWithinDTO    <$> genMoment <*> genMoment
-    ]
-
-instance Arbitrary CloseReasonDTO where
-  arbitrary = oneof
-    [ pure CompletedDTO
-    , CancelledDTO <$> arbitrary <*> genMoment <*> genMaybeText
-    , NoShowDTO    <$> arbitrary
-    ]
-
-instance Arbitrary CloseReasonRequestDTO where
-  arbitrary = oneof
-    [ pure CompletedRequestDTO
-    , CancelledRequestDTO <$> arbitrary <*> genMaybeText
-    , NoShowRequestDTO    <$> arbitrary
-    ]
-
-instance Arbitrary IntakeRequestPriorityDTO where
-  arbitrary = oneof
-    [ EmergencyDTO <$> genMoment
-    , UrgentDTO    <$> genMoment
-    , RoutineDTO   <$> arbitrary
-    ]
-
-instance Arbitrary DoctorRequirementDTO where
-  arbitrary = oneof [pure AnyDoctorDTO, SpecificDoctorDTO <$> genUUID]
-
-instance Arbitrary AppointedIntakeRequestDTO where
-  arbitrary = AppointedIntakeRequestDTO
-    <$> genUUID <*> genUUID <*> genText <*> genMoment
-    <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment <*> genUUID <*> genMoment <*> arbitrary
-
-instance Arbitrary IntakeRequestDTO where
-  arbitrary = oneof
-    [ SubmittedDTO
-        <$> genUUID <*> genUUID <*> genText <*> genMoment
-    , RejectedDTO
-        <$> genUUID <*> genUUID <*> genText <*> genMoment
-        <*> genMoment <*> genText
-    , AcceptedDTO
-        <$> genUUID <*> genUUID <*> genText <*> genMoment
-        <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment
-    , AppointedDTO
-        <$> genUUID <*> genUUID <*> genText <*> genMoment
-        <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment <*> genUUID <*> genMoment <*> arbitrary
-    , WithdrawnFromSubmittedDTO
-        <$> genUUID <*> genUUID <*> genText <*> genMoment
-        <*> genMoment <*> genMaybeText
-    , WithdrawnFromAcceptedDTO
-        <$> genUUID <*> genUUID <*> genText <*> genMoment
-        <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment <*> genMoment <*> genMaybeText
-    , StaleDTO
-        <$> genUUID <*> genUUID <*> genText <*> genMoment
-        <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment <*> genMoment
-    , ClosedDTO
-        <$> genUUID <*> genUUID <*> genText <*> genMoment
-        <*> genUUID <*> arbitrary <*> arbitrary <*> genMoment <*> genUUID <*> genMoment <*> arbitrary
-        <*> arbitrary
-    ]
-
-instance Arbitrary SubmitIntakeRequestRequest where
-  arbitrary = SubmitIntakeRequestRequest <$> genUUID <*> genText
-
-instance Arbitrary AcceptIntakeRequestRequest where
-  arbitrary = AcceptIntakeRequestRequest <$> genUUID <*> arbitrary <*> arbitrary
-
-instance Arbitrary RejectIntakeRequestRequest where
-  arbitrary = RejectIntakeRequestRequest <$> genText
-
-instance Arbitrary MatchIntakeRequestRequest where
-  arbitrary = MatchIntakeRequestRequest <$> genUUID
-
-instance Arbitrary CalendarEntryDTO where
-  arbitrary = oneof [SlotEntryDTO <$> arbitrary, AppointmentEntryDTO <$> arbitrary]
-
--- ═══════════════════════════════════════════════════════════════════════════
--- TESTS
---
--- Every DTO above already has a hand-written ToSchema (Transport.hs) and
--- ToJSON; aeson's Value -- the one Api.API body type with no DTO of its
--- own, several mutation endpoints' bare {"outcome","detail"} envelope --
--- gets its ToSchema orphan (and Arbitrary, shipped by aeson itself) at
--- the library level in Transport.hs, not here (see that file's SWAGGER
--- SCHEMA HELPERS section). validateEveryToJSON below (servant-swagger)
--- walks Api.API's route types, collects every distinct JSON request/
--- response body type, and checks that an arbitrary value's real ToJSON
--- output actually validates against its own declared ToSchema, for each
--- one.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 main :: IO ()
 main = hspec $ do
 
-  describe "mkRoutineWithin" $
-    prop "rejects from > to" $ \offsetA offsetB ->
+  describe "mkRoutineWindow" $
+    prop "rejects notBefore > notAfter" $ \offsetA offsetB ->
       let base = UTCTime (fromGregorian 2026 1 1) 0
           a    = addUTCTime (fromIntegral (offsetA :: Int)) base
           b    = addUTCTime (fromIntegral (offsetB :: Int)) base
       in if a > b
-           then mkRoutineWithin a b === Nothing
-           else mkRoutineWithin a b =/= Nothing
+           then mkRoutineWindow a b === Nothing
+           else mkRoutineWindow a b =/= Nothing
 
   describe "RoutineDue ordering" $ do
     prop "earlier upper bound takes precedence regardless of lower bounds" $ do
@@ -425,7 +319,7 @@ main = hspec $ do
             , start               = addUTCTime (fromIntegral offset + 1) deadline
             , duration            = slot.duration
             }
-          prio           = Emergency (EmergencyDue deadline)
+          prio           = Emergency (MustBeSeenBy deadline)
           req            = acceptIntakeRequest baseRequest sid prio AnyDoctor now
       pure $  matches beforeDeadline req
           .&&. not (matches afterDeadline req)
@@ -437,7 +331,7 @@ main = hspec $ do
       slot <- genAvailableSlotFor sid did
       req  <- genTriagedRequestFor sid
       pure $ case matchIntakeRequestToSlot slot req of
-        Just appointed -> appointed.triaged === req
+        Just appt -> appt.triaged === req
         Nothing        -> property True
 
     prop "hard-copies the slot's doctor/start/duration into the appointment" $ do
@@ -446,10 +340,10 @@ main = hspec $ do
       slot <- genAvailableSlotFor sid did
       req  <- genTriagedRequestFor sid
       pure $ case matchIntakeRequestToSlot slot req of
-        Just appointed ->
-              appointed.doctorId === slot.doctorId
-          .&&. appointed.start    === slot.start
-          .&&. appointed.duration === slot.duration
+        Just appt ->
+              appt.doctorId === slot.doctorId
+          .&&. appt.start    === slot.start
+          .&&. appt.duration === slot.duration
         Nothing -> property True
 
   describe "matchByPriority" $ do
@@ -462,11 +356,11 @@ main = hspec $ do
       let slotStart  = slot.start
           deadline   = addUTCTime 86400 slotStart
           mkReq prio = acceptIntakeRequest baseRequest sid prio AnyDoctor now
-          emergency  = mkReq (Emergency (EmergencyDue deadline))
-          urgent     = mkReq (Urgent    (UrgentDue    deadline))
+          emergency  = mkReq (Emergency (MustBeSeenBy deadline))
+          urgent     = mkReq (Urgent    (MustBeSeenBy deadline))
           routine    = mkReq (Routine   RoutineAnytime)
       pure $ case matchByPriority slot [routine, urgent, emergency] of
-        Just appointed -> appointed.triaged.priority === Emergency (EmergencyDue deadline)
+        Just appt -> appt.triaged.priority === Emergency (MustBeSeenBy deadline)
         Nothing        -> property False
 
     prop "returns Nothing when no request matches" $ do
@@ -490,15 +384,15 @@ main = hspec $ do
           wide       = mkReq wideDue
           narrow     = mkReq narrowDue
       pure $ case matchByPriority slot [wide, narrow] of
-        Just appointed ->
+        Just appt ->
               property (matches slot wide)
           .&&. property (matches slot narrow)
-          .&&. appointed.triaged.priority === Routine narrowDue
+          .&&. appt.triaged.priority === Routine narrowDue
         Nothing -> property False
 
   describe "mkDoctorCalendar" $
     prop "succeeds exactly when no two entries of the same doctor overlap" $ do
-      entries <- genCalendarEntries
+      entries <- genDoctorCalendarEntries
       let pairs = [ (a, b) | (i, a) <- zip [0 :: Int ..] entries
                            , (j, b) <- zip [0 ..] entries, i < j ]
       pure $ isJust (mkDoctorCalendar entries)
@@ -506,8 +400,8 @@ main = hspec $ do
 
   describe "addAvailableSlot" $ do
     prop "succeeds exactly when the calendar's entries plus the slot still form a calendar" $ do
-      entries <- genCalendarEntries
-      did     <- elements (map calendarEntryDoctorOf entries ++ [DoctorId UUID.nil])
+      entries <- genDoctorCalendarEntries
+      did     <- elements (map doctorCalendarEntryDoctorOf entries ++ [DoctorId UUID.nil])
       moment  <- genGridMoment
       service <- genService
       newId   <- arbitrary
@@ -534,23 +428,50 @@ main = hspec $ do
 
     prop "accepts a slot starting exactly where another entry ends" $ do
       did     <- arbitrary
-      entry   <- genCalendarEntryFor did
+      entry   <- genDoctorCalendarEntryFor did
       service <- genService
       newId   <- arbitrary
-      pure $ isJust (mkDoctorCalendar [entry] >>= \c -> addAvailableSlot c newId did service (calendarEntryEndOf entry))
+      pure $ isJust (mkDoctorCalendar [entry] >>= \c -> addAvailableSlot c newId did service (doctorCalendarEntryEndOf entry))
 
     prop "never rejects a slot because of another doctor's entry" $ do
       did1    <- arbitrary
       did2    <- arbitrary `suchThat` (/= did1)
-      entry   <- genCalendarEntryFor did1
+      entry   <- genDoctorCalendarEntryFor did1
       service <- genService
       newId   <- arbitrary
-      pure $ isJust (mkDoctorCalendar [entry] >>= \c -> addAvailableSlot c newId did2 service (calendarEntryStart entry))
-
-  -- Route-level, not type-level, unlike the property tests above —
-  -- validateEveryToJSON (servant-swagger) generates its own per-type
-  -- Spec internally (one example per distinct JSON body type in
-  -- Api.API), so it's spliced straight into this do-block via describe
-  -- rather than wrapped in a single prop.
-  describe "Api.API request/response bodies: ToJSON matches ToSchema" $
-    validateEveryToJSON (Proxy :: Proxy API)
+      pure $ isJust (mkDoctorCalendar [entry] >>= \c -> addAvailableSlot c newId did2 service (doctorCalendarEntryStart entry))
+  describe "wire format: every DTO's ToJSON matches its ToSchema" $ do
+    prop "IntakeRequest (every case)"   $ forAll genIntakeRequest (matchesSchema . T.fromDomainIntakeRequest)
+    prop "IntakeRequestPriority"        $ forAll genAnyPriority (matchesSchema . T.fromDomainIntakeRequestPriority)
+    prop "DoctorRequirement"            $ forAll genDoctorRequirement (matchesSchema . T.fromDomainDoctorRequirement)
+    prop "CloseReason"                  $ forAll genCloseReason (matchesSchema . T.fromDomainCloseReason)
+    prop "AvailableSlot"                $ forAll genAnySlot
+                                            (matchesSchema . T.fromDomainAvailableSlot)
+    prop "DoctorCalendarEntry"          $ forAll genDoctorCalendarEntries
+                                            (conjoin . map (matchesSchema . T.fromDomainDoctorCalendarEntry))
+    prop "HealthcareService"            $ forAll genService (matchesSchema . T.fromDomainHealthcareService)
+    prop "Doctor and Patient"           $ \did pid ->
+      matchesSchema (T.fromDomainDoctor (Doctor did "Dr A"))
+        .&&. matchesSchema (T.fromDomainPatient (Patient pid "Patient P"))
+    prop "request bodies" $ do
+      tr <- genAnyTriaged
+      slot    <- genAnySlot
+      service <- genService
+      close   <- genCloseReasonRequest
+      note    <- genNote
+      pure $ conjoin
+        [ matchesSchema (T.CreateDoctorRequest "Dr A")
+        , matchesSchema (T.CreatePatientRequest "Patient P")
+        , matchesSchema (T.CreateHealthcareServiceRequest "Consultation" (T.fromDomainDuration service.duration))
+        , matchesSchema (T.SubmitIntakeRequestRequest (T.fromDomainPatientId tr.submitted.patientId) "needs care")
+        , matchesSchema (T.AcceptSubmittedIntakeRequestRequest
+            (T.fromDomainHealthcareServiceId tr.healthcareServiceId)
+            (T.fromDomainIntakeRequestPriority tr.priority)
+            (T.fromDomainDoctorRequirement tr.doctorRequirement))
+        , matchesSchema (T.RejectSubmittedIntakeRequestRequest "no")
+        , matchesSchema (T.MatchAcceptedIntakeRequestToSlotRequest (T.fromDomainSlotId slot.id))
+        , matchesSchema (T.WithdrawIntakeRequestRequest note)
+        , matchesSchema (T.CloseAppointedIntakeRequestRequest close)
+        , matchesSchema (T.CreateAvailableSlotRequest (T.fromDomainDoctorId slot.doctorId)
+            (T.fromDomainHealthcareServiceId slot.healthcareServiceId) slot.start)
+        ]

@@ -9,12 +9,12 @@ them.
 ```haskell
 data IntakeRequest
   = Submitted SubmittedIntakeRequest
-  | Rejected  SubmittedIntakeRequest UTCTime Text
+  | Rejected  RejectedIntakeRequest
   | Accepted  TriagedIntakeRequest
   | Appointed AppointedIntakeRequest
   | Withdrawn WithdrawnIntakeRequest
-  | Stale     TriagedIntakeRequest UTCTime
-  | Closed    AppointedIntakeRequest CloseReason
+  | Stale     StaleIntakeRequest
+  | Closed    ClosedIntakeRequest
 ```
 
 `IntakeRequest` is the narrow front-door path from a patient's raw ask to a
@@ -73,6 +73,22 @@ data AppointedIntakeRequest = AppointedIntakeRequest
   , start    :: UTCTime
   , duration :: Duration
   }
+
+data RejectedIntakeRequest = RejectedIntakeRequest
+  { submitted       :: SubmittedIntakeRequest
+  , rejectedAt      :: UTCTime
+  , rejectionReason :: Text
+  }
+
+data StaleIntakeRequest = StaleIntakeRequest
+  { triaged :: TriagedIntakeRequest
+  , staleAt :: UTCTime
+  }
+
+data ClosedIntakeRequest = ClosedIntakeRequest
+  { appointed   :: AppointedIntakeRequest
+  , closeReason :: CloseReason
+  }
 ```
 
 `SubmittedIntakeRequest` *is* the base record — there is no separate
@@ -80,63 +96,95 @@ data AppointedIntakeRequest = AppointedIntakeRequest
 `TriagedIntakeRequest` embeds the submitted request whole (`submitted`) and
 adds only what triage itself contributes; `AppointedIntakeRequest` embeds
 the triaged request whole (`triaged`) and adds only what matching itself
-contributes (the doctor/time/duration the request got matched to). Each
-layer adds only its own stage's facts — no type duplicates a fact another
-type already owns, so "what was originally submitted" is never lost and
-"has this been triaged / appointed" is a type-level fact, not a nullable
-field. See `docs/modeling-principles.md`'s "Embed previous state, don't
-duplicate fields" for the general version of this rule.
+contributes (the doctor/time/duration the request got matched to). The
+terminal stages follow the same pattern: each embeds the stage it ended and
+adds its own facts. Each layer adds only its own stage's facts — no type
+duplicates a fact another type already owns, so "what was originally
+submitted" is never lost and "has this been triaged / appointed" is a
+type-level fact, not a nullable field. See `docs/modeling-principles.md`'s
+"Embed previous state, don't duplicate fields" for the general version of
+this rule.
+
+Every stored value has a name in these types — a record field, or the
+constructor of a single-field type — never an unnamed positional
+argument. The names are part of the specification: downstream layers take
+their column and field names from them (see `docs/decisions.md`, "Every
+stored value is named in Domain.hs").
 
 ### Withdrawal has two cases, not three
 
 ```haskell
-data WithdrawnIntakeRequest
-  = WithdrawnFromSubmitted SubmittedIntakeRequest UTCTime (Maybe Text)
-  | WithdrawnFromAccepted  TriagedIntakeRequest   UTCTime (Maybe Text)
+data WithdrawnIntakeRequest = WithdrawnIntakeRequest
+  { withdrawnFrom  :: WithdrawnFrom
+  , withdrawnAt    :: UTCTime
+  , withdrawalNote :: Maybe Text
+  }
+
+data WithdrawnFrom
+  = FromSubmitted SubmittedIntakeRequest
+  | FromAccepted  TriagedIntakeRequest
 ```
 
+A withdrawn request is what it was withdrawn from, plus when, plus an
+optional note — the withdrawal's own facts are stated once, whichever stage
+it ended.
+
 Withdrawal only exists as a concept *before* an appointment exists. There is
-no `WithdrawnFromAppointed` — once a request is `Appointed`, ending it is
-always `Closed (Cancelled ByPatient ...)` instead. A hypothetical
-`WithdrawnFromAppointed` would assert the identical fact `Closed`/`Cancelled`
-already does: same precondition type (`AppointedIntakeRequest`), same
-timestamp, "who ended it" already answered by `AppointmentParty`. True
-redundancy, not two real cases.
+no `FromAppointed` — once a request is `Appointed`, ending it is always
+`Closed` with a `Cancellation` instead. A hypothetical `FromAppointed` would
+assert the identical fact a cancellation already does: same precondition
+type (`AppointedIntakeRequest`), same timestamp, "who ended it" already
+answered by `cancelledBy`. True redundancy, not two real cases.
 
 ### CloseReason is a separate axis from lifecycle stage
 
 ```haskell
 data AppointmentParty
-  = ByDoctor
-  | ByPatient
+  = DoctorParty
+  | PatientParty
+
+data Cancellation = Cancellation
+  { cancelledBy      :: AppointmentParty
+  , cancelledAt      :: UTCTime
+  , cancellationNote :: Maybe Text
+  }
+
+newtype Absence = Absence
+  { absentParty :: AppointmentParty
+  }
 
 data CloseReason
   = Completed
-  | Cancelled AppointmentParty UTCTime (Maybe Text)
-  | NoShow    AppointmentParty
+  | Cancelled Cancellation
+  | NoShow    Absence
 ```
 
-`CloseReason` stays nested under `Closed` (`Closed AppointedIntakeRequest
-CloseReason`), deliberately not flattened into top-level `IntakeRequest`
+`CloseReason` stays nested under `Closed` (`ClosedIntakeRequest`'s
+`closeReason`), deliberately not flattened into top-level `IntakeRequest`
 constructors of their own (`Completed`/`Cancelled`/`NoShow` as siblings of
 `Appointed`). "Why a closed appointment ended" is orthogonal to "what
 lifecycle stage this request is in," and flattening would mix those two
 axes at one level.
 
-`Cancelled`'s `UTCTime` records *when the cancellation occurred* — distinct
-from the appointment's own scheduled time (embedded via
-`AppointedIntakeRequest`) and not validated against it structurally;
-whether something is `Cancelled` versus `NoShow` is entirely the booking
-manager's judgment call, recorded as given. The trailing `Maybe Text` on
-`Cancelled` is an optional free-text note, the same shape `Rejected` and
-`Withdrawn` each carry for their own reason/note. `AppointmentParty`
-(`ByDoctor`/`ByPatient`) exists to avoid colliding with the real
-`Doctor`/`Patient` entity types elsewhere in the module.
+`cancelledAt` records *when the cancellation occurred* — distinct from the
+appointment's own scheduled time (embedded via `AppointedIntakeRequest`)
+and not validated against it structurally; whether something is
+`Cancelled` versus `NoShow` is entirely the booking manager's judgment
+call, recorded as given. `cancellationNote` is an optional free-text note.
+A no-show needs no time of its own: it happens at the appointment's
+`start`.
+
+`cancelledBy` (who cancelled) and `absentParty` (who didn't turn up) are
+kept as separate facts. What `absentParty` means, and whether a no-show
+needs a note, is an open question for the domain expert (see
+`docs/decisions.md`'s open questions). `AppointmentParty`
+(`DoctorParty`/`PatientParty`) avoids colliding with the `Doctor`/`Patient`
+entity constructors elsewhere in the module.
 
 ### `Stale` is reachable only from `Accepted`
 
-`Stale TriagedIntakeRequest UTCTime` (see the `IntakeRequest` definition
-above). An `Accepted` request that never gets matched to a slot and never
+`Stale StaleIntakeRequest` (see the stage records above). An `Accepted`
+request that never gets matched to a slot and never
 gets withdrawn by the patient could otherwise sit unresolved forever.
 `Stale` exists so staff can close that out directly, the same way
 `Rejected` and `Closed` already end a request's lifecycle.
@@ -152,51 +200,68 @@ This is the same trust-in-human-judgment pattern as `AppointmentParty`'s
 `Cancelled`-versus-`NoShow` distinction: the system records a human's
 judgment call rather than inferring one itself.
 
-There is no dedicated `markIntakeRequestStale` function in `Domain.hs` —
-direct construction only (`Stale triaged staleAt`), the same precedent
+There is no dedicated stale function in `Domain.hs` — direct construction
+only (`Stale StaleIntakeRequest { triaged, staleAt }`), the same precedent
 `Rejected` set. Its only precondition, "this was `Accepted`," belongs in
-`Service.hs`'s fetch-then-check wrapper (also named
-`markIntakeRequestStale`), not here.
+`Service.hs`'s fetch-then-check wrapper, `markAcceptedIntakeRequestStale`,
+whose name states the precondition it verifies — not here.
 
 ## Priority
 
 ```haskell
+newtype MustBeSeenBy = MustBeSeenBy UTCTime
+
 data IntakeRequestPriority
-  = Emergency EmergencyDue
-  | Urgent    UrgentDue
+  = Emergency MustBeSeenBy
+  | Urgent    MustBeSeenBy
   | Routine   RoutineDue
+
+data RoutineDue
+  = RoutineAnytime
+  | RoutineNotBefore UTCTime
+  | RoutineNotAfter  UTCTime
+  | RoutineWithin    RoutineWindow
+
+data RoutineWindow = RoutineWindow UTCTime UTCTime   -- sealed
+
+routineNotBefore, routineNotAfter :: RoutineWindow -> UTCTime
 ```
+
+Emergency and Urgent carry a deadline — the patient must be seen by then —
+and it is the same fact in both tiers, so both carry the same type.
+Routine carries a window the appointment may start in, a different fact.
+A single-field constructor names its value: `RoutineNotBefore t`'s `t` is
+the routine's not-before bound, which `RoutineWindow` calls by the same
+name.
 
 Ordering is fully derived from a hand-written `Ord` instance, not a
 tiebreaker chain of separate fields — there's no `requestedAt`/`entryId` in
 this type. Tier order (`Emergency < Urgent < Routine`) is structural in the
 instance itself: any `Emergency` beats any non-`Emergency`, any `Urgent`
 beats any `Routine`. Within a tier, `compare` falls through to the deadline:
-`EmergencyDue`/`UrgentDue` derive `Ord` on their `UTCTime`; `RoutineDue` has
-its own instance ranking `RoutineWithin < RoutineNotAfter < RoutineNotBefore
-< RoutineAnytime`, tighter/earlier constraints first. Two `RoutineWithin`
-windows compare by upper bound first; on equal upper bounds the narrower
-window (later lower bound) ranks first, so `compare` returns `EQ` only for
-equal windows.
+`MustBeSeenBy` derives `Ord` on its `UTCTime`; `RoutineDue` has its own
+instance ranking `RoutineWithin < RoutineNotAfter < RoutineNotBefore <
+RoutineAnytime`, tighter/earlier constraints first. Two `RoutineWithin`
+windows compare by `routineNotAfter` first; on equal upper bounds the
+narrower window (later `routineNotBefore`) ranks first, so `compare`
+returns `EQ` only for equal windows.
 
 The only unresolved case is two requests with a genuinely identical priority
 value (same tier, same due value) — `sortOn` is stable, so that's settled by
 input-list order, not by a designed rule. Not currently a problem worth
 solving.
 
-`RoutineDue`'s `RoutineWithin` case is sealed — export it and any caller
-could build a `RoutineWithin` with `from > to`, a range that can never
-match anything. `mkRoutineWithin :: UTCTime -> UTCTime -> Maybe RoutineDue`
-is the only way to construct one, and enforces `from <= to`. The only other
-sealed type is `DoctorCalendar` (see "Doctor calendar" below); see
-`CLAUDE.md`'s "Sealing in Domain.hs" section for the full statement of that
-rule. Because the constructor is hidden, a caller that already holds a
-valid `RoutineDue` and needs to read its bounds back out — Persistence,
-encoding one for storage — can't pattern-match on it directly; that's what
-`routineWithinBounds :: RoutineDue -> Maybe (UTCTime, UTCTime)` is for, a
-read-only accessor over an already-valid value. It cannot construct or
-fabricate a `RoutineWithin`, so it doesn't reopen `mkRoutineWithin`'s
-invariant.
+`RoutineWindow` is sealed — export its constructor and any caller could
+build a window with `routineNotBefore > routineNotAfter`, a range that can
+never match anything. `mkRoutineWindow :: UTCTime -> UTCTime -> Maybe
+RoutineWindow` is the only way to construct one, and enforces
+`routineNotBefore <= routineNotAfter`. The only other sealed type is
+`DoctorCalendar` (see "Doctor calendar" below); see `CLAUDE.md`'s "Sealing
+in Domain.hs" section for the full statement of that rule. It has no record
+fields — record-update syntax would bypass `mkRoutineWindow` — so its two
+values are read through the named, read-only accessors `routineNotBefore`
+and `routineNotAfter`, which cannot construct or change a window. Every
+layer names the bounds after them.
 
 ## Slots
 
@@ -231,11 +296,11 @@ transition triggered by the cancellation itself.
 ## Doctor calendar
 
 ```haskell
-data CalendarEntry
+data DoctorCalendarEntry
   = Slot        AvailableSlot
   | Appointment AppointedIntakeRequest
 
-mkDoctorCalendar :: [CalendarEntry] -> Maybe DoctorCalendar
+mkDoctorCalendar :: [DoctorCalendarEntry] -> Maybe DoctorCalendar
 addAvailableSlot
   :: DoctorCalendar -> SlotId -> DoctorId -> HealthcareService -> UTCTime
   -> Maybe (AvailableSlot, DoctorCalendar)
@@ -303,8 +368,9 @@ understand what this does.
 patient to a different time, or displacing them from their slot, ends the
 appointment and starts a new intake:
 
-- `Closed appointed (Cancelled party cancelledAt note)` — the cancelled
-  appointment stays on record, with who cancelled it and when.
+- `Closed` with `Cancelled Cancellation { cancelledBy, cancelledAt,
+  cancellationNote }` — the cancelled appointment stays on record, with who
+  cancelled it and when.
 - A new `SubmittedIntakeRequest`, accepted by the doctor, then matched like
   any other waitlisted request.
 
