@@ -104,6 +104,16 @@ bottom.
 
 **Rejected:** `rejectIntakeRequest` and `closeIntakeRequest` as aliases; a separate `ClosedAppointment` type; `TriageOutcome` (`TriageAccepted | TriageRejected`) as a shared result, because each call site already commits to one branch.
 
+## Stale is a staff decision, reachable only from Accepted (2026-07-18)
+
+**Decided:** an Accepted request becomes Stale when staff decide it will never be matched and close it out. It's always an explicit action, never automatic or driven by a timer, and it's done by constructing the case directly, with no Domain function.
+
+**Why:** like `Cancelled` versus `NoShow`, it's a judgment the model records rather than makes.
+
+**Rejected:** marking a request stale automatically when its deadline passes (a timer acting on the waitlist with no person deciding); Stale from Submitted (staleness is measured against a due date, which only exists after triage).
+
+**Source:** taken from `Domain.hs`'s comment, where this has lived since 2026-07-18. Whether the doctor confirmed it isn't recorded.
+
 ## Every lifecycle path is one-way; displacing a patient is Closed plus a new request (2026-07-11, reaffirmed 2026-09-28)
 
 **Decided:** Rejected, Withdrawn, Stale and Closed are terminal, and no transition leads back to an earlier state. To displace or reschedule an appointed patient, close the request with `Cancelled` (`cancelledBy = DoctorParty`), then submit and accept a new one. Any context goes into the new narrative. Any compensating priority is a judgment made at triage; the model has no rule for it.
@@ -154,6 +164,16 @@ bottom.
 - A fetch window of "start minus the longest duration": it hard-codes a 60-minute maximum outside `Domain.hs`.
 
 **General rule:** `Domain.hs` declares every invariant. One within a single value maps to a `CHECK`; one spanning rows maps to `EXCLUDE` or `UNIQUE`, and only the latter depends on the database to hold for stored data.
+
+## A read built from several queries sees one snapshot (2026-09-29)
+
+**Found:** `fetchDoctorCalendar`, from earlier AI-generated code, read a doctor's slots and appointed requests in two queries under `READ COMMITTED`. A match committing between them deletes a slot and adds an appointment over the same interval: the first query saw the slot, the second the appointment, so the rebuilt calendar held two overlapping entries. `mkDoctorCalendar` refused it, and creating a slot failed with a 500 (`OverlappingDoctorCalendar`), although the stored data was valid. No test or report found this. A clean-room agent, deriving the reads from rules, asked when the smart constructor could refuse data that the database already guarantees valid; the only answer was a read that mixes two moments.
+
+**Decided:** a read built from several queries runs them in one `REPEATABLE READ` transaction (`one-snapshot-per-read`, in `triage-db-codegen`). This applies to `fetchDoctorCalendarOverlapping` and `fetchDoctorCalendarEntriesOverlapping`.
+
+**Rejected:** one SQL statement (`UNION ALL`): it always sees one snapshot, but slots and requests have different columns, so the query and its decoding get awkward; reading through the `doctor_calendar` shadow table: its job is enforcing the rule, and reading it is a performance change, made only when measured.
+
+**Not yet done:** a deterministic test: run the read's first query, commit a match on a second connection, run the second query, and check that the calendar still decodes.
 
 ## Stored facts are referenced by id, never accepted from the caller (2026-09-27)
 
@@ -262,6 +282,42 @@ After a lost write, Service reads the request once more, and that read always fi
 **Rejected:** `createdAt` as the first tie-breaker (it counts time before triage, when no priority existed); leaving ties to the read's order.
 
 **Source:** decided by the project owner, not confirmed with the domain expert.
+
+## The API serves OpenAPI 3; every sum type is oneOf its cases (2026-10-01)
+
+**Found:** `servant-swagger` was added on 2026-07-17 (`eb4d024`) as the default, and its limitation was noted only in that commit message. Swagger 2.0 has no `oneOf`, so Transport merged each sum type's cases into one object, and where two cases shared a key with different types, the first case's type won: `DoctorCalendarEntry.id` was published as `SlotId` for appointments too. The schema test couldn't notice, since both are UUID strings. Clients got loose types: hand-written payload types, casts, and a `Maybe` key shown as optional, which answers 400 when omitted.
+
+**Decided:** OpenAPI 3 (`openapi3`, `servant-openapi3`) at `/openapi.json`, per `schemas-follow-cases`: each sum is `oneOf` its cases, discriminated by `type` (with no discriminator when a case is itself a `oneOf` over a nested tag); each answer is `oneOf` its outcomes, with a typed `detail`; a `Maybe` key is required and nullable. `generate-types` reads the spec directly.
+
+**Rejected:** making the merge honest on Swagger 2.0 (the contract stops lying but stays lossy); Swagger 2.0's `allOf` plus `discriminator` (its values must be definition names, and the generator doesn't make the parent a union); keeping the `swagger2openapi` conversion (the 2026-09-28 stopgap, which kept the lossy schema).
+
+**Why it's recorded:** the limitation was known from the first day but lived only in a commit message, so two later sessions worked around it instead of revisiting it.
+
+**Cost:** `openapi3`'s validator ignores `nullable`, so the test accepts `null` for `Maybe` fields itself.
+
+## Every 500 is logged with its cause, in one place (2026-10-01)
+
+**Found:** the clean-room regeneration dropped the logging: a decode failure's `DecodeError` was discarded, and database errors fell through to Warp's own "Something went wrong". The skill specified the 500 response but never said it must be recorded.
+
+**Decided:** one `toHandler` catches every synchronous exception, writes it to stderr and answers with the plain body. `DecodeFailed` raises `DecodeFailure`, so it reaches the same log.
+
+**Rejected:** logging decode failures only (two mechanisms and two bodies); a structured logging library (infrastructure a practice of 2–3 doctors doesn't need).
+
+## The UI derives from Domain.hs and the contract, and copies no Domain logic (2026-10-01)
+
+**Decided:** the UI's sources are `Domain.hs` for meaning (lifecycle, ranks, sealed types, labels), `types.ts` and `/openapi.json` for shapes, and this file for UI behaviour and text a decision states, copied verbatim. It never reads Api, Transport, Service or Persistence. Domain logic has one implementation: the UI doesn't sort (the server returns a defined order), doesn't re-check sealed rules (the server's 400 is shown), and doesn't filter by `matches`.
+
+**Rejected:** reading Transport or Api (copying another layer's code, the cause of the CHECK bug); the contract alone (it has no lifecycle or rules, and under Swagger 2.0 it couldn't describe sum types); TypeScript copies of `Ord` or the smart constructors (a second, untested implementation, where a wrong copy can make a valid value impossible to enter).
+
+## ServiceError stays uniform, for now (2026-10-01)
+
+**Decided:** one `ServiceError` for every use case, so every answer lists all six error tags.
+
+**Known cost:** the types claim errors a use case can't produce (a read "may" answer `slotDoesNotMatchIntakeRequest`). Callers must handle impossible cases, and a new case would widen every function silently.
+
+**Planned, in its own service-skill round:** an error type per use case, derived from the use case's shape: each id parameter gives `<Entity>NotFound`; a transition source that a later state can't follow gives `InWrongState`; a Domain function returning `Maybe` gives its refusal.
+
+**Rejected:** listing the reachable tags by reading function bodies (derived from code rather than types; nothing would catch it going wrong).
 
 ---
 
