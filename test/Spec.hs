@@ -308,7 +308,7 @@ genMatchAcceptedIntakeRequestToSlotError :: Gen S.MatchAcceptedIntakeRequestToSl
 genMatchAcceptedIntakeRequestToSlotError = oneof
   [ S.MatchAcceptedIntakeRequestToSlotIntakeRequestNotFound <$> genIntakeRequestNotFound
   , S.MatchAcceptedIntakeRequestToSlotIntakeRequestInWrongState <$> genIntakeRequestInWrongState
-  , pure (S.MatchAcceptedIntakeRequestToSlotSlotDoesNotMatchIntakeRequest S.SlotDoesNotMatchIntakeRequest)
+  , pure (S.MatchAcceptedIntakeRequestToSlotIntakeRequestDoesNotMatchSlot S.IntakeRequestDoesNotMatchSlot)
   ]
 
 genMarkAcceptedIntakeRequestStaleError :: Gen S.MarkAcceptedIntakeRequestStaleError
@@ -335,18 +335,18 @@ orFact e a = oneof [Left <$> e, Right <$> a]
 genTransition :: Gen a -> Gen (S.TransitionOutcome a)
 genTransition g = oneof [S.Transitioned <$> g, S.MovedOn <$> genIntakeRequest]
 
-genMatchOutcome :: Gen S.MatchOutcome
-genMatchOutcome = oneof
-  [ S.Matched <$> genAppointed
-  , pure S.AvailableSlotConsumed
+genMatchIntakeRequestToSlotOutcome :: Gen S.MatchIntakeRequestToSlotOutcome
+genMatchIntakeRequestToSlotOutcome = oneof
+  [ S.IntakeRequestMatchedToSlot <$> genAppointed
+  , S.AvailableSlotConsumed <$> arbitrary
   , S.IntakeRequestMovedOn <$> genIntakeRequest
   ]
 
-genPriorityMatchOutcome :: Gen S.PriorityMatchOutcome
-genPriorityMatchOutcome = oneof [pure S.NoMatchingIntakeRequest, S.MatchOutcome <$> genMatchOutcome]
+genMatchByPriorityOutcome :: Gen S.MatchByPriorityOutcome
+genMatchByPriorityOutcome = oneof [pure S.NoIntakeRequestMatched, S.MatchIntakeRequestToSlotOutcome <$> genMatchIntakeRequestToSlotOutcome]
 
-genSlotCreationOutcome :: Gen S.SlotCreationOutcome
-genSlotCreationOutcome = oneof [S.SlotCreated <$> genAnySlot, pure S.SlotOverlapsDoctorCalendar]
+genAddAvailableSlotOutcome :: Gen S.AddAvailableSlotOutcome
+genAddAvailableSlotOutcome = oneof [S.AvailableSlotAdded <$> genAnySlot, pure S.AvailableSlotOverlapsDoctorCalendar]
 
 -- Short lists, possibly empty.
 shortListOf :: Gen a -> Gen [a]
@@ -670,8 +670,8 @@ main = hspec $ do
         (T.fromDomainHealthcareServiceId slot.healthcareServiceId) slot.start)
 
   describe "wire format: every answer's ToJSON matches its OpenAPI 3 schema" $ do
-    prop "MatchOutcome (nested envelope)" $
-      forAll genMatchOutcome (matchesSchema . T.MatchOutcomeDTO . A.renderMatchOutcome)
+    prop "MatchIntakeRequestToSlotOutcome (nested envelope)" $
+      forAll genMatchIntakeRequestToSlotOutcome (matchesSchema . T.MatchIntakeRequestToSlotOutcomeDTO . A.renderMatchIntakeRequestToSlotOutcome)
     prop "CreateDoctorAnswer" $ forAll genDoctor (matchesSchema . A.renderCreateDoctorAnswer)
     prop "CreatePatientAnswer" $ forAll genPatient (matchesSchema . A.renderCreatePatientAnswer)
     prop "CreateHealthcareServiceAnswer" $
@@ -686,7 +686,7 @@ main = hspec $ do
       forAll (orFact genIntakeRequestNotFound (genTransition genRejected))
         (matchesSchema . A.renderRejectSubmittedIntakeRequestAnswer)
     prop "MatchAcceptedIntakeRequestToSlotAnswer" $
-      forAll (orFact genMatchAcceptedIntakeRequestToSlotError genMatchOutcome)
+      forAll (orFact genMatchAcceptedIntakeRequestToSlotError genMatchIntakeRequestToSlotOutcome)
         (matchesSchema . A.renderMatchAcceptedIntakeRequestToSlotAnswer)
     prop "WithdrawIntakeRequestAnswer" $
       forAll (orFact genIntakeRequestNotFound (genTransition genWithdrawn))
@@ -698,9 +698,9 @@ main = hspec $ do
       forAll (orFact genCloseAppointedIntakeRequestError (genTransition genClosed))
         (matchesSchema . A.renderCloseAppointedIntakeRequestAnswer)
     prop "MatchAvailableSlotByPriorityAnswer" $
-      forAll genPriorityMatchOutcome (matchesSchema . A.renderMatchAvailableSlotByPriorityAnswer)
+      forAll genMatchByPriorityOutcome (matchesSchema . A.renderMatchAvailableSlotByPriorityAnswer)
     prop "CreateAvailableSlotAnswer" $
-      forAll (orFact genCreateAvailableSlotError genSlotCreationOutcome)
+      forAll (orFact genCreateAvailableSlotError genAddAvailableSlotOutcome)
         (matchesSchema . A.renderCreateAvailableSlotAnswer)
     prop "FetchDoctorAnswer" $
       forAll (orFact genDoctorNotFound genDoctor) (matchesSchema . A.renderFetchDoctorAnswer)
@@ -716,7 +716,8 @@ main = hspec $ do
     prop "FetchHealthcareServicesAnswer" $
       forAll (shortListOf genService) (matchesSchema . A.renderFetchHealthcareServicesAnswer)
     prop "FetchAvailableSlotAnswer" $
-      forAll (oneof [pure Nothing, Just <$> genAnySlot]) (matchesSchema . A.renderFetchAvailableSlotAnswer)
+      forAll ((,) <$> arbitrary <*> oneof [pure Nothing, Just <$> genAnySlot])
+        (matchesSchema . uncurry A.renderFetchAvailableSlotAnswer)
     prop "FetchIntakeRequestAnswer" $
       forAll (orFact genIntakeRequestNotFound genIntakeRequest)
         (matchesSchema . A.renderFetchIntakeRequestAnswer)

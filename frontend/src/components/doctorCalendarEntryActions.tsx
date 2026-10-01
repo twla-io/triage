@@ -30,7 +30,7 @@ function MatchByPriorityForm({ slotId, onDone }: { slotId: Schemas['SlotId']; on
       entity="availableSlot"
       mutation={mutation}
       variables={slotId}
-      isSuccess={(a) => a.outcome === 'matchOutcome' && a.detail.outcome === 'matched'}
+      isSuccess={(a) => a.outcome === 'matchIntakeRequestToSlotOutcome' && a.detail.outcome === 'intakeRequestMatchedToSlot'}
       onDone={onDone}
     />
   )

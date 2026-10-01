@@ -82,7 +82,7 @@ function CreateAvailableSlotForm({ onDone }: { onDone: () => void }) {
           ? { doctorId, healthcareServiceId, start }
           : null
       }
-      isSuccess={(a) => a.outcome === 'slotCreated'}
+      isSuccess={(a) => a.outcome === 'availableSlotAdded'}
       onDone={onDone}
     >
       <DoctorSelect label={humanize('doctorId')} value={doctorId} onChange={(v) => setDraft({ ...draft, doctorId: v })} />

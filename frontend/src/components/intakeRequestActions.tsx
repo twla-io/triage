@@ -210,7 +210,7 @@ function MatchToSlotForm({ id, onDone }: FormProps) {
       entity={ENTITY}
       mutation={mutation}
       variables={slotId === null ? null : { intakeRequestId: id, body: { slotId } }}
-      isSuccess={(a) => a.outcome === 'matched'}
+      isSuccess={(a) => a.outcome === 'intakeRequestMatchedToSlot'}
       onDone={onDone}
     >
       <WeekRange week={{ ...week, previous: changeWeek(week.previous), next: changeWeek(week.next) }} />

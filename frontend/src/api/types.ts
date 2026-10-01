@@ -1351,7 +1351,24 @@ export interface components {
             start: components["schemas"]["UTCTime"];
             triagedAt: components["schemas"]["UTCTime"];
         };
-        CreateAvailableSlotAnswer: components["schemas"]["CreateAvailableSlotAnswerSlotCreated"] | components["schemas"]["CreateAvailableSlotAnswerSlotOverlapsDoctorCalendar"] | components["schemas"]["CreateAvailableSlotAnswerDoctorNotFound"] | components["schemas"]["CreateAvailableSlotAnswerHealthcareServiceNotFound"];
+        CreateAvailableSlotAnswer: components["schemas"]["CreateAvailableSlotAnswerAvailableSlotAdded"] | components["schemas"]["CreateAvailableSlotAnswerAvailableSlotOverlapsDoctorCalendar"] | components["schemas"]["CreateAvailableSlotAnswerDoctorNotFound"] | components["schemas"]["CreateAvailableSlotAnswerHealthcareServiceNotFound"];
+        CreateAvailableSlotAnswerAvailableSlotAdded: {
+            detail: components["schemas"]["AvailableSlot"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            outcome: "availableSlotAdded";
+        };
+        CreateAvailableSlotAnswerAvailableSlotOverlapsDoctorCalendar: {
+            /** @enum {unknown|null} */
+            detail: null;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            outcome: "availableSlotOverlapsDoctorCalendar";
+        };
         CreateAvailableSlotAnswerDoctorNotFound: {
             detail: components["schemas"]["DoctorId"];
             /**
@@ -1367,23 +1384,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "healthcareServiceNotFound";
-        };
-        CreateAvailableSlotAnswerSlotCreated: {
-            detail: components["schemas"]["AvailableSlot"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotCreated";
-        };
-        CreateAvailableSlotAnswerSlotOverlapsDoctorCalendar: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotOverlapsDoctorCalendar";
         };
         CreateAvailableSlotRequest: {
             doctorId: components["schemas"]["DoctorId"];
@@ -1504,8 +1504,7 @@ export interface components {
         };
         FetchAvailableSlotAnswer: components["schemas"]["FetchAvailableSlotAnswerOk"] | components["schemas"]["FetchAvailableSlotAnswerAvailableSlotConsumed"];
         FetchAvailableSlotAnswerAvailableSlotConsumed: {
-            /** @enum {unknown|null} */
-            detail: null;
+            detail: components["schemas"]["SlotId"];
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1844,15 +1843,23 @@ export interface components {
              */
             outcome: "transitioned";
         };
-        MatchAcceptedIntakeRequestToSlotAnswer: components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerMatched"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerAvailableSlotConsumed"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestMovedOn"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestNotFound"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestInWrongState"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerSlotDoesNotMatchIntakeRequest"];
+        MatchAcceptedIntakeRequestToSlotAnswer: components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestMatchedToSlot"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerAvailableSlotConsumed"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestMovedOn"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestNotFound"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestInWrongState"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestDoesNotMatchSlot"];
         MatchAcceptedIntakeRequestToSlotAnswerAvailableSlotConsumed: {
+            detail: components["schemas"]["SlotId"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            outcome: "availableSlotConsumed";
+        };
+        MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestDoesNotMatchSlot: {
             /** @enum {unknown|null} */
             detail: null;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            outcome: "availableSlotConsumed";
+            outcome: "intakeRequestDoesNotMatchSlot";
         };
         MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestInWrongState: {
             detail: components["schemas"]["IntakeRequest"];
@@ -1861,6 +1868,14 @@ export interface components {
              * @enum {string}
              */
             outcome: "intakeRequestInWrongState";
+        };
+        MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestMatchedToSlot: {
+            detail: components["schemas"]["AppointedIntakeRequest"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            outcome: "intakeRequestMatchedToSlot";
         };
         MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestMovedOn: {
             detail: components["schemas"]["IntakeRequest"];
@@ -1878,69 +1893,51 @@ export interface components {
              */
             outcome: "intakeRequestNotFound";
         };
-        MatchAcceptedIntakeRequestToSlotAnswerMatched: {
-            detail: components["schemas"]["AppointedIntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "matched";
-        };
-        MatchAcceptedIntakeRequestToSlotAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
         MatchAcceptedIntakeRequestToSlotRequest: {
             slotId: components["schemas"]["SlotId"];
         };
-        MatchAvailableSlotByPriorityAnswer: components["schemas"]["MatchAvailableSlotByPriorityAnswerNoMatchingIntakeRequest"] | components["schemas"]["MatchAvailableSlotByPriorityAnswerMatchOutcome"];
-        MatchAvailableSlotByPriorityAnswerMatchOutcome: {
-            detail: components["schemas"]["MatchOutcome"];
+        MatchAvailableSlotByPriorityAnswer: components["schemas"]["MatchAvailableSlotByPriorityAnswerNoIntakeRequestMatched"] | components["schemas"]["MatchAvailableSlotByPriorityAnswerMatchIntakeRequestToSlotOutcome"];
+        MatchAvailableSlotByPriorityAnswerMatchIntakeRequestToSlotOutcome: {
+            detail: components["schemas"]["MatchIntakeRequestToSlotOutcome"];
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            outcome: "matchOutcome";
+            outcome: "matchIntakeRequestToSlotOutcome";
         };
-        MatchAvailableSlotByPriorityAnswerNoMatchingIntakeRequest: {
+        MatchAvailableSlotByPriorityAnswerNoIntakeRequestMatched: {
             /** @enum {unknown|null} */
             detail: null;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            outcome: "noMatchingIntakeRequest";
+            outcome: "noIntakeRequestMatched";
         };
-        MatchOutcome: components["schemas"]["MatchOutcomeMatched"] | components["schemas"]["MatchOutcomeAvailableSlotConsumed"] | components["schemas"]["MatchOutcomeIntakeRequestMovedOn"];
-        MatchOutcomeAvailableSlotConsumed: {
-            /** @enum {unknown|null} */
-            detail: null;
+        MatchIntakeRequestToSlotOutcome: components["schemas"]["MatchIntakeRequestToSlotOutcomeIntakeRequestMatchedToSlot"] | components["schemas"]["MatchIntakeRequestToSlotOutcomeAvailableSlotConsumed"] | components["schemas"]["MatchIntakeRequestToSlotOutcomeIntakeRequestMovedOn"];
+        MatchIntakeRequestToSlotOutcomeAvailableSlotConsumed: {
+            detail: components["schemas"]["SlotId"];
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             outcome: "availableSlotConsumed";
         };
-        MatchOutcomeIntakeRequestMovedOn: {
+        MatchIntakeRequestToSlotOutcomeIntakeRequestMatchedToSlot: {
+            detail: components["schemas"]["AppointedIntakeRequest"];
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            outcome: "intakeRequestMatchedToSlot";
+        };
+        MatchIntakeRequestToSlotOutcomeIntakeRequestMovedOn: {
             detail: components["schemas"]["IntakeRequest"];
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
             outcome: "intakeRequestMovedOn";
-        };
-        MatchOutcomeMatched: {
-            detail: components["schemas"]["AppointedIntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "matched";
         };
         Patient: {
             id: components["schemas"]["PatientId"];

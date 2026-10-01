@@ -102,21 +102,21 @@ module Transport
   , ok
   , transitioned
   , movedOn
-  , matched
+  , intakeRequestMatchedToSlot
   , availableSlotConsumed
   , intakeRequestMovedOn
-  , noMatchingIntakeRequest
-  , matchOutcome
-  , slotCreated
-  , slotOverlapsDoctorCalendar
+  , noIntakeRequestMatched
+  , matchIntakeRequestToSlotOutcome
+  , availableSlotAdded
+  , availableSlotOverlapsDoctorCalendar
   , doctorNotFound
   , patientNotFound
   , healthcareServiceNotFound
   , intakeRequestNotFound
   , intakeRequestInWrongState
-  , slotDoesNotMatchIntakeRequest
+  , intakeRequestDoesNotMatchSlot
     -- answer types
-  , MatchOutcomeDTO (..)
+  , MatchIntakeRequestToSlotOutcomeDTO (..)
   , CreateDoctorAnswer (..)
   , CreatePatientAnswer (..)
   , CreateHealthcareServiceAnswer (..)
@@ -1329,26 +1329,26 @@ transitioned = Outcome "transitioned"
 movedOn :: Outcome IntakeRequestDTO
 movedOn = Outcome "movedOn"
 
-matched :: Outcome AppointedIntakeRequestDTO
-matched = Outcome "matched"
+intakeRequestMatchedToSlot :: Outcome AppointedIntakeRequestDTO
+intakeRequestMatchedToSlot = Outcome "intakeRequestMatchedToSlot"
 
-availableSlotConsumed :: Outcome NoDetail
+availableSlotConsumed :: Outcome SlotIdDTO
 availableSlotConsumed = Outcome "availableSlotConsumed"
 
 intakeRequestMovedOn :: Outcome IntakeRequestDTO
 intakeRequestMovedOn = Outcome "intakeRequestMovedOn"
 
-noMatchingIntakeRequest :: Outcome NoDetail
-noMatchingIntakeRequest = Outcome "noMatchingIntakeRequest"
+noIntakeRequestMatched :: Outcome NoDetail
+noIntakeRequestMatched = Outcome "noIntakeRequestMatched"
 
-matchOutcome :: Outcome MatchOutcomeDTO
-matchOutcome = Outcome "matchOutcome"
+matchIntakeRequestToSlotOutcome :: Outcome MatchIntakeRequestToSlotOutcomeDTO
+matchIntakeRequestToSlotOutcome = Outcome "matchIntakeRequestToSlotOutcome"
 
-slotCreated :: Outcome AvailableSlotDTO
-slotCreated = Outcome "slotCreated"
+availableSlotAdded :: Outcome AvailableSlotDTO
+availableSlotAdded = Outcome "availableSlotAdded"
 
-slotOverlapsDoctorCalendar :: Outcome NoDetail
-slotOverlapsDoctorCalendar = Outcome "slotOverlapsDoctorCalendar"
+availableSlotOverlapsDoctorCalendar :: Outcome NoDetail
+availableSlotOverlapsDoctorCalendar = Outcome "availableSlotOverlapsDoctorCalendar"
 
 doctorNotFound :: Outcome DoctorIdDTO
 doctorNotFound = Outcome "doctorNotFound"
@@ -1365,8 +1365,8 @@ intakeRequestNotFound = Outcome "intakeRequestNotFound"
 intakeRequestInWrongState :: Outcome IntakeRequestDTO
 intakeRequestInWrongState = Outcome "intakeRequestInWrongState"
 
-slotDoesNotMatchIntakeRequest :: Outcome NoDetail
-slotDoesNotMatchIntakeRequest = Outcome "slotDoesNotMatchIntakeRequest"
+intakeRequestDoesNotMatchSlot :: Outcome NoDetail
+intakeRequestDoesNotMatchSlot = Outcome "intakeRequestDoesNotMatchSlot"
 
 -- ── Answer schemas ──────────────────────────────────────────────────────────
 
@@ -1391,16 +1391,16 @@ answerSchema name answerCases = do
 transitionCases :: forall d. ToSchema d => [AnswerCase]
 transitionCases = [on (transitioned :: Outcome d), on movedOn]
 
-matchOutcomeCases :: [AnswerCase]
-matchOutcomeCases = [on matched, on availableSlotConsumed, on intakeRequestMovedOn]
+matchIntakeRequestToSlotOutcomeCases :: [AnswerCase]
+matchIntakeRequestToSlotOutcomeCases = [on intakeRequestMatchedToSlot, on availableSlotConsumed, on intakeRequestMovedOn]
 
 -- ── Answer types, one per Service function ─────────────────────────────────
 
--- Matching's outcome, nested as the detail of matchOutcome.
-newtype MatchOutcomeDTO = MatchOutcomeDTO Envelope deriving (Show, Eq)
-instance ToJSON MatchOutcomeDTO where toJSON (MatchOutcomeDTO e) = toJSON e
-instance ToSchema MatchOutcomeDTO where
-  declareNamedSchema _ = answerSchema "MatchOutcome" matchOutcomeCases
+-- Matching's outcome, nested as the detail of matchIntakeRequestToSlotOutcome.
+newtype MatchIntakeRequestToSlotOutcomeDTO = MatchIntakeRequestToSlotOutcomeDTO Envelope deriving (Show, Eq)
+instance ToJSON MatchIntakeRequestToSlotOutcomeDTO where toJSON (MatchIntakeRequestToSlotOutcomeDTO e) = toJSON e
+instance ToSchema MatchIntakeRequestToSlotOutcomeDTO where
+  declareNamedSchema _ = answerSchema "MatchIntakeRequestToSlotOutcome" matchIntakeRequestToSlotOutcomeCases
 
 newtype CreateDoctorAnswer = CreateDoctorAnswer Envelope deriving (Show, Eq)
 instance ToJSON CreateDoctorAnswer where toJSON (CreateDoctorAnswer e) = toJSON e
@@ -1447,8 +1447,8 @@ instance ToJSON MatchAcceptedIntakeRequestToSlotAnswer where
   toJSON (MatchAcceptedIntakeRequestToSlotAnswer e) = toJSON e
 instance ToSchema MatchAcceptedIntakeRequestToSlotAnswer where
   declareNamedSchema _ = answerSchema "MatchAcceptedIntakeRequestToSlotAnswer" $
-    matchOutcomeCases
-      <> [on intakeRequestNotFound, on intakeRequestInWrongState, on slotDoesNotMatchIntakeRequest]
+    matchIntakeRequestToSlotOutcomeCases
+      <> [on intakeRequestNotFound, on intakeRequestInWrongState, on intakeRequestDoesNotMatchSlot]
 
 newtype WithdrawIntakeRequestAnswer = WithdrawIntakeRequestAnswer Envelope deriving (Show, Eq)
 instance ToJSON WithdrawIntakeRequestAnswer where toJSON (WithdrawIntakeRequestAnswer e) = toJSON e
@@ -1478,13 +1478,13 @@ instance ToJSON MatchAvailableSlotByPriorityAnswer where
   toJSON (MatchAvailableSlotByPriorityAnswer e) = toJSON e
 instance ToSchema MatchAvailableSlotByPriorityAnswer where
   declareNamedSchema _ = answerSchema "MatchAvailableSlotByPriorityAnswer"
-    [on noMatchingIntakeRequest, on matchOutcome]
+    [on noIntakeRequestMatched, on matchIntakeRequestToSlotOutcome]
 
 newtype CreateAvailableSlotAnswer = CreateAvailableSlotAnswer Envelope deriving (Show, Eq)
 instance ToJSON CreateAvailableSlotAnswer where toJSON (CreateAvailableSlotAnswer e) = toJSON e
 instance ToSchema CreateAvailableSlotAnswer where
   declareNamedSchema _ = answerSchema "CreateAvailableSlotAnswer"
-    [on slotCreated, on slotOverlapsDoctorCalendar, on doctorNotFound, on healthcareServiceNotFound]
+    [on availableSlotAdded, on availableSlotOverlapsDoctorCalendar, on doctorNotFound, on healthcareServiceNotFound]
 
 newtype FetchDoctorAnswer = FetchDoctorAnswer Envelope deriving (Show, Eq)
 instance ToJSON FetchDoctorAnswer where toJSON (FetchDoctorAnswer e) = toJSON e

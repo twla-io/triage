@@ -78,8 +78,8 @@ Direct imports between internal modules (no cycles):
   type (`DoctorNotFound`, `IntakeRequestInWrongState`, …; a use case with
   several wraps them in `<Function>Error`), raises a decode failure as an
   exception (a 500), and returns legitimate concurrent results as outcome
-  types (`TransitionOutcome`, `MatchOutcome`, `PriorityMatchOutcome`,
-  `SlotCreationOutcome`). A request found
+  types (`TransitionOutcome`, `MatchIntakeRequestToSlotOutcome`, `MatchByPriorityOutcome`,
+  `AddAvailableSlotOutcome`). A request found
   past the state an operation expects is `MovedOn`/`IntakeRequestMovedOn`;
   one in a state that can't follow it is `IntakeRequestInWrongState`. Also
   exposes read pass-throughs and the `DoctorCalendarEntry` view.

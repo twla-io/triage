@@ -36,8 +36,8 @@ import qualified Service    as S
 
 import Domain
 import Persistence (ClaimOutcome (..), ConnectionPool)
-import Service     (MatchOutcome (..), PriorityMatchOutcome (..),
-                    SlotCreationOutcome (..), TransitionOutcome (..))
+import Service     (MatchIntakeRequestToSlotOutcome (..), MatchByPriorityOutcome (..),
+                    AddAvailableSlotOutcome (..), TransitionOutcome (..))
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- THROWAWAY DATABASE
@@ -109,14 +109,14 @@ accept pool fx requirement = do
 
 slotAt :: ConnectionPool -> Fixture -> UTCTime -> IO AvailableSlot
 slotAt pool fx at = do
-  Right (SlotCreated slot) <- S.createAvailableSlot pool fx.doctor.id fx.service.id at
+  Right (AvailableSlotAdded slot) <- S.createAvailableSlot pool fx.doctor.id fx.service.id at
   pure slot
 
 appoint :: ConnectionPool -> Fixture -> UTCTime -> IO (TriagedIntakeRequest, AvailableSlot, AppointedIntakeRequest)
 appoint pool fx at = do
   t    <- accept pool fx AnyDoctor
   slot <- slotAt pool fx at
-  Right (Matched a) <- S.matchAcceptedIntakeRequestToSlot pool t.submitted.id slot.id
+  Right (IntakeRequestMatchedToSlot a) <- S.matchAcceptedIntakeRequestToSlot pool t.submitted.id slot.id
   pure (t, slot, a)
 
 stored :: ConnectionPool -> IntakeRequestId -> IO IntakeRequest
@@ -216,8 +216,8 @@ spec pool = do
       fx <- fixture pool
       _  <- slotAt pool fx t0
       S.createAvailableSlot pool fx.doctor.id fx.service.id (minutes 15 t0)
-        `shouldReturn` Right SlotOverlapsDoctorCalendar
-      Right (SlotCreated _) <- S.createAvailableSlot pool fx.doctor.id fx.service.id (minutes 30 t0)
+        `shouldReturn` Right AvailableSlotOverlapsDoctorCalendar
+      Right (AvailableSlotAdded _) <- S.createAvailableSlot pool fx.doctor.id fx.service.id (minutes 30 t0)
       pure ()
 
     it "the database rejects an overlap even when the Domain check is bypassed" $ do
@@ -228,7 +228,7 @@ spec pool = do
             { id = otherId, doctorId = fx.doctor.id, healthcareServiceId = fx.service.id
             , start = minutes 15 t0, duration = HalfAnHour }
       withResource pool (\c -> P.insertAvailableSlot c overlapping)
-        `shouldReturn` P.SlotOverlapsDoctorCalendar
+        `shouldReturn` P.AvailableSlotOverlapsDoctorCalendar
 
     it "the new slot takes its duration from the service" $ do
       fx   <- fixture pool
@@ -254,7 +254,7 @@ spec pool = do
       (_, slot, _) <- appoint pool fx t0
       other        <- accept pool fx AnyDoctor
       S.matchAcceptedIntakeRequestToSlot pool other.submitted.id slot.id
-        `shouldReturn` Right AvailableSlotConsumed
+        `shouldReturn` Right (AvailableSlotConsumed slot.id)
       stateOf pool other.submitted.id `shouldReturn` "accepted"
 
     it "rolls the slot delete back when the request claim loses" $ do
@@ -277,21 +277,21 @@ spec pool = do
         S.acceptSubmittedIntakeRequest pool s.id other.id (Routine RoutineAnytime) AnyDoctor t0
       slot  <- slotAt pool fx t0
       S.matchAcceptedIntakeRequestToSlot pool t.submitted.id slot.id
-        `shouldReturn` Left (S.MatchAcceptedIntakeRequestToSlotSlotDoesNotMatchIntakeRequest S.SlotDoesNotMatchIntakeRequest)
+        `shouldReturn` Left (S.MatchAcceptedIntakeRequestToSlotIntakeRequestDoesNotMatchSlot S.IntakeRequestDoesNotMatchSlot)
 
   describe "match by priority" $ do
     it "gives the slot to the waiting request that fits" $ do
       fx   <- fixture pool
       t    <- accept pool fx AnyDoctor
       slot <- slotAt pool fx t0
-      (MatchOutcome (Matched a)) <- S.matchAvailableSlotByPriority pool slot.id
+      (MatchIntakeRequestToSlotOutcome (IntakeRequestMatchedToSlot a)) <- S.matchAvailableSlotByPriority pool slot.id
       a.triaged `shouldBe` t
       stateOf pool t.submitted.id `shouldReturn` "appointed"
 
     it "with nothing waiting, the slot stays available" $ do
       fx   <- fixture pool
       slot <- slotAt pool fx t0
-      S.matchAvailableSlotByPriority pool slot.id `shouldReturn` NoMatchingIntakeRequest
+      S.matchAvailableSlotByPriority pool slot.id `shouldReturn` NoIntakeRequestMatched
       S.fetchAvailableSlot pool slot.id `shouldReturn` (Just slot)
 
   describe "close / stale" $ do
@@ -303,7 +303,7 @@ spec pool = do
       S.closeAppointedIntakeRequest pool rid cancelled
         `shouldReturn` Right (Transitioned (ClosedIntakeRequest a cancelled))
       stateOf pool rid `shouldReturn` "closed"
-      Right (SlotCreated _) <- S.createAvailableSlot pool fx.doctor.id fx.service.id t0
+      Right (AvailableSlotAdded _) <- S.createAvailableSlot pool fx.doctor.id fx.service.id t0
       pure ()
 
     it "closing twice: the second close reports the first one's reason" $ do

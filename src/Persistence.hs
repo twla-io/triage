@@ -3,42 +3,38 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 
--- Derived from src/Domain.hs by the triage-db-codegen skill; schema in
--- migrations/0001_init.sql.
+-- Derived from src/Domain.hs by triage-db-codegen. Schema:
+-- migrations/0001_init.sql. Every function takes a plain Connection; IDs
+-- are minted in Service, never here.
 module Persistence
-  ( -- ── Connections ──────────────────────────────────────────────────────
+  ( -- * Connections
     ConnectionPool
 
-    -- ── Outcomes / errors ────────────────────────────────────────────────
+    -- * Decoding
   , DecodeError (..)
-  , ClaimOutcome (..)
-  , MatchClaimOutcome (..)
-  , SlotInsertOutcome (..)
 
-    -- ── Rows ─────────────────────────────────────────────────────────────
+    -- * Write outcomes
+  , ClaimOutcome (..)
+  , AppointedClaimOutcome (..)
+  , AvailableSlotInsertOutcome (..)
+
+    -- * Rows
   , DoctorRow (..)
   , PatientRow (..)
   , HealthcareServiceRow (..)
-  , IntakeRequestRow (..)
   , AvailableSlotRow (..)
+  , IntakeRequestRow (..)
 
-    -- ── Decoding / encoding ──────────────────────────────────────────────
+    -- * Row decoding / encoding
   , toDomainDoctor
-  , fromDomainDoctor
   , toDomainPatient
-  , fromDomainPatient
   , toDomainHealthcareService
-  , fromDomainHealthcareService
   , toDomainAvailableSlot
-  , fromDomainAvailableSlot
   , toDomainIntakeRequest
-  , toDomainSubmittedIntakeRequest
-  , toDomainRejectedIntakeRequest
-  , toDomainTriagedIntakeRequest
-  , toDomainAppointedIntakeRequest
-  , toDomainWithdrawnIntakeRequest
-  , toDomainStaleIntakeRequest
-  , toDomainClosedIntakeRequest
+  , fromDomainDoctor
+  , fromDomainPatient
+  , fromDomainHealthcareService
+  , fromDomainAvailableSlot
   , fromDomainSubmittedIntakeRequest
   , fromDomainRejectedIntakeRequest
   , fromDomainTriagedIntakeRequest
@@ -47,15 +43,34 @@ module Persistence
   , fromDomainStaleIntakeRequest
   , fromDomainClosedIntakeRequest
 
-    -- ── Reads ────────────────────────────────────────────────────────────
+    -- * Inserts
+  , insertDoctor
+  , insertPatient
+  , insertHealthcareService
+  , insertAvailableSlot
+  , insertSubmittedIntakeRequest
+
+    -- * Transitions
+  , persistRejectedIntakeRequest
+  , persistTriagedIntakeRequest
+  , persistAppointedIntakeRequest
+  , persistWithdrawnIntakeRequest
+  , persistStaleIntakeRequest
+  , persistClosedIntakeRequest
+
+    -- * Reads by id
   , fetchDoctor
-  , fetchDoctors
   , fetchPatient
-  , fetchPatients
   , fetchHealthcareService
-  , fetchHealthcareServices
   , fetchAvailableSlot
   , fetchIntakeRequest
+
+    -- * Reads of all
+  , fetchDoctors
+  , fetchPatients
+  , fetchHealthcareServices
+
+    -- * Reads by case
   , fetchSubmittedIntakeRequests
   , fetchAcceptedIntakeRequests
   , fetchAppointedIntakeRequests
@@ -63,40 +78,30 @@ module Persistence
   , fetchWithdrawnIntakeRequestsByWithdrawnAt
   , fetchStaleIntakeRequestsByStaleAt
   , fetchClosedIntakeRequestsByStart
+
+    -- * Doctor calendar
   , fetchDoctorCalendarOverlapping
   , fetchDoctorCalendarEntriesOverlapping
-
-    -- ── Writes ───────────────────────────────────────────────────────────
-  , insertDoctor
-  , insertPatient
-  , insertHealthcareService
-  , insertSubmittedIntakeRequest
-  , insertAvailableSlot
-  , persistTriagedIntakeRequest
-  , persistRejectedIntakeRequest
-  , persistAppointedIntakeRequest
-  , persistWithdrawnIntakeRequest
-  , persistStaleIntakeRequest
-  , persistClosedIntakeRequest
   ) where
 
-import Control.Exception                    (Exception, handle, throwIO, try)
-import Data.Char                            (isUpper, toLower)
-import Data.Int                             (Int16, Int64)
-import Data.List                            (sortOn)
-import Data.Maybe                           (isJust)
-import Data.Pool                            (Pool)
-import Data.Text                            (Text)
-import Data.Time                            (UTCTime, addUTCTime)
-import Data.UUID                            (UUID)
+import Control.Exception                     (Exception, throwIO, try)
+import Control.Monad                         (when)
+import Data.Char                             (isUpper, toLower)
+import Data.Int                              (Int64)
+import Data.List                             (sortOn)
+import Data.Pool                             (Pool)
+import Data.Text                             (Text)
+import Data.Time                             (UTCTime)
+import Data.UUID                             (UUID)
 import Database.PostgreSQL.Simple
-  ( Connection, Only (..), Query, SqlError (..), execute, query, query_, withTransaction )
-import Database.PostgreSQL.Simple.FromRow   (FromRow (..), field)
-import Database.PostgreSQL.Simple.Transaction (IsolationLevel (..), withTransactionLevel)
+  ( Connection, Only (..), Query, SqlError (..), execute, query, withTransaction )
+import Database.PostgreSQL.Simple.FromRow    (FromRow (..), field)
+import Database.PostgreSQL.Simple.Transaction (IsolationLevel (RepeatableRead), withTransactionLevel)
 
-import qualified Data.Text as Text
+import qualified Data.Text as T
 
-import Domain
+import Domain hiding (routineNotAfter, routineNotBefore)
+import qualified Domain
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- CONNECTIONS
@@ -105,88 +110,89 @@ import Domain
 type ConnectionPool = Pool Connection
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- OUTCOMES / ERRORS
+-- DECODE ERRORS
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- A stored row that no Domain value can be built from. The first Text of
--- most constructors is the row's state (or table), the second a column.
+-- One constructor per kind of failure. Shapes the CHECKs make impossible
+-- are checked anyway.
 data DecodeError
-  = UnknownState            Text
-  | UnexpectedState         Text Text         -- expected, found
-  | UnknownPriority         Text
-  | UnknownDuration         Int16
-  | UnknownAppointmentParty Text
-  | MissingColumn           Text Text
-  | UnexpectedColumn        Text Text
-  | NoCloseReasonMatches    Text
-  | InvalidRoutineWindow    UTCTime UTCTime
-  | OverlappingDoctorCalendar DoctorId
+  = UnknownState Text                  -- ^ intake_requests.state
+  | UnknownPriority Text               -- ^ intake_requests.priority
+  | UnknownDuration Int                -- ^ a duration column, in minutes
+  | UnknownAppointmentParty Text       -- ^ cancelled_by / absent_party
+  | MissingValue Text                  -- ^ column required by the row's shape is NULL
+  | UnexpectedValue Text               -- ^ column NULL in the row's shape is set
+  | InvalidRoutineWindow UTCTime UTCTime -- ^ mkRoutineWindow refused
+  | UnexpectedState Text               -- ^ a by-case read found another case
+  | OverlappingDoctorCalendar          -- ^ mkDoctorCalendar refused
   deriving (Show, Eq)
 
--- A single guarded write: the row was still in the case the caller saw.
+instance Exception DecodeError
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- WRITE OUTCOMES
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- A write with a single guard.
 data ClaimOutcome
   = Claimed
   | AlreadyClaimed
   deriving (Show, Eq)
 
--- Matching: deleting the consumed slot and moving the request to Appointed.
-data MatchClaimOutcome
-  = MatchClaimed
-  | SlotAlreadyClaimed           -- the slot row was already gone
-  | IntakeRequestAlreadyClaimed  -- the request had left Accepted
+-- Matching: two guarded rows, each can lose a race.
+data AppointedClaimOutcome
+  = AppointedClaimed
+  | AvailableSlotAlreadyClaimed    -- ^ the slot's delete affected no row
+  | IntakeRequestAlreadyClaimed    -- ^ the request's update affected no row
   deriving (Show, Eq)
 
--- A new calendar element: the only write that can violate
--- doctor_calendar_no_overlap legitimately.
-data SlotInsertOutcome
-  = SlotInserted
-  | SlotOverlapsDoctorCalendar
+-- A new element of DoctorCalendar: the EXCLUDE constraint can reject it.
+data AvailableSlotInsertOutcome
+  = AvailableSlotInserted
+  | AvailableSlotOverlapsDoctorCalendar
   deriving (Show, Eq)
 
-claimOutcome :: Int64 -> ClaimOutcome
-claimOutcome 1 = Claimed
-claimOutcome _ = AlreadyClaimed
+-- Internal: the request's update lost its race after the slot was deleted;
+-- rolls the matching transaction back.
+data IntakeRequestClaimLost = IntakeRequestClaimLost
+  deriving (Show)
 
--- Rolls the match transaction back when its second step loses its race.
-data IntakeRequestLost = IntakeRequestLost
-  deriving Show
+instance Exception IntakeRequestClaimLost
 
-instance Exception IntakeRequestLost
-
--- Raised by Service when stored data violates the spec (a 500).
-instance Exception DecodeError
+claim :: Int64 -> ClaimOutcome
+claim 0 = AlreadyClaimed
+claim _ = Claimed
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ENUMERATIONS
 -- ═══════════════════════════════════════════════════════════════════════════
 
-snakeCase :: String -> Text
-snakeCase = Text.pack . go
-  where
-    go (c : cs) = toLower c : concatMap step cs
-    go []       = []
-    step c | isUpper c = ['_', toLower c]
-           | otherwise = [c]
-
--- Duration: whole minutes.
-durationMinutes :: Duration -> Int16
+-- Duration: whole minutes of durationToNominalDiffTime.
+durationMinutes :: Duration -> Int
 durationMinutes d = round (durationToNominalDiffTime d / 60)
 
-decodeDuration :: Int16 -> Either DecodeError Duration
-decodeDuration m =
-  maybe (Left (UnknownDuration m)) Right
-    (lookup m [ (durationMinutes d, d) | d <- [minBound .. maxBound] ])
+toDomainDuration :: Int -> Either DecodeError Duration
+toDomainDuration minutes =
+  maybe (Left (UnknownDuration minutes)) Right
+    (lookup minutes [ (durationMinutes d, d) | d <- [minBound .. maxBound] ])
 
-appointmentPartyValue :: AppointmentParty -> Text
-appointmentPartyValue = snakeCase . show
+-- Stored enumeration values are constructor names in snake_case.
+snakeCase :: String -> Text
+snakeCase = T.pack . go
+  where
+    go []       = []
+    go (c : cs) = toLower c : concatMap (\x -> if isUpper x then ['_', toLower x] else [x]) cs
 
-decodeAppointmentParty :: Text -> Either DecodeError AppointmentParty
-decodeAppointmentParty t =
+appointmentPartyText :: AppointmentParty -> Text
+appointmentPartyText = snakeCase . show
+
+toDomainAppointmentParty :: Text -> Either DecodeError AppointmentParty
+toDomainAppointmentParty t =
   maybe (Left (UnknownAppointmentParty t)) Right
-    (lookup t [ (appointmentPartyValue p, p) | p <- [minBound .. maxBound] ])
+    (lookup t [ (appointmentPartyText p, p) | p <- [minBound .. maxBound] ])
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- DOCTOR / PATIENT
+-- ROWS
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data DoctorRow = DoctorRow
@@ -197,14 +203,8 @@ data DoctorRow = DoctorRow
 
 instance FromRow DoctorRow where
   fromRow = DoctorRow
-    <$> field  -- id
-    <*> field  -- name
-
-toDomainDoctor :: DoctorRow -> Doctor
-toDomainDoctor row = Doctor { id = DoctorId row.id, name = row.name }
-
-fromDomainDoctor :: Doctor -> DoctorRow
-fromDomainDoctor Doctor { id = DoctorId uuid, name } = DoctorRow { id = uuid, name }
+    <$> field -- id
+    <*> field -- name
 
 data PatientRow = PatientRow
   { id   :: UUID
@@ -214,168 +214,42 @@ data PatientRow = PatientRow
 
 instance FromRow PatientRow where
   fromRow = PatientRow
-    <$> field  -- id
-    <*> field  -- name
-
-toDomainPatient :: PatientRow -> Patient
-toDomainPatient row = Patient { id = PatientId row.id, name = row.name }
-
-fromDomainPatient :: Patient -> PatientRow
-fromDomainPatient Patient { id = PatientId uuid, name } = PatientRow { id = uuid, name }
-
-fetchDoctor :: Connection -> DoctorId -> IO (Maybe Doctor)
-fetchDoctor conn (DoctorId uuid) = do
-  rows <- query conn "SELECT id, name FROM doctors WHERE id = ?" (Only uuid)
-  pure $ case rows of
-    [row] -> Just (toDomainDoctor row)
-    _     -> Nothing
-
-fetchDoctors :: Connection -> IO [Doctor]
-fetchDoctors conn =
-  map toDomainDoctor <$> query_ conn "SELECT id, name FROM doctors ORDER BY name"
-
-fetchPatient :: Connection -> PatientId -> IO (Maybe Patient)
-fetchPatient conn (PatientId uuid) = do
-  rows <- query conn "SELECT id, name FROM patients WHERE id = ?" (Only uuid)
-  pure $ case rows of
-    [row] -> Just (toDomainPatient row)
-    _     -> Nothing
-
-fetchPatients :: Connection -> IO [Patient]
-fetchPatients conn =
-  map toDomainPatient <$> query_ conn "SELECT id, name FROM patients ORDER BY name"
-
-insertDoctor :: Connection -> Doctor -> IO ()
-insertDoctor conn doctor = do
-  let row = fromDomainDoctor doctor
-  _ <- execute conn "INSERT INTO doctors (id, name) VALUES (?, ?)" (row.id, row.name)
-  pure ()
-
-insertPatient :: Connection -> Patient -> IO ()
-insertPatient conn patient = do
-  let row = fromDomainPatient patient
-  _ <- execute conn "INSERT INTO patients (id, name) VALUES (?, ?)" (row.id, row.name)
-  pure ()
-
--- ═══════════════════════════════════════════════════════════════════════════
--- HEALTHCARE SERVICE
--- ═══════════════════════════════════════════════════════════════════════════
+    <$> field -- id
+    <*> field -- name
 
 data HealthcareServiceRow = HealthcareServiceRow
   { id       :: UUID
   , name     :: Text
-  , duration :: Int16
+  , duration :: Int
   }
   deriving (Show, Eq)
 
 instance FromRow HealthcareServiceRow where
   fromRow = HealthcareServiceRow
-    <$> field  -- id
-    <*> field  -- name
-    <*> field  -- duration
-
-toDomainHealthcareService :: HealthcareServiceRow -> Either DecodeError HealthcareService
-toDomainHealthcareService row =
-  (\duration -> HealthcareService { id = HealthcareServiceId row.id, name = row.name, duration })
-    <$> decodeDuration row.duration
-
-fromDomainHealthcareService :: HealthcareService -> HealthcareServiceRow
-fromDomainHealthcareService HealthcareService { id = HealthcareServiceId uuid, name, duration } =
-  HealthcareServiceRow { id = uuid, name, duration = durationMinutes duration }
-
-fetchHealthcareService
-  :: Connection -> HealthcareServiceId -> IO (Either DecodeError (Maybe HealthcareService))
-fetchHealthcareService conn (HealthcareServiceId uuid) = do
-  rows <- query conn
-    "SELECT id, name, duration FROM healthcare_services WHERE id = ?" (Only uuid)
-  pure $ case rows of
-    [row] -> Just <$> toDomainHealthcareService row
-    _     -> Right Nothing
-
-fetchHealthcareServices :: Connection -> IO (Either DecodeError [HealthcareService])
-fetchHealthcareServices conn =
-  traverse toDomainHealthcareService
-    <$> query_ conn "SELECT id, name, duration FROM healthcare_services ORDER BY name, duration"
-
-insertHealthcareService :: Connection -> HealthcareService -> IO ()
-insertHealthcareService conn service = do
-  let row = fromDomainHealthcareService service
-  _ <- execute conn
-    "INSERT INTO healthcare_services (id, name, duration) VALUES (?, ?, ?)"
-    (row.id, row.name, row.duration)
-  pure ()
-
--- ═══════════════════════════════════════════════════════════════════════════
--- SLOT
--- ═══════════════════════════════════════════════════════════════════════════
+    <$> field -- id
+    <*> field -- name
+    <*> field -- duration
 
 data AvailableSlotRow = AvailableSlotRow
   { id                  :: UUID
   , doctorId            :: UUID
   , healthcareServiceId :: UUID
   , start               :: UTCTime
-  , duration            :: Int16
+  , duration            :: Int
   }
   deriving (Show, Eq)
 
 instance FromRow AvailableSlotRow where
   fromRow = AvailableSlotRow
-    <$> field  -- id
-    <*> field  -- doctor_id
-    <*> field  -- healthcare_service_id
-    <*> field  -- start
-    <*> field  -- duration
-
-slotColumns :: Query
-slotColumns = "id, doctor_id, healthcare_service_id, start, duration"
-
-toDomainAvailableSlot :: AvailableSlotRow -> Either DecodeError AvailableSlot
-toDomainAvailableSlot row =
-  (\duration -> AvailableSlot
-     { id                  = SlotId row.id
-     , doctorId            = DoctorId row.doctorId
-     , healthcareServiceId = HealthcareServiceId row.healthcareServiceId
-     , start               = row.start
-     , duration
-     })
-    <$> decodeDuration row.duration
-
-fromDomainAvailableSlot :: AvailableSlot -> AvailableSlotRow
-fromDomainAvailableSlot
-  AvailableSlot { id = SlotId uuid, doctorId = DoctorId doctor
-                , healthcareServiceId = HealthcareServiceId service, start, duration } =
-  AvailableSlotRow
-    { id = uuid, doctorId = doctor, healthcareServiceId = service
-    , start, duration = durationMinutes duration }
-
-fetchAvailableSlot :: Connection -> SlotId -> IO (Either DecodeError (Maybe AvailableSlot))
-fetchAvailableSlot conn (SlotId uuid) = do
-  rows <- query conn ("SELECT " <> slotColumns <> " FROM available_slots WHERE id = ?") (Only uuid)
-  pure $ case rows of
-    [row] -> Just <$> toDomainAvailableSlot row
-    _     -> Right Nothing
-
--- A new element of the doctor calendar: an overlap is an outcome.
-insertAvailableSlot :: Connection -> AvailableSlot -> IO SlotInsertOutcome
-insertAvailableSlot conn slot = do
-  let row = fromDomainAvailableSlot slot
-  result <- try $ execute conn
-    "INSERT INTO available_slots (id, doctor_id, healthcare_service_id, start, duration) \
-    \VALUES (?, ?, ?, ?, ?)"
-    (row.id, row.doctorId, row.healthcareServiceId, row.start, row.duration)
-  case result of
-    Right _ -> pure SlotInserted
-    Left e
-      | sqlState e == "23P01" -> pure SlotOverlapsDoctorCalendar
-      | otherwise             -> throwIO e
-
--- ═══════════════════════════════════════════════════════════════════════════
--- INTAKE REQUEST
--- ═══════════════════════════════════════════════════════════════════════════
+    <$> field -- id
+    <*> field -- doctor_id
+    <*> field -- healthcare_service_id
+    <*> field -- start
+    <*> field -- duration
 
 data IntakeRequestRow = IntakeRequestRow
-  { state               :: Text
-  , id                  :: UUID
+  { id                  :: UUID
+  , state               :: Text
   , patientId           :: UUID
   , narrative           :: Text
   , createdAt           :: UTCTime
@@ -390,7 +264,7 @@ data IntakeRequestRow = IntakeRequestRow
   , triagedAt           :: Maybe UTCTime
   , doctorId            :: Maybe UUID
   , start               :: Maybe UTCTime
-  , duration            :: Maybe Int16
+  , duration            :: Maybe Int
   , withdrawnAt         :: Maybe UTCTime
   , withdrawalNote      :: Maybe Text
   , staleAt             :: Maybe UTCTime
@@ -403,517 +277,705 @@ data IntakeRequestRow = IntakeRequestRow
 
 instance FromRow IntakeRequestRow where
   fromRow = IntakeRequestRow
-    <$> field  -- state
-    <*> field  -- id
-    <*> field  -- patient_id
-    <*> field  -- narrative
-    <*> field  -- created_at
-    <*> field  -- rejected_at
-    <*> field  -- rejection_reason
-    <*> field  -- healthcare_service_id
-    <*> field  -- priority
-    <*> field  -- must_be_seen_by
-    <*> field  -- routine_not_before
-    <*> field  -- routine_not_after
-    <*> field  -- specific_doctor_id
-    <*> field  -- triaged_at
-    <*> field  -- doctor_id
-    <*> field  -- start
-    <*> field  -- duration
-    <*> field  -- withdrawn_at
-    <*> field  -- withdrawal_note
-    <*> field  -- stale_at
-    <*> field  -- cancelled_by
-    <*> field  -- cancelled_at
-    <*> field  -- cancellation_note
-    <*> field  -- absent_party
+    <$> field -- id
+    <*> field -- state
+    <*> field -- patient_id
+    <*> field -- narrative
+    <*> field -- created_at
+    <*> field -- rejected_at
+    <*> field -- rejection_reason
+    <*> field -- healthcare_service_id
+    <*> field -- priority
+    <*> field -- must_be_seen_by
+    <*> field -- routine_not_before
+    <*> field -- routine_not_after
+    <*> field -- specific_doctor_id
+    <*> field -- triaged_at
+    <*> field -- doctor_id
+    <*> field -- start
+    <*> field -- duration
+    <*> field -- withdrawn_at
+    <*> field -- withdrawal_note
+    <*> field -- stale_at
+    <*> field -- cancelled_by
+    <*> field -- cancelled_at
+    <*> field -- cancellation_note
+    <*> field -- absent_party
 
 intakeRequestColumns :: Query
 intakeRequestColumns =
-  "state, id, patient_id, narrative, created_at, rejected_at, rejection_reason, \
+  "id, state, patient_id, narrative, created_at, \
+  \rejected_at, rejection_reason, \
   \healthcare_service_id, priority, must_be_seen_by, routine_not_before, \
-  \routine_not_after, specific_doctor_id, triaged_at, doctor_id, start, duration, \
-  \withdrawn_at, withdrawal_note, stale_at, cancelled_by, cancelled_at, \
-  \cancellation_note, absent_party"
+  \routine_not_after, specific_doctor_id, triaged_at, \
+  \doctor_id, start, duration, \
+  \withdrawn_at, withdrawal_note, \
+  \stale_at, \
+  \cancelled_by, cancelled_at, cancellation_note, absent_party"
 
--- ── Column groups, one per stage (and CloseReason) ─────────────────────────
+availableSlotColumns :: Query
+availableSlotColumns = "id, doctor_id, healthcare_service_id, start, duration"
 
-rejectedColumns, triagedColumns, appointedColumns, withdrawnColumns,
-  staleColumns, closeReasonColumns :: IntakeRequestRow -> [(Text, Bool)]
-rejectedColumns r =
-  [ ("rejected_at", isJust r.rejectedAt), ("rejection_reason", isJust r.rejectionReason) ]
-triagedColumns r =
-  [ ("healthcare_service_id", isJust r.healthcareServiceId)
-  , ("priority",              isJust r.priority)
-  , ("must_be_seen_by",       isJust r.mustBeSeenBy)
-  , ("routine_not_before",    isJust r.routineNotBefore)
-  , ("routine_not_after",     isJust r.routineNotAfter)
-  , ("specific_doctor_id",    isJust r.specificDoctorId)
-  , ("triaged_at",            isJust r.triagedAt)
-  ]
-appointedColumns r =
-  [ ("doctor_id", isJust r.doctorId), ("start", isJust r.start), ("duration", isJust r.duration) ]
-withdrawnColumns r =
-  [ ("withdrawn_at", isJust r.withdrawnAt), ("withdrawal_note", isJust r.withdrawalNote) ]
-staleColumns r = [ ("stale_at", isJust r.staleAt) ]
-closeReasonColumns r =
-  [ ("cancelled_by",      isJust r.cancelledBy)
-  , ("cancelled_at",      isJust r.cancelledAt)
-  , ("cancellation_note", isJust r.cancellationNote)
-  , ("absent_party",      isJust r.absentParty)
-  ]
+-- ═══════════════════════════════════════════════════════════════════════════
+-- DECODING (row -> Domain)
+-- ═══════════════════════════════════════════════════════════════════════════
 
-expectNull :: Text -> [(Text, Bool)] -> Either DecodeError ()
-expectNull st columns = case [ c | (c, True) <- columns ] of
-  []      -> Right ()
-  (c : _) -> Left (UnexpectedColumn st c)
+toDomainDoctor :: DoctorRow -> Doctor
+toDomainDoctor r = Doctor { id = DoctorId r.id, name = r.name }
 
-required :: Text -> Text -> Maybe a -> Either DecodeError a
-required st column = maybe (Left (MissingColumn st column)) Right
+toDomainPatient :: PatientRow -> Patient
+toDomainPatient r = Patient { id = PatientId r.id, name = r.name }
 
-expectState :: Text -> IntakeRequestRow -> Either DecodeError ()
-expectState st row
-  | row.state == st = Right ()
-  | otherwise       = Left (UnexpectedState st row.state)
+toDomainHealthcareService :: HealthcareServiceRow -> Either DecodeError HealthcareService
+toDomainHealthcareService r =
+  (\d -> HealthcareService { id = HealthcareServiceId r.id, name = r.name, duration = d })
+    <$> toDomainDuration r.duration
 
--- ── Read direction: one function branching on the discriminator ────────────
+toDomainAvailableSlot :: AvailableSlotRow -> Either DecodeError AvailableSlot
+toDomainAvailableSlot r =
+  (\d -> AvailableSlot
+      { id                  = SlotId r.id
+      , doctorId            = DoctorId r.doctorId
+      , healthcareServiceId = HealthcareServiceId r.healthcareServiceId
+      , start               = r.start
+      , duration            = d
+      })
+    <$> toDomainDuration r.duration
 
+-- A column the row's shape requires.
+required :: Text -> Maybe a -> Either DecodeError a
+required column = maybe (Left (MissingValue column)) Right
+
+-- A column the row's shape leaves NULL.
+absent :: Text -> Maybe a -> Either DecodeError ()
+absent _      Nothing  = Right ()
+absent column (Just _) = Left (UnexpectedValue column)
+
+-- One function, branching on the discriminator.
 toDomainIntakeRequest :: IntakeRequestRow -> Either DecodeError IntakeRequest
-toDomainIntakeRequest row = case row.state of
-  "submitted" -> Submitted <$> toDomainSubmittedIntakeRequest row
-  "rejected"  -> Rejected  <$> toDomainRejectedIntakeRequest row
-  "accepted"  -> Accepted  <$> toDomainTriagedIntakeRequest row
-  "appointed" -> Appointed <$> toDomainAppointedIntakeRequest row
-  "withdrawn" -> Withdrawn <$> toDomainWithdrawnIntakeRequest row
-  "stale"     -> Stale     <$> toDomainStaleIntakeRequest row
-  "closed"    -> Closed    <$> toDomainClosedIntakeRequest row
-  other       -> Left (UnknownState other)
-
--- Case decoders: each checks the row's state and that every column outside
--- the case's stages is NULL.
-
-toDomainSubmittedIntakeRequest :: IntakeRequestRow -> Either DecodeError SubmittedIntakeRequest
-toDomainSubmittedIntakeRequest row = do
-  expectState "submitted" row
-  expectNull "submitted" $
-    rejectedColumns row <> triagedColumns row <> appointedColumns row
-      <> withdrawnColumns row <> staleColumns row <> closeReasonColumns row
-  pure (submittedStage row)
-
-toDomainRejectedIntakeRequest :: IntakeRequestRow -> Either DecodeError RejectedIntakeRequest
-toDomainRejectedIntakeRequest row = do
-  expectState "rejected" row
-  expectNull "rejected" $
-    triagedColumns row <> appointedColumns row <> withdrawnColumns row
-      <> staleColumns row <> closeReasonColumns row
-  rejectedAt      <- required "rejected" "rejected_at" row.rejectedAt
-  rejectionReason <- required "rejected" "rejection_reason" row.rejectionReason
-  pure RejectedIntakeRequest { submitted = submittedStage row, rejectedAt, rejectionReason }
-
-toDomainTriagedIntakeRequest :: IntakeRequestRow -> Either DecodeError TriagedIntakeRequest
-toDomainTriagedIntakeRequest row = do
-  expectState "accepted" row
-  expectNull "accepted" $
-    rejectedColumns row <> appointedColumns row <> withdrawnColumns row
-      <> staleColumns row <> closeReasonColumns row
-  triagedStage "accepted" row
-
-toDomainAppointedIntakeRequest :: IntakeRequestRow -> Either DecodeError AppointedIntakeRequest
-toDomainAppointedIntakeRequest row = do
-  expectState "appointed" row
-  expectNull "appointed" $
-    rejectedColumns row <> withdrawnColumns row <> staleColumns row <> closeReasonColumns row
-  appointedStage "appointed" row
-
-toDomainWithdrawnIntakeRequest :: IntakeRequestRow -> Either DecodeError WithdrawnIntakeRequest
-toDomainWithdrawnIntakeRequest row = do
-  expectState "withdrawn" row
-  expectNull "withdrawn" $
-    rejectedColumns row <> appointedColumns row <> staleColumns row <> closeReasonColumns row
-  -- FromSubmitted: none of FromAccepted's columns set (as in the CHECKs).
-  withdrawnFrom <-
-    if any snd (triagedColumns row)
-      then FromAccepted <$> triagedStage "withdrawn" row
-      else pure (FromSubmitted (submittedStage row))
-  withdrawnAt <- required "withdrawn" "withdrawn_at" row.withdrawnAt
-  pure WithdrawnIntakeRequest { withdrawnFrom, withdrawnAt, withdrawalNote = row.withdrawalNote }
-
-toDomainStaleIntakeRequest :: IntakeRequestRow -> Either DecodeError StaleIntakeRequest
-toDomainStaleIntakeRequest row = do
-  expectState "stale" row
-  expectNull "stale" $
-    rejectedColumns row <> appointedColumns row <> withdrawnColumns row <> closeReasonColumns row
-  triaged <- triagedStage "stale" row
-  staleAt <- required "stale" "stale_at" row.staleAt
-  pure StaleIntakeRequest { triaged, staleAt }
-
-toDomainClosedIntakeRequest :: IntakeRequestRow -> Either DecodeError ClosedIntakeRequest
-toDomainClosedIntakeRequest row = do
-  expectState "closed" row
-  expectNull "closed" $ rejectedColumns row <> withdrawnColumns row <> staleColumns row
-  appointed   <- appointedStage "closed" row
-  closeReason <- decodeCloseReason row
-  pure ClosedIntakeRequest { appointed, closeReason }
-
--- ── Stage parts (no state or NULL checks; the case decoders do those) ──────
+toDomainIntakeRequest r = case r.state of
+  "submitted" -> do
+    absentRejected r; absentTriaged r; absentAppointed r
+    absentWithdrawn r; absentStale r; absentCloseReason r
+    pure (Submitted (submittedStage r))
+  "rejected" -> do
+    absentTriaged r; absentAppointed r; absentWithdrawn r; absentStale r; absentCloseReason r
+    rejectedAt      <- required "rejected_at" r.rejectedAt
+    rejectionReason <- required "rejection_reason" r.rejectionReason
+    pure (Rejected RejectedIntakeRequest { submitted = submittedStage r, rejectedAt, rejectionReason })
+  "accepted" -> do
+    absentRejected r; absentAppointed r; absentWithdrawn r; absentStale r; absentCloseReason r
+    Accepted <$> triagedStage r
+  "appointed" -> do
+    absentRejected r; absentWithdrawn r; absentStale r; absentCloseReason r
+    Appointed <$> appointedStage r
+  "withdrawn" -> do
+    absentRejected r; absentAppointed r; absentStale r; absentCloseReason r
+    withdrawnFrom <- withdrawnFromStage r
+    withdrawnAt   <- required "withdrawn_at" r.withdrawnAt
+    pure (Withdrawn WithdrawnIntakeRequest { withdrawnFrom, withdrawnAt, withdrawalNote = r.withdrawalNote })
+  "stale" -> do
+    absentRejected r; absentAppointed r; absentWithdrawn r; absentCloseReason r
+    triaged <- triagedStage r
+    staleAt <- required "stale_at" r.staleAt
+    pure (Stale StaleIntakeRequest { triaged, staleAt })
+  "closed" -> do
+    absentRejected r; absentWithdrawn r; absentStale r
+    appointed   <- appointedStage r
+    closeReason <- closeReasonOf r
+    pure (Closed ClosedIntakeRequest { appointed, closeReason })
+  other -> Left (UnknownState other)
 
 submittedStage :: IntakeRequestRow -> SubmittedIntakeRequest
-submittedStage row = SubmittedIntakeRequest
-  { id        = IntakeRequestId row.id
-  , patientId = PatientId row.patientId
-  , narrative = row.narrative
-  , createdAt = row.createdAt
+submittedStage r = SubmittedIntakeRequest
+  { id        = IntakeRequestId r.id
+  , patientId = PatientId r.patientId
+  , narrative = r.narrative
+  , createdAt = r.createdAt
   }
 
-triagedStage :: Text -> IntakeRequestRow -> Either DecodeError TriagedIntakeRequest
-triagedStage st row = do
-  service       <- required st "healthcare_service_id" row.healthcareServiceId
-  priorityValue <- required st "priority" row.priority
-  priority      <- decodePriority st priorityValue row
-  triagedAt     <- required st "triaged_at" row.triagedAt
+triagedStage :: IntakeRequestRow -> Either DecodeError TriagedIntakeRequest
+triagedStage r = do
+  serviceUuid       <- required "healthcare_service_id" r.healthcareServiceId
+  priority          <- priorityOf r
+  triagedAt         <- required "triaged_at" r.triagedAt
   pure TriagedIntakeRequest
-    { submitted           = submittedStage row
-    , healthcareServiceId = HealthcareServiceId service
+    { submitted           = submittedStage r
+    , healthcareServiceId = HealthcareServiceId serviceUuid
     , priority
-    , doctorRequirement   = maybe AnyDoctor (SpecificDoctor . DoctorId) row.specificDoctorId
+    , doctorRequirement   = doctorRequirementOf r
     , triagedAt
     }
 
-appointedStage :: Text -> IntakeRequestRow -> Either DecodeError AppointedIntakeRequest
-appointedStage st row = do
-  triaged  <- triagedStage st row
-  doctor   <- required st "doctor_id" row.doctorId
-  start    <- required st "start" row.start
-  minutes  <- required st "duration" row.duration
-  duration <- decodeDuration minutes
-  pure AppointedIntakeRequest { triaged, doctorId = DoctorId doctor, start, duration }
+appointedStage :: IntakeRequestRow -> Either DecodeError AppointedIntakeRequest
+appointedStage r = do
+  triaged     <- triagedStage r
+  doctorUuid  <- required "doctor_id" r.doctorId
+  start       <- required "start" r.start
+  minutes     <- required "duration" r.duration
+  duration    <- toDomainDuration minutes
+  pure AppointedIntakeRequest { triaged, doctorId = DoctorId doctorUuid, start, duration }
 
--- IntakeRequestPriority: stored values listed by hand (it has fields).
-decodePriority :: Text -> Text -> IntakeRequestRow -> Either DecodeError IntakeRequestPriority
-decodePriority st value row = case value of
-  "emergency" -> Emergency <$> mustBeSeenBy
-  "urgent"    -> Urgent    <$> mustBeSeenBy
-  "routine"   -> do
-    expectNull st [ ("must_be_seen_by", isJust row.mustBeSeenBy) ]
-    Routine <$> decodeRoutineDue
-  other       -> Left (UnknownPriority other)
+-- FromSubmitted is identified by none of FromAccepted's columns being set,
+-- the same combination as the CHECKs.
+withdrawnFromStage :: IntakeRequestRow -> Either DecodeError WithdrawnFrom
+withdrawnFromStage r =
+  case (r.healthcareServiceId, r.priority, r.triagedAt) of
+    (Nothing, Nothing, Nothing) -> do
+      absentTriaged r
+      pure (FromSubmitted (submittedStage r))
+    _ -> FromAccepted <$> triagedStage r
+
+priorityOf :: IntakeRequestRow -> Either DecodeError IntakeRequestPriority
+priorityOf r = do
+  discriminator <- required "priority" r.priority
+  case discriminator of
+    "emergency" -> do
+      absentRoutineDue
+      Emergency . MustBeSeenBy <$> required "must_be_seen_by" r.mustBeSeenBy
+    "urgent" -> do
+      absentRoutineDue
+      Urgent . MustBeSeenBy <$> required "must_be_seen_by" r.mustBeSeenBy
+    "routine" -> do
+      absent "must_be_seen_by" r.mustBeSeenBy
+      Routine <$> routineDueOf r
+    other -> Left (UnknownPriority other)
   where
-    mustBeSeenBy = do
-      expectNull st [ ("routine_not_before", isJust row.routineNotBefore)
-                    , ("routine_not_after",  isJust row.routineNotAfter) ]
-      MustBeSeenBy <$> required st "must_be_seen_by" row.mustBeSeenBy
-    -- Which bounds are set tells the case.
-    decodeRoutineDue = case (row.routineNotBefore, row.routineNotAfter) of
-      (Nothing,     Nothing)    -> Right RoutineAnytime
-      (Just before, Nothing)    -> Right (RoutineNotBefore before)
-      (Nothing,     Just after) -> Right (RoutineNotAfter after)
-      (Just before, Just after) ->
-        maybe (Left (InvalidRoutineWindow before after)) (Right . RoutineWithin)
-          (mkRoutineWindow before after)
+    absentRoutineDue = do
+      absent "routine_not_before" r.routineNotBefore
+      absent "routine_not_after" r.routineNotAfter
 
--- CloseReason: which columns are set tells the case (as in its CHECK).
-decodeCloseReason :: IntakeRequestRow -> Either DecodeError CloseReason
-decodeCloseReason row =
-  case (row.cancelledBy, row.cancelledAt, row.cancellationNote, row.absentParty) of
-    (Nothing, Nothing, Nothing, Nothing) -> Right Completed
-    (Just by, Just at, note, Nothing)    -> do
-      cancelledBy <- decodeAppointmentParty by
-      pure (Cancelled Cancellation { cancelledBy, cancelledAt = at, cancellationNote = note })
-    (Nothing, Nothing, Nothing, Just party) ->
-      NoShow . Absence <$> decodeAppointmentParty party
-    _ -> Left (NoCloseReasonMatches row.state)
+-- Told apart by which columns are set.
+routineDueOf :: IntakeRequestRow -> Either DecodeError RoutineDue
+routineDueOf r = case (r.routineNotBefore, r.routineNotAfter) of
+  (Nothing, Nothing) -> Right RoutineAnytime
+  (Just nb, Nothing) -> Right (RoutineNotBefore nb)
+  (Nothing, Just na) -> Right (RoutineNotAfter na)
+  (Just nb, Just na) ->
+    maybe (Left (InvalidRoutineWindow nb na)) (Right . RoutineWithin) (mkRoutineWindow nb na)
 
--- ── Write direction: one function per case ─────────────────────────────────
+doctorRequirementOf :: IntakeRequestRow -> DoctorRequirement
+doctorRequirementOf r = maybe AnyDoctor (SpecificDoctor . DoctorId) r.specificDoctorId
 
--- (discriminator, must_be_seen_by, routine_not_before, routine_not_after)
-encodePriority
-  :: IntakeRequestPriority -> (Text, Maybe UTCTime, Maybe UTCTime, Maybe UTCTime)
-encodePriority p = case p of
-  Emergency (MustBeSeenBy t) -> ("emergency", Just t, Nothing, Nothing)
-  Urgent    (MustBeSeenBy t) -> ("urgent",    Just t, Nothing, Nothing)
-  Routine due                -> case due of
-    RoutineAnytime          -> ("routine", Nothing, Nothing,     Nothing)
-    RoutineNotBefore before -> ("routine", Nothing, Just before, Nothing)
-    RoutineNotAfter  after  -> ("routine", Nothing, Nothing,     Just after)
-    RoutineWithin window    ->
-      ("routine", Nothing, Just (Domain.routineNotBefore window), Just (Domain.routineNotAfter window))
+-- Told apart by which columns are set.
+closeReasonOf :: IntakeRequestRow -> Either DecodeError CloseReason
+closeReasonOf r = case (r.cancelledBy, r.cancelledAt, r.absentParty) of
+  (Nothing, Nothing, Nothing) -> do
+    absent "cancellation_note" r.cancellationNote
+    pure Completed
+  (Nothing, Nothing, Just party) -> do
+    absent "cancellation_note" r.cancellationNote
+    absentParty <- toDomainAppointmentParty party
+    pure (NoShow Absence { absentParty })
+  (_, _, Just _) -> Left (UnexpectedValue "absent_party")
+  (by, at, Nothing) -> do
+    byText      <- required "cancelled_by" by
+    cancelledAt <- required "cancelled_at" at
+    cancelledBy <- toDomainAppointmentParty byText
+    pure (Cancelled Cancellation { cancelledBy, cancelledAt, cancellationNote = r.cancellationNote })
 
-encodeDoctorRequirement :: DoctorRequirement -> Maybe UUID
-encodeDoctorRequirement AnyDoctor                       = Nothing
-encodeDoctorRequirement (SpecificDoctor (DoctorId uuid)) = Just uuid
+absentRejected, absentTriaged, absentAppointed, absentWithdrawn, absentStale, absentCloseReason
+  :: IntakeRequestRow -> Either DecodeError ()
+absentRejected r = do
+  absent "rejected_at" r.rejectedAt
+  absent "rejection_reason" r.rejectionReason
+absentTriaged r = do
+  absent "healthcare_service_id" r.healthcareServiceId
+  absent "priority" r.priority
+  absent "must_be_seen_by" r.mustBeSeenBy
+  absent "routine_not_before" r.routineNotBefore
+  absent "routine_not_after" r.routineNotAfter
+  absent "specific_doctor_id" r.specificDoctorId
+  absent "triaged_at" r.triagedAt
+absentAppointed r = do
+  absent "doctor_id" r.doctorId
+  absent "start" r.start
+  absent "duration" r.duration
+absentWithdrawn r = do
+  absent "withdrawn_at" r.withdrawnAt
+  absent "withdrawal_note" r.withdrawalNote
+absentStale r =
+  absent "stale_at" r.staleAt
+absentCloseReason r = do
+  absent "cancelled_by" r.cancelledBy
+  absent "cancelled_at" r.cancelledAt
+  absent "cancellation_note" r.cancellationNote
+  absent "absent_party" r.absentParty
 
-fromDomainSubmittedIntakeRequest :: SubmittedIntakeRequest -> IntakeRequestRow
-fromDomainSubmittedIntakeRequest
-  SubmittedIntakeRequest { id = IntakeRequestId uuid, patientId = PatientId patient
-                         , narrative, createdAt } =
-  IntakeRequestRow
-    { state = "submitted", id = uuid, patientId = patient, narrative, createdAt
-    , rejectedAt = Nothing, rejectionReason = Nothing
-    , healthcareServiceId = Nothing, priority = Nothing, mustBeSeenBy = Nothing
-    , routineNotBefore = Nothing, routineNotAfter = Nothing
-    , specificDoctorId = Nothing, triagedAt = Nothing
-    , doctorId = Nothing, start = Nothing, duration = Nothing
-    , withdrawnAt = Nothing, withdrawalNote = Nothing
-    , staleAt = Nothing
-    , cancelledBy = Nothing, cancelledAt = Nothing, cancellationNote = Nothing
-    , absentParty = Nothing
-    }
+-- Decodes a row and keeps it only in the expected case.
+decodeCase :: (IntakeRequest -> Maybe a) -> IntakeRequestRow -> Either DecodeError a
+decodeCase select r = do
+  request <- toDomainIntakeRequest r
+  maybe (Left (UnexpectedState r.state)) Right (select request)
 
-fromDomainRejectedIntakeRequest :: RejectedIntakeRequest -> IntakeRequestRow
-fromDomainRejectedIntakeRequest RejectedIntakeRequest { submitted, rejectedAt, rejectionReason } =
-  (fromDomainSubmittedIntakeRequest submitted)
-    { state = "rejected", rejectedAt = Just rejectedAt, rejectionReason = Just rejectionReason }
+submittedCase :: IntakeRequest -> Maybe SubmittedIntakeRequest
+submittedCase (Submitted s) = Just s
+submittedCase _             = Nothing
 
-fromDomainTriagedIntakeRequest :: TriagedIntakeRequest -> IntakeRequestRow
-fromDomainTriagedIntakeRequest
-  TriagedIntakeRequest { submitted, healthcareServiceId = HealthcareServiceId service
-                       , priority, doctorRequirement, triagedAt } =
-  let (tier, mustBeSeenBy, notBefore, notAfter) = encodePriority priority
-  in (fromDomainSubmittedIntakeRequest submitted)
-       { state               = "accepted"
-       , healthcareServiceId = Just service
-       , priority            = Just tier
-       , mustBeSeenBy
-       , routineNotBefore    = notBefore
-       , routineNotAfter     = notAfter
-       , specificDoctorId    = encodeDoctorRequirement doctorRequirement
-       , triagedAt           = Just triagedAt
+rejectedCase :: IntakeRequest -> Maybe RejectedIntakeRequest
+rejectedCase (Rejected s) = Just s
+rejectedCase _            = Nothing
+
+acceptedCase :: IntakeRequest -> Maybe TriagedIntakeRequest
+acceptedCase (Accepted s) = Just s
+acceptedCase _            = Nothing
+
+appointedCase :: IntakeRequest -> Maybe AppointedIntakeRequest
+appointedCase (Appointed s) = Just s
+appointedCase _             = Nothing
+
+withdrawnCase :: IntakeRequest -> Maybe WithdrawnIntakeRequest
+withdrawnCase (Withdrawn s) = Just s
+withdrawnCase _             = Nothing
+
+staleCase :: IntakeRequest -> Maybe StaleIntakeRequest
+staleCase (Stale s) = Just s
+staleCase _         = Nothing
+
+closedCase :: IntakeRequest -> Maybe ClosedIntakeRequest
+closedCase (Closed s) = Just s
+closedCase _          = Nothing
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- ENCODING (Domain -> row)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+fromDomainDoctor :: Doctor -> DoctorRow
+fromDomainDoctor d =
+  let DoctorId uuid = d.id
+  in DoctorRow { id = uuid, name = d.name }
+
+fromDomainPatient :: Patient -> PatientRow
+fromDomainPatient p =
+  let PatientId uuid = p.id
+  in PatientRow { id = uuid, name = p.name }
+
+fromDomainHealthcareService :: HealthcareService -> HealthcareServiceRow
+fromDomainHealthcareService s =
+  let HealthcareServiceId uuid = s.id
+  in HealthcareServiceRow { id = uuid, name = s.name, duration = durationMinutes s.duration }
+
+fromDomainAvailableSlot :: AvailableSlot -> AvailableSlotRow
+fromDomainAvailableSlot s =
+  let SlotId slotUuid                = s.id
+      DoctorId doctorUuid            = s.doctorId
+      HealthcareServiceId serviceUuid = s.healthcareServiceId
+  in AvailableSlotRow
+       { id                  = slotUuid
+       , doctorId            = doctorUuid
+       , healthcareServiceId = serviceUuid
+       , start               = s.start
+       , duration            = durationMinutes s.duration
        }
 
+-- The intake request's encoding is split per case. Each builds the whole
+-- row of its case from the stage it embeds plus its own columns.
+
+-- intakeRequestRow state submitted rejected triaged appointed withdrawn
+-- stale closed: a stage's columns are NULL unless the case contains it.
+intakeRequestRow
+  :: Text
+  -> SubmittedIntakeRequest
+  -> Maybe RejectedIntakeRequest
+  -> Maybe TriagedIntakeRequest
+  -> Maybe AppointedIntakeRequest
+  -> Maybe WithdrawnIntakeRequest
+  -> Maybe StaleIntakeRequest
+  -> Maybe ClosedIntakeRequest
+  -> IntakeRequestRow
+intakeRequestRow stateText s mRejected mTriaged mAppointed mWithdrawn mStale mClosed =
+  let IntakeRequestId requestUuid = s.id
+      PatientId patientUuid       = s.patientId
+      (priorityText, mustBeSeenByAt, notBefore, notAfter) =
+        maybe (Nothing, Nothing, Nothing, Nothing) (\t -> priorityColumns t.priority) mTriaged
+      (byText, atTime, noteText, partyText) =
+        maybe (Nothing, Nothing, Nothing, Nothing) (\c -> closeReasonColumns c.closeReason) mClosed
+  in IntakeRequestRow
+       { id                  = requestUuid
+       , state               = stateText
+       , patientId           = patientUuid
+       , narrative           = s.narrative
+       , createdAt           = s.createdAt
+       , rejectedAt          = (\x -> x.rejectedAt) <$> mRejected
+       , rejectionReason     = (\x -> x.rejectionReason) <$> mRejected
+       , healthcareServiceId = (\t -> let HealthcareServiceId u = t.healthcareServiceId in u) <$> mTriaged
+       , priority            = priorityText
+       , mustBeSeenBy        = mustBeSeenByAt
+       , routineNotBefore    = notBefore
+       , routineNotAfter     = notAfter
+       , specificDoctorId    = mTriaged >>= \t -> doctorRequirementColumn t.doctorRequirement
+       , triagedAt           = (\t -> t.triagedAt) <$> mTriaged
+       , doctorId            = (\a -> let DoctorId u = a.doctorId in u) <$> mAppointed
+       , start               = (\a -> a.start) <$> mAppointed
+       , duration            = (\a -> durationMinutes a.duration) <$> mAppointed
+       , withdrawnAt         = (\w -> w.withdrawnAt) <$> mWithdrawn
+       , withdrawalNote      = mWithdrawn >>= \w -> w.withdrawalNote
+       , staleAt             = (\x -> x.staleAt) <$> mStale
+       , cancelledBy         = byText
+       , cancelledAt         = atTime
+       , cancellationNote    = noteText
+       , absentParty         = partyText
+       }
+
+fromDomainSubmittedIntakeRequest :: SubmittedIntakeRequest -> IntakeRequestRow
+fromDomainSubmittedIntakeRequest s =
+  intakeRequestRow "submitted" s Nothing Nothing Nothing Nothing Nothing Nothing
+
+fromDomainRejectedIntakeRequest :: RejectedIntakeRequest -> IntakeRequestRow
+fromDomainRejectedIntakeRequest r =
+  intakeRequestRow "rejected" r.submitted (Just r) Nothing Nothing Nothing Nothing Nothing
+
+fromDomainTriagedIntakeRequest :: TriagedIntakeRequest -> IntakeRequestRow
+fromDomainTriagedIntakeRequest t =
+  intakeRequestRow "accepted" t.submitted Nothing (Just t) Nothing Nothing Nothing Nothing
+
 fromDomainAppointedIntakeRequest :: AppointedIntakeRequest -> IntakeRequestRow
-fromDomainAppointedIntakeRequest
-  AppointedIntakeRequest { triaged, doctorId = DoctorId doctor, start, duration } =
-  (fromDomainTriagedIntakeRequest triaged)
-    { state    = "appointed"
-    , doctorId = Just doctor
-    , start    = Just start
-    , duration = Just (durationMinutes duration)
-    }
+fromDomainAppointedIntakeRequest a =
+  intakeRequestRow "appointed" a.triaged.submitted
+    Nothing (Just a.triaged) (Just a) Nothing Nothing Nothing
 
 fromDomainWithdrawnIntakeRequest :: WithdrawnIntakeRequest -> IntakeRequestRow
-fromDomainWithdrawnIntakeRequest
-  WithdrawnIntakeRequest { withdrawnFrom, withdrawnAt, withdrawalNote } =
-  let from = case withdrawnFrom of
-        FromSubmitted submitted -> fromDomainSubmittedIntakeRequest submitted
-        FromAccepted  triaged   -> fromDomainTriagedIntakeRequest triaged
-  in from { state = "withdrawn", withdrawnAt = Just withdrawnAt, withdrawalNote }
+fromDomainWithdrawnIntakeRequest w = case w.withdrawnFrom of
+  FromSubmitted s ->
+    intakeRequestRow "withdrawn" s Nothing Nothing Nothing (Just w) Nothing Nothing
+  FromAccepted t ->
+    intakeRequestRow "withdrawn" t.submitted Nothing (Just t) Nothing (Just w) Nothing Nothing
 
 fromDomainStaleIntakeRequest :: StaleIntakeRequest -> IntakeRequestRow
-fromDomainStaleIntakeRequest StaleIntakeRequest { triaged, staleAt } =
-  (fromDomainTriagedIntakeRequest triaged) { state = "stale", staleAt = Just staleAt }
+fromDomainStaleIntakeRequest s =
+  intakeRequestRow "stale" s.triaged.submitted Nothing (Just s.triaged) Nothing Nothing (Just s) Nothing
 
 fromDomainClosedIntakeRequest :: ClosedIntakeRequest -> IntakeRequestRow
-fromDomainClosedIntakeRequest ClosedIntakeRequest { appointed, closeReason } =
-  -- `state` in each update also names IntakeRequestRow as the record updated.
-  let base = fromDomainAppointedIntakeRequest appointed
-  in case closeReason of
-       Completed -> base { state = "closed" }
-       Cancelled Cancellation { cancelledBy, cancelledAt, cancellationNote } ->
-         base { state            = "closed"
-              , cancelledBy      = Just (appointmentPartyValue cancelledBy)
-              , cancelledAt      = Just cancelledAt
-              , cancellationNote
-              }
-       NoShow Absence { absentParty } ->
-         base { state = "closed", absentParty = Just (appointmentPartyValue absentParty) }
+fromDomainClosedIntakeRequest c =
+  intakeRequestRow "closed" c.appointed.triaged.submitted
+    Nothing (Just c.appointed.triaged) (Just c.appointed) Nothing Nothing (Just c)
 
--- ── Reads ───────────────────────────────────────────────────────────────────
+-- (priority, must_be_seen_by, routine_not_before, routine_not_after).
+-- A total case, so a new constructor is flagged by -Wall.
+priorityColumns
+  :: IntakeRequestPriority -> (Maybe Text, Maybe UTCTime, Maybe UTCTime, Maybe UTCTime)
+priorityColumns p = case p of
+  Emergency (MustBeSeenBy t) -> (Just "emergency", Just t, Nothing, Nothing)
+  Urgent    (MustBeSeenBy t) -> (Just "urgent", Just t, Nothing, Nothing)
+  Routine due -> case due of
+    RoutineAnytime     -> (Just "routine", Nothing, Nothing, Nothing)
+    RoutineNotBefore t -> (Just "routine", Nothing, Just t, Nothing)
+    RoutineNotAfter  t -> (Just "routine", Nothing, Nothing, Just t)
+    RoutineWithin    w ->
+      (Just "routine", Nothing, Just (Domain.routineNotBefore w), Just (Domain.routineNotAfter w))
+
+-- specific_doctor_id.
+doctorRequirementColumn :: DoctorRequirement -> Maybe UUID
+doctorRequirementColumn AnyDoctor                      = Nothing
+doctorRequirementColumn (SpecificDoctor (DoctorId u)) = Just u
+
+-- (cancelled_by, cancelled_at, cancellation_note, absent_party).
+closeReasonColumns :: CloseReason -> (Maybe Text, Maybe UTCTime, Maybe Text, Maybe Text)
+closeReasonColumns reason = case reason of
+  Completed -> (Nothing, Nothing, Nothing, Nothing)
+  Cancelled c ->
+    (Just (appointmentPartyText c.cancelledBy), Just c.cancelledAt, c.cancellationNote, Nothing)
+  NoShow a -> (Nothing, Nothing, Nothing, Just (appointmentPartyText a.absentParty))
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- INSERTS
+-- ═══════════════════════════════════════════════════════════════════════════
+
+insertDoctor :: Connection -> Doctor -> IO ()
+insertDoctor conn d = do
+  let r = fromDomainDoctor d
+  _ <- execute conn "INSERT INTO doctors (id, name) VALUES (?, ?)" (r.id, r.name)
+  pure ()
+
+insertPatient :: Connection -> Patient -> IO ()
+insertPatient conn p = do
+  let r = fromDomainPatient p
+  _ <- execute conn "INSERT INTO patients (id, name) VALUES (?, ?)" (r.id, r.name)
+  pure ()
+
+insertHealthcareService :: Connection -> HealthcareService -> IO ()
+insertHealthcareService conn s = do
+  let r = fromDomainHealthcareService s
+  _ <- execute conn
+    "INSERT INTO healthcare_services (id, name, duration) VALUES (?, ?, ?)"
+    (r.id, r.name, r.duration)
+  pure ()
+
+-- A new element of DoctorCalendar: catches exactly the EXCLUDE violation
+-- (23P01) and rethrows anything else.
+insertAvailableSlot :: Connection -> AvailableSlot -> IO AvailableSlotInsertOutcome
+insertAvailableSlot conn s = do
+  let r = fromDomainAvailableSlot s
+  result <- try $ execute conn
+    "INSERT INTO available_slots (id, doctor_id, healthcare_service_id, start, duration) \
+    \VALUES (?, ?, ?, ?, ?)"
+    (r.id, r.doctorId, r.healthcareServiceId, r.start, r.duration)
+  case result of
+    Right _ -> pure AvailableSlotInserted
+    Left e
+      | sqlState e == "23P01" -> pure AvailableSlotOverlapsDoctorCalendar
+      | otherwise             -> throwIO e
+
+-- The entry case of IntakeRequest.
+insertSubmittedIntakeRequest :: Connection -> SubmittedIntakeRequest -> IO ()
+insertSubmittedIntakeRequest conn s = do
+  let r = fromDomainSubmittedIntakeRequest s
+  _ <- execute conn
+    "INSERT INTO intake_requests (id, state, patient_id, narrative, created_at) \
+    \VALUES (?, 'submitted', ?, ?, ?)"
+    (r.id, r.patientId, r.narrative, r.createdAt)
+  pure ()
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- TRANSITIONS
+-- Each UPDATE follows a transition Domain.hs defines, guarded by its one
+-- source case. Each sets only the columns the target stage adds.
+--   Submitted -> Rejected   (RejectedIntakeRequest)
+--   Submitted -> Accepted   (acceptIntakeRequest)
+--   Accepted  -> Appointed  (matchIntakeRequestToSlot)
+--   Submitted -> Withdrawn  (WithdrawnIntakeRequest, FromSubmitted)
+--   Accepted  -> Withdrawn  (WithdrawnIntakeRequest, FromAccepted)
+--   Accepted  -> Stale      (StaleIntakeRequest)
+--   Appointed -> Closed     (ClosedIntakeRequest)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+persistRejectedIntakeRequest :: Connection -> RejectedIntakeRequest -> IO ClaimOutcome
+persistRejectedIntakeRequest conn rejected = do
+  let r = fromDomainRejectedIntakeRequest rejected
+  claim <$> execute conn
+    "UPDATE intake_requests SET state = 'rejected', rejected_at = ?, rejection_reason = ? \
+    \WHERE id = ? AND state = 'submitted'"
+    (r.rejectedAt, r.rejectionReason, r.id)
+
+persistTriagedIntakeRequest :: Connection -> TriagedIntakeRequest -> IO ClaimOutcome
+persistTriagedIntakeRequest conn triaged = do
+  let r = fromDomainTriagedIntakeRequest triaged
+  claim <$> execute conn
+    "UPDATE intake_requests SET state = 'accepted', healthcare_service_id = ?, priority = ?, \
+    \must_be_seen_by = ?, routine_not_before = ?, routine_not_after = ?, \
+    \specific_doctor_id = ?, triaged_at = ? \
+    \WHERE id = ? AND state = 'submitted'"
+    ( r.healthcareServiceId, r.priority, r.mustBeSeenBy, r.routineNotBefore
+    , r.routineNotAfter, r.specificDoctorId, r.triagedAt, r.id )
+
+-- Matching: deletes the consumed slot, then moves the request from
+-- accepted to appointed over the slot's interval, in one transaction. If
+-- the request's update loses its race, the slot's delete is rolled back.
+persistAppointedIntakeRequest
+  :: Connection -> AvailableSlot -> AppointedIntakeRequest -> IO AppointedClaimOutcome
+persistAppointedIntakeRequest conn slot appointed = do
+  let SlotId slotUuid = slot.id
+      r               = fromDomainAppointedIntakeRequest appointed
+  result <- try $ withTransaction conn $ do
+    deleted <- execute conn "DELETE FROM available_slots WHERE id = ?" (Only slotUuid)
+    if deleted == 0
+      then pure AvailableSlotAlreadyClaimed
+      else do
+        updated <- execute conn
+          "UPDATE intake_requests SET state = 'appointed', doctor_id = ?, start = ?, duration = ? \
+          \WHERE id = ? AND state = 'accepted'"
+          (r.doctorId, r.start, r.duration, r.id)
+        when (updated == 0) (throwIO IntakeRequestClaimLost)
+        pure AppointedClaimed
+  case result of
+    Left IntakeRequestClaimLost -> pure IntakeRequestAlreadyClaimed
+    Right outcome               -> pure outcome
+
+-- The source case's guard comes from the value's withdrawnFrom.
+persistWithdrawnIntakeRequest :: Connection -> WithdrawnIntakeRequest -> IO ClaimOutcome
+persistWithdrawnIntakeRequest conn withdrawn = do
+  let r = fromDomainWithdrawnIntakeRequest withdrawn
+  claim <$> case withdrawn.withdrawnFrom of
+    FromSubmitted _ -> execute conn
+      "UPDATE intake_requests SET state = 'withdrawn', withdrawn_at = ?, withdrawal_note = ? \
+      \WHERE id = ? AND state = 'submitted'"
+      (r.withdrawnAt, r.withdrawalNote, r.id)
+    FromAccepted _ -> execute conn
+      "UPDATE intake_requests SET state = 'withdrawn', withdrawn_at = ?, withdrawal_note = ? \
+      \WHERE id = ? AND state = 'accepted'"
+      (r.withdrawnAt, r.withdrawalNote, r.id)
+
+persistStaleIntakeRequest :: Connection -> StaleIntakeRequest -> IO ClaimOutcome
+persistStaleIntakeRequest conn stale = do
+  let r = fromDomainStaleIntakeRequest stale
+  claim <$> execute conn
+    "UPDATE intake_requests SET state = 'stale', stale_at = ? \
+    \WHERE id = ? AND state = 'accepted'"
+    (r.staleAt, r.id)
+
+persistClosedIntakeRequest :: Connection -> ClosedIntakeRequest -> IO ClaimOutcome
+persistClosedIntakeRequest conn closed = do
+  let r = fromDomainClosedIntakeRequest closed
+  claim <$> execute conn
+    "UPDATE intake_requests SET state = 'closed', cancelled_by = ?, cancelled_at = ?, \
+    \cancellation_note = ?, absent_party = ? \
+    \WHERE id = ? AND state = 'appointed'"
+    (r.cancelledBy, r.cancelledAt, r.cancellationNote, r.absentParty, r.id)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- READS BY ID
+-- ═══════════════════════════════════════════════════════════════════════════
+
+single :: [a] -> Maybe a
+single (x : _) = Just x
+single []      = Nothing
+
+fetchDoctor :: Connection -> DoctorId -> IO (Maybe Doctor)
+fetchDoctor conn (DoctorId uuid) =
+  fmap toDomainDoctor . single
+    <$> query conn "SELECT id, name FROM doctors WHERE id = ?" (Only uuid)
+
+fetchPatient :: Connection -> PatientId -> IO (Maybe Patient)
+fetchPatient conn (PatientId uuid) =
+  fmap toDomainPatient . single
+    <$> query conn "SELECT id, name FROM patients WHERE id = ?" (Only uuid)
+
+fetchHealthcareService
+  :: Connection -> HealthcareServiceId -> IO (Either DecodeError (Maybe HealthcareService))
+fetchHealthcareService conn (HealthcareServiceId uuid) =
+  traverse toDomainHealthcareService . single
+    <$> query conn "SELECT id, name, duration FROM healthcare_services WHERE id = ?" (Only uuid)
+
+fetchAvailableSlot :: Connection -> SlotId -> IO (Either DecodeError (Maybe AvailableSlot))
+fetchAvailableSlot conn (SlotId uuid) =
+  traverse toDomainAvailableSlot . single
+    <$> query conn ("SELECT " <> availableSlotColumns <> " FROM available_slots WHERE id = ?")
+          (Only uuid)
 
 fetchIntakeRequest
   :: Connection -> IntakeRequestId -> IO (Either DecodeError (Maybe IntakeRequest))
-fetchIntakeRequest conn (IntakeRequestId uuid) = do
-  rows <- query conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE id = ?") (Only uuid)
-  pure $ case rows of
-    [row] -> Just <$> toDomainIntakeRequest row
-    _     -> Right Nothing
+fetchIntakeRequest conn (IntakeRequestId uuid) =
+  traverse toDomainIntakeRequest . single
+    <$> query conn ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE id = ?")
+          (Only uuid)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- READS OF ALL (ordered by non-ID fields, in declaration order)
+-- ═══════════════════════════════════════════════════════════════════════════
+
+fetchDoctors :: Connection -> IO [Doctor]
+fetchDoctors conn =
+  map toDomainDoctor <$> query conn "SELECT id, name FROM doctors ORDER BY name" ()
+
+fetchPatients :: Connection -> IO [Patient]
+fetchPatients conn =
+  map toDomainPatient <$> query conn "SELECT id, name FROM patients ORDER BY name" ()
+
+fetchHealthcareServices :: Connection -> IO (Either DecodeError [HealthcareService])
+fetchHealthcareServices conn =
+  traverse toDomainHealthcareService
+    <$> query conn "SELECT id, name, duration FROM healthcare_services ORDER BY name, duration" ()
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- READS BY CASE
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Non-terminal cases, ordered by the timestamp their stage adds.
 
 fetchSubmittedIntakeRequests :: Connection -> IO (Either DecodeError [SubmittedIntakeRequest])
 fetchSubmittedIntakeRequests conn =
-  traverse toDomainSubmittedIntakeRequest <$> query_ conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE state = 'submitted' \
-     \ORDER BY created_at")
+  traverse (decodeCase submittedCase)
+    <$> query conn ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
+                    \WHERE state = 'submitted' ORDER BY created_at") ()
 
 fetchAcceptedIntakeRequests :: Connection -> IO (Either DecodeError [TriagedIntakeRequest])
 fetchAcceptedIntakeRequests conn =
-  traverse toDomainTriagedIntakeRequest <$> query_ conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE state = 'accepted' \
-     \ORDER BY triaged_at")
+  traverse (decodeCase acceptedCase)
+    <$> query conn ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
+                    \WHERE state = 'accepted' ORDER BY triaged_at") ()
 
 fetchAppointedIntakeRequests :: Connection -> IO (Either DecodeError [AppointedIntakeRequest])
 fetchAppointedIntakeRequests conn =
-  traverse toDomainAppointedIntakeRequest <$> query_ conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE state = 'appointed' \
-     \ORDER BY start")
+  traverse (decodeCase appointedCase)
+    <$> query conn ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
+                    \WHERE state = 'appointed' ORDER BY start") ()
 
--- Terminal cases: by a timestamp over [from, to).
+-- Terminal cases, by a half-open time range [from, to).
 
 fetchRejectedIntakeRequestsByRejectedAt
   :: Connection -> UTCTime -> UTCTime -> IO (Either DecodeError [RejectedIntakeRequest])
 fetchRejectedIntakeRequestsByRejectedAt conn from to =
-  traverse toDomainRejectedIntakeRequest <$> query conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
-     \WHERE state = 'rejected' AND rejected_at >= ? AND rejected_at < ? ORDER BY rejected_at")
-    (from, to)
+  traverse (decodeCase rejectedCase)
+    <$> query conn ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
+                    \WHERE state = 'rejected' AND rejected_at >= ? AND rejected_at < ? \
+                    \ORDER BY rejected_at") (from, to)
 
 fetchWithdrawnIntakeRequestsByWithdrawnAt
   :: Connection -> UTCTime -> UTCTime -> IO (Either DecodeError [WithdrawnIntakeRequest])
 fetchWithdrawnIntakeRequestsByWithdrawnAt conn from to =
-  traverse toDomainWithdrawnIntakeRequest <$> query conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
-     \WHERE state = 'withdrawn' AND withdrawn_at >= ? AND withdrawn_at < ? ORDER BY withdrawn_at")
-    (from, to)
+  traverse (decodeCase withdrawnCase)
+    <$> query conn ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
+                    \WHERE state = 'withdrawn' AND withdrawn_at >= ? AND withdrawn_at < ? \
+                    \ORDER BY withdrawn_at") (from, to)
 
 fetchStaleIntakeRequestsByStaleAt
   :: Connection -> UTCTime -> UTCTime -> IO (Either DecodeError [StaleIntakeRequest])
 fetchStaleIntakeRequestsByStaleAt conn from to =
-  traverse toDomainStaleIntakeRequest <$> query conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
-     \WHERE state = 'stale' AND stale_at >= ? AND stale_at < ? ORDER BY stale_at")
-    (from, to)
+  traverse (decodeCase staleCase)
+    <$> query conn ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
+                    \WHERE state = 'stale' AND stale_at >= ? AND stale_at < ? \
+                    \ORDER BY stale_at") (from, to)
 
--- Closed adds no timestamp to every row: by its embedded Appointed's start.
+-- ClosedIntakeRequest adds no timestamp to every row; the nearest stage it
+-- embeds (AppointedIntakeRequest) adds start.
 fetchClosedIntakeRequestsByStart
   :: Connection -> UTCTime -> UTCTime -> IO (Either DecodeError [ClosedIntakeRequest])
 fetchClosedIntakeRequestsByStart conn from to =
-  traverse toDomainClosedIntakeRequest <$> query conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
-     \WHERE state = 'closed' AND start >= ? AND start < ? ORDER BY start")
-    (from, to)
-
--- ── Writes ──────────────────────────────────────────────────────────────────
-
--- Entry case only.
-insertSubmittedIntakeRequest :: Connection -> SubmittedIntakeRequest -> IO ()
-insertSubmittedIntakeRequest conn submitted = do
-  let row = fromDomainSubmittedIntakeRequest submitted
-  _ <- execute conn
-    "INSERT INTO intake_requests (state, id, patient_id, narrative, created_at) \
-    \VALUES ('submitted', ?, ?, ?, ?)"
-    (row.id, row.patientId, row.narrative, row.createdAt)
-  pure ()
-
--- Submitted → Accepted (acceptIntakeRequest).
-persistTriagedIntakeRequest :: Connection -> TriagedIntakeRequest -> IO ClaimOutcome
-persistTriagedIntakeRequest conn triaged = do
-  let row = fromDomainTriagedIntakeRequest triaged
-  claimOutcome <$> execute conn
-    "UPDATE intake_requests SET state = 'accepted', healthcare_service_id = ?, \
-    \priority = ?, must_be_seen_by = ?, routine_not_before = ?, routine_not_after = ?, \
-    \specific_doctor_id = ?, triaged_at = ? \
-    \WHERE id = ? AND state = 'submitted'"
-    ( row.healthcareServiceId, row.priority, row.mustBeSeenBy, row.routineNotBefore
-    , row.routineNotAfter, row.specificDoctorId, row.triagedAt, row.id )
-
--- Submitted → Rejected (RejectedIntakeRequest).
-persistRejectedIntakeRequest :: Connection -> RejectedIntakeRequest -> IO ClaimOutcome
-persistRejectedIntakeRequest conn rejected = do
-  let row = fromDomainRejectedIntakeRequest rejected
-  claimOutcome <$> execute conn
-    "UPDATE intake_requests SET state = 'rejected', rejected_at = ?, rejection_reason = ? \
-    \WHERE id = ? AND state = 'submitted'"
-    (row.rejectedAt, row.rejectionReason, row.id)
-
--- Accepted → Appointed (matchIntakeRequestToSlot): consumes the slot, which
--- is deleted first; the appointment takes over its extent.
-persistAppointedIntakeRequest
-  :: Connection -> AvailableSlot -> AppointedIntakeRequest -> IO MatchClaimOutcome
-persistAppointedIntakeRequest conn slot appointed =
-  handle (\IntakeRequestLost -> pure IntakeRequestAlreadyClaimed) $
-    withTransaction conn $ do
-      let SlotId slotUuid = slot.id
-          row             = fromDomainAppointedIntakeRequest appointed
-      deleted <- execute conn "DELETE FROM available_slots WHERE id = ?" (Only slotUuid)
-      if deleted /= 1
-        then pure SlotAlreadyClaimed
-        else do
-          updated <- execute conn
-            "UPDATE intake_requests SET state = 'appointed', doctor_id = ?, start = ?, \
-            \duration = ? WHERE id = ? AND state = 'accepted'"
-            (row.doctorId, row.start, row.duration, row.id)
-          if updated /= 1
-            then throwIO IntakeRequestLost
-            else pure MatchClaimed
-
--- Submitted → Withdrawn (FromSubmitted) or Accepted → Withdrawn
--- (FromAccepted): the guard comes from the recorded source case.
-persistWithdrawnIntakeRequest :: Connection -> WithdrawnIntakeRequest -> IO ClaimOutcome
-persistWithdrawnIntakeRequest conn withdrawn = do
-  let row = fromDomainWithdrawnIntakeRequest withdrawn
-      statement = case withdrawn.withdrawnFrom of
-        FromSubmitted _ ->
-          "UPDATE intake_requests SET state = 'withdrawn', withdrawn_at = ?, \
-          \withdrawal_note = ? WHERE id = ? AND state = 'submitted'"
-        FromAccepted _ ->
-          "UPDATE intake_requests SET state = 'withdrawn', withdrawn_at = ?, \
-          \withdrawal_note = ? WHERE id = ? AND state = 'accepted'"
-  claimOutcome <$> execute conn statement (row.withdrawnAt, row.withdrawalNote, row.id)
-
--- Accepted → Stale (StaleIntakeRequest).
-persistStaleIntakeRequest :: Connection -> StaleIntakeRequest -> IO ClaimOutcome
-persistStaleIntakeRequest conn stale = do
-  let row = fromDomainStaleIntakeRequest stale
-  claimOutcome <$> execute conn
-    "UPDATE intake_requests SET state = 'stale', stale_at = ? \
-    \WHERE id = ? AND state = 'accepted'"
-    (row.staleAt, row.id)
-
--- Appointed → Closed (ClosedIntakeRequest).
-persistClosedIntakeRequest :: Connection -> ClosedIntakeRequest -> IO ClaimOutcome
-persistClosedIntakeRequest conn closed = do
-  let row = fromDomainClosedIntakeRequest closed
-  claimOutcome <$> execute conn
-    "UPDATE intake_requests SET state = 'closed', cancelled_by = ?, cancelled_at = ?, \
-    \cancellation_note = ?, absent_party = ? WHERE id = ? AND state = 'appointed'"
-    (row.cancelledBy, row.cancelledAt, row.cancellationNote, row.absentParty, row.id)
+  traverse (decodeCase closedCase)
+    <$> query conn ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
+                    \WHERE state = 'closed' AND start >= ? AND start < ? \
+                    \ORDER BY start") (from, to)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DOCTOR CALENDAR
+-- Read from the source tables (available_slots, intake_requests in
+-- 'appointed'), in one REPEATABLE READ snapshot. The doctor_calendar
+-- shadow table only enforces the invariant.
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- The slice for judging a new slot: the doctor's entries overlapping
--- [start, start + duration), from the source tables in one snapshot, rebuilt
--- through mkDoctorCalendar.
+-- The part of DoctorCalendar needed to judge a new element: the doctor's
+-- entries overlapping [from, to). Rebuilt through mkDoctorCalendar.
 fetchDoctorCalendarOverlapping
-  :: Connection -> DoctorId -> UTCTime -> Duration -> IO (Either DecodeError DoctorCalendar)
-fetchDoctorCalendarOverlapping conn doctor@(DoctorId doctorUuid) start duration = do
-  let end = addUTCTime (durationToNominalDiffTime duration) start
-  (slotRows, appointedRows) <- withTransactionLevel RepeatableRead conn $ do
+  :: Connection -> DoctorId -> UTCTime -> UTCTime -> IO (Either DecodeError DoctorCalendar)
+fetchDoctorCalendarOverlapping conn (DoctorId doctorUuid) from to =
+  withTransactionLevel RepeatableRead conn $ do
     slotRows <- query conn
-      ("SELECT " <> slotColumns <> " FROM available_slots \
-       \WHERE doctor_id = ? AND start < ? AND start + duration * INTERVAL '1 minute' > ?")
-      (doctorUuid, end, start)
+      ("SELECT " <> availableSlotColumns <> " FROM available_slots \
+       \WHERE doctor_id = ? AND start < ? AND start + duration * INTERVAL '1 minute' > ? \
+       \ORDER BY start")
+      (doctorUuid, to, from)
     appointedRows <- query conn
       ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
        \WHERE state = 'appointed' AND doctor_id = ? \
-       \AND start < ? AND start + duration * INTERVAL '1 minute' > ?")
-      (doctorUuid, end, start)
-    pure (slotRows, appointedRows)
-  pure $ do
-    entries <- calendarEntries slotRows appointedRows
-    maybe (Left (OverlappingDoctorCalendar doctor)) Right (mkDoctorCalendar entries)
+       \AND start < ? AND start + duration * INTERVAL '1 minute' > ? \
+       \ORDER BY start")
+      (doctorUuid, to, from)
+    pure $ do
+      entries <- calendarEntries slotRows appointedRows
+      maybe (Left OverlappingDoctorCalendar) Right (mkDoctorCalendar entries)
 
--- The calendar's elements overlapping [from, to), every doctor, from the
--- source tables in one snapshot, sorted by start.
+-- DoctorCalendar's elements, every doctor's, overlapping [from, to),
+-- sorted by start.
 fetchDoctorCalendarEntriesOverlapping
   :: Connection -> UTCTime -> UTCTime -> IO (Either DecodeError [DoctorCalendarEntry])
-fetchDoctorCalendarEntriesOverlapping conn from to = do
-  (slotRows, appointedRows) <- withTransactionLevel RepeatableRead conn $ do
+fetchDoctorCalendarEntriesOverlapping conn from to =
+  withTransactionLevel RepeatableRead conn $ do
     slotRows <- query conn
-      ("SELECT " <> slotColumns <> " FROM available_slots \
-       \WHERE start < ? AND start + duration * INTERVAL '1 minute' > ?")
+      ("SELECT " <> availableSlotColumns <> " FROM available_slots \
+       \WHERE start < ? AND start + duration * INTERVAL '1 minute' > ? \
+       \ORDER BY start")
       (to, from)
     appointedRows <- query conn
       ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
        \WHERE state = 'appointed' \
-       \AND start < ? AND start + duration * INTERVAL '1 minute' > ?")
+       \AND start < ? AND start + duration * INTERVAL '1 minute' > ? \
+       \ORDER BY start")
       (to, from)
-    pure (slotRows, appointedRows)
-  pure (sortOn doctorCalendarEntryStart <$> calendarEntries slotRows appointedRows)
+    pure (sortOn doctorCalendarEntryStart <$> calendarEntries slotRows appointedRows)
 
 calendarEntries
   :: [AvailableSlotRow] -> [IntakeRequestRow] -> Either DecodeError [DoctorCalendarEntry]
 calendarEntries slotRows appointedRows = do
   slots        <- traverse toDomainAvailableSlot slotRows
-  appointments <- traverse toDomainAppointedIntakeRequest appointedRows
-  pure (map Slot slots <> map Appointment appointments)
+  appointments <- traverse (decodeCase appointedCase) appointedRows
+  pure (map Slot slots ++ map Appointment appointments)

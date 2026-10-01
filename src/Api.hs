@@ -27,9 +27,9 @@ module Api
   , renderCloseAppointedIntakeRequestError
   , renderCreateAvailableSlotError
   , renderTransitionOutcome
-  , renderMatchOutcome
-  , renderPriorityMatchOutcome
-  , renderSlotCreationOutcome
+  , renderMatchIntakeRequestToSlotOutcome
+  , renderMatchByPriorityOutcome
+  , renderAddAvailableSlotOutcome
 
     -- ── Each Service function's answer ───────────────────────────────────
   , renderCreateDoctorAnswer
@@ -90,7 +90,7 @@ import qualified Data.Text.Encoding as Text
 
 import Domain
   ( AppointedIntakeRequest, AvailableSlot, ClosedIntakeRequest, Doctor, DoctorCalendarEntry
-  , HealthcareService, IntakeRequest, Patient, RejectedIntakeRequest, StaleIntakeRequest
+  , HealthcareService, IntakeRequest, Patient, RejectedIntakeRequest, SlotId, StaleIntakeRequest
   , SubmittedIntakeRequest, TriagedIntakeRequest, WithdrawnIntakeRequest )
 import Persistence (ConnectionPool)
 import Service
@@ -98,8 +98,8 @@ import Service
   , CreateAvailableSlotError (..), DoctorNotFound (..), HealthcareServiceNotFound (..)
   , IntakeRequestInWrongState (..), IntakeRequestNotFound (..)
   , MarkAcceptedIntakeRequestStaleError (..), MatchAcceptedIntakeRequestToSlotError (..)
-  , MatchOutcome (..), PatientNotFound (..), PriorityMatchOutcome (..)
-  , SlotCreationOutcome (..), SlotDoesNotMatchIntakeRequest (..), TransitionOutcome (..) )
+  , MatchIntakeRequestToSlotOutcome (..), PatientNotFound (..), MatchByPriorityOutcome (..)
+  , AddAvailableSlotOutcome (..), IntakeRequestDoesNotMatchSlot (..), TransitionOutcome (..) )
 import Transport
 
 import qualified Service as S
@@ -159,9 +159,9 @@ renderIntakeRequestInWrongState :: IntakeRequestInWrongState -> Envelope
 renderIntakeRequestInWrongState (IntakeRequestInWrongState request) =
   answer intakeRequestInWrongState (fromDomainIntakeRequest request)
 
-renderSlotDoesNotMatchIntakeRequest :: SlotDoesNotMatchIntakeRequest -> Envelope
-renderSlotDoesNotMatchIntakeRequest SlotDoesNotMatchIntakeRequest =
-  answer slotDoesNotMatchIntakeRequest NoDetail
+renderSlotDoesNotMatchIntakeRequest :: IntakeRequestDoesNotMatchSlot -> Envelope
+renderSlotDoesNotMatchIntakeRequest IntakeRequestDoesNotMatchSlot =
+  answer intakeRequestDoesNotMatchSlot NoDetail
 
 renderAcceptSubmittedIntakeRequestError :: AcceptSubmittedIntakeRequestError -> Envelope
 renderAcceptSubmittedIntakeRequestError e = case e of
@@ -173,7 +173,7 @@ renderMatchAcceptedIntakeRequestToSlotError :: MatchAcceptedIntakeRequestToSlotE
 renderMatchAcceptedIntakeRequestToSlotError e = case e of
   MatchAcceptedIntakeRequestToSlotIntakeRequestNotFound fact -> renderIntakeRequestNotFound fact
   MatchAcceptedIntakeRequestToSlotIntakeRequestInWrongState fact -> renderIntakeRequestInWrongState fact
-  MatchAcceptedIntakeRequestToSlotSlotDoesNotMatchIntakeRequest fact ->
+  MatchAcceptedIntakeRequestToSlotIntakeRequestDoesNotMatchSlot fact ->
     renderSlotDoesNotMatchIntakeRequest fact
 
 renderMarkAcceptedIntakeRequestStaleError :: MarkAcceptedIntakeRequestStaleError -> Envelope
@@ -196,21 +196,21 @@ renderTransitionOutcome toDTO outcome = case outcome of
   Transitioned next -> answer transitioned (toDTO next)
   MovedOn current   -> answer movedOn (fromDomainIntakeRequest current)
 
-renderMatchOutcome :: MatchOutcome -> Envelope
-renderMatchOutcome outcome = case outcome of
-  Matched appointed            -> answer matched (fromDomainAppointedIntakeRequest appointed)
-  AvailableSlotConsumed        -> answer availableSlotConsumed NoDetail
-  IntakeRequestMovedOn current -> answer intakeRequestMovedOn (fromDomainIntakeRequest current)
+renderMatchIntakeRequestToSlotOutcome :: MatchIntakeRequestToSlotOutcome -> Envelope
+renderMatchIntakeRequestToSlotOutcome outcome = case outcome of
+  IntakeRequestMatchedToSlot appointed -> answer intakeRequestMatchedToSlot (fromDomainAppointedIntakeRequest appointed)
+  AvailableSlotConsumed slotId         -> answer availableSlotConsumed (fromDomainSlotId slotId)
+  IntakeRequestMovedOn current         -> answer intakeRequestMovedOn (fromDomainIntakeRequest current)
 
-renderPriorityMatchOutcome :: PriorityMatchOutcome -> Envelope
-renderPriorityMatchOutcome outcome = case outcome of
-  NoMatchingIntakeRequest -> answer noMatchingIntakeRequest NoDetail
-  MatchOutcome attempt  -> answer matchOutcome (MatchOutcomeDTO (renderMatchOutcome attempt))
+renderMatchByPriorityOutcome :: MatchByPriorityOutcome -> Envelope
+renderMatchByPriorityOutcome outcome = case outcome of
+  NoIntakeRequestMatched -> answer noIntakeRequestMatched NoDetail
+  MatchIntakeRequestToSlotOutcome attempt  -> answer matchIntakeRequestToSlotOutcome (MatchIntakeRequestToSlotOutcomeDTO (renderMatchIntakeRequestToSlotOutcome attempt))
 
-renderSlotCreationOutcome :: SlotCreationOutcome -> Envelope
-renderSlotCreationOutcome outcome = case outcome of
-  SlotCreated slot           -> answer slotCreated (fromDomainAvailableSlot slot)
-  SlotOverlapsDoctorCalendar -> answer slotOverlapsDoctorCalendar NoDetail
+renderAddAvailableSlotOutcome :: AddAvailableSlotOutcome -> Envelope
+renderAddAvailableSlotOutcome outcome = case outcome of
+  AvailableSlotAdded slot           -> answer availableSlotAdded (fromDomainAvailableSlot slot)
+  AvailableSlotOverlapsDoctorCalendar -> answer availableSlotOverlapsDoctorCalendar NoDetail
 
 renderOk :: ToJSON d => d -> Envelope
 renderOk = answer ok
@@ -249,11 +249,11 @@ renderRejectSubmittedIntakeRequestAnswer =
     . either renderIntakeRequestNotFound (renderTransitionOutcome fromDomainRejectedIntakeRequest)
 
 renderMatchAcceptedIntakeRequestToSlotAnswer
-  :: Either MatchAcceptedIntakeRequestToSlotError MatchOutcome
+  :: Either MatchAcceptedIntakeRequestToSlotError MatchIntakeRequestToSlotOutcome
   -> MatchAcceptedIntakeRequestToSlotAnswer
 renderMatchAcceptedIntakeRequestToSlotAnswer =
   MatchAcceptedIntakeRequestToSlotAnswer
-    . either renderMatchAcceptedIntakeRequestToSlotError renderMatchOutcome
+    . either renderMatchAcceptedIntakeRequestToSlotError renderMatchIntakeRequestToSlotOutcome
 
 renderWithdrawIntakeRequestAnswer
   :: Either IntakeRequestNotFound (TransitionOutcome WithdrawnIntakeRequest)
@@ -279,14 +279,14 @@ renderCloseAppointedIntakeRequestAnswer =
              (renderTransitionOutcome fromDomainClosedIntakeRequest)
 
 renderMatchAvailableSlotByPriorityAnswer
-  :: PriorityMatchOutcome -> MatchAvailableSlotByPriorityAnswer
+  :: MatchByPriorityOutcome -> MatchAvailableSlotByPriorityAnswer
 renderMatchAvailableSlotByPriorityAnswer =
-  MatchAvailableSlotByPriorityAnswer . renderPriorityMatchOutcome
+  MatchAvailableSlotByPriorityAnswer . renderMatchByPriorityOutcome
 
 renderCreateAvailableSlotAnswer
-  :: Either CreateAvailableSlotError SlotCreationOutcome -> CreateAvailableSlotAnswer
+  :: Either CreateAvailableSlotError AddAvailableSlotOutcome -> CreateAvailableSlotAnswer
 renderCreateAvailableSlotAnswer =
-  CreateAvailableSlotAnswer . either renderCreateAvailableSlotError renderSlotCreationOutcome
+  CreateAvailableSlotAnswer . either renderCreateAvailableSlotError renderAddAvailableSlotOutcome
 
 renderFetchDoctorAnswer :: Either DoctorNotFound Doctor -> FetchDoctorAnswer
 renderFetchDoctorAnswer =
@@ -312,11 +312,12 @@ renderFetchHealthcareServicesAnswer :: [HealthcareService] -> FetchHealthcareSer
 renderFetchHealthcareServicesAnswer =
   FetchHealthcareServicesAnswer . renderOk . map fromDomainHealthcareService
 
--- A slot is deleted on consumption: Nothing is availableSlotConsumed.
-renderFetchAvailableSlotAnswer :: Maybe AvailableSlot -> FetchAvailableSlotAnswer
-renderFetchAvailableSlotAnswer found = FetchAvailableSlotAnswer $ case found of
+-- A slot is deleted on consumption: Nothing is availableSlotConsumed,
+-- carrying the id asked for.
+renderFetchAvailableSlotAnswer :: SlotId -> Maybe AvailableSlot -> FetchAvailableSlotAnswer
+renderFetchAvailableSlotAnswer slotId found = FetchAvailableSlotAnswer $ case found of
   Just slot -> renderOk (fromDomainAvailableSlot slot)
-  Nothing   -> answer availableSlotConsumed NoDetail
+  Nothing   -> answer availableSlotConsumed (fromDomainSlotId slotId)
 
 renderFetchIntakeRequestAnswer
   :: Either IntakeRequestNotFound IntakeRequest -> FetchIntakeRequestAnswer
@@ -579,7 +580,7 @@ availableSlotsServer = createAvailableSlotH :<|> fetchAvailableSlotH :<|> matchB
         S.createAvailableSlot pool (toDomainDoctorId doctorId)
           (toDomainHealthcareServiceId serviceId) start)
     fetchAvailableSlotH slotId =
-      renderFetchAvailableSlotAnswer <$> withPool (\pool -> S.fetchAvailableSlot pool (toDomainSlotId slotId))
+      renderFetchAvailableSlotAnswer (toDomainSlotId slotId) <$> withPool (\pool -> S.fetchAvailableSlot pool (toDomainSlotId slotId))
     matchByPriorityH slotId =
       renderMatchAvailableSlotByPriorityAnswer
         <$> withPool (\pool -> S.matchAvailableSlotByPriority pool (toDomainSlotId slotId))

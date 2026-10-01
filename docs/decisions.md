@@ -154,7 +154,7 @@ bottom.
 - `DoctorCalendarEntry = Slot AvailableSlot | Appointment AppointedIntakeRequest` lives in `Domain.hs`, and the rule is stated over it.
 - `DoctorCalendar` is sealed and practice-wide (`Map DoctorId (Map UTCTime DoctorCalendarEntry)`), matching the single `doctor_calendar` table.
 - There are two ways in. `mkDoctorCalendar :: [DoctorCalendarEntry] -> Maybe DoctorCalendar` rebuilds a calendar from stored entries. `addAvailableSlot` is the only domain operation that adds time. Appointments arrive by matching, which takes over the slot's exact interval, so `matchIntakeRequestToSlot` takes no calendar.
-- `Service.createAvailableSlot` fetches the doctor's entries overlapping the new slot (`fetchDoctorCalendarOverlapping`, which reads the source tables in one `REPEATABLE READ` snapshot, per `one-snapshot-per-read`), checks `addAvailableSlot`, then inserts. A failed check and an `EXCLUDE` violation both answer `SlotOverlapsDoctorCalendar`.
+- `Service.createAvailableSlot` fetches the doctor's entries overlapping the new slot (`fetchDoctorCalendarOverlapping`, which reads the source tables in one `REPEATABLE READ` snapshot, per `one-snapshot-per-read`), checks `addAvailableSlot`, then inserts. A failed check and an `EXCLUDE` violation both answer `AvailableSlotOverlapsDoctorCalendar`.
 - Stored entries that already overlap fail decoding (`OverlappingDoctorCalendar`), which surfaces as a 500.
 
 **Rejected:**
@@ -235,7 +235,7 @@ bottom.
 
 **Decided:** an operation compares the state it expects with the state the request is in.
 
-- **The current state comes after the expected one:** someone else acted first. This is an outcome carrying the request as it is now, whether the fetch noticed or the write did: `TransitionOutcome a = Transitioned a | MovedOn IntakeRequest`, and `IntakeRequestMovedOn` in `MatchOutcome`. On the wire it is `movedOn` or `intakeRequestMovedOn`, with the request as `detail`.
+- **The current state comes after the expected one:** someone else acted first. This is an outcome carrying the request as it is now, whether the fetch noticed or the write did: `TransitionOutcome a = Transitioned a | MovedOn IntakeRequest`, and `IntakeRequestMovedOn` in `MatchIntakeRequestToSlotOutcome`. On the wire it is `movedOn` or `intakeRequestMovedOn`, with the request as `detail`.
 - **The current state can't come after the expected one:** the caller made a mistake. This is the error `IntakeRequestInWrongState`, carrying the request, on the wire `intakeRequestInWrongState`.
 
 After a lost write, Service reads the request once more, and that read always finds a later state. Nothing retries, with one exception: a use case with several source states (withdraw) continues once from another of its sources if the re-read finds one (`guard-every-fetch-then-write-gap`). Withdrawn records which state it came from, which keeps the comparison decidable. The comparison lives in each Service operation's case split, exhaustive with no wildcard (`request-state-answers-follow-the-lifecycle`). It is not a Domain function, because an ordering type would exist only to serve error reporting.
@@ -311,14 +311,16 @@ After a lost write, Service reads the request once more, and that read always fi
 
 ## Errors are facts, typed per use case (2026-10-01)
 
-**Found:** one `ServiceError` for every use case made each type claim errors its use case can't produce (a read "may" answer `slotDoesNotMatchIntakeRequest`), so callers handled impossible cases and a new error widened every function silently. Outcomes were already exact per use case; errors weren't.
+**Found:** one `ServiceError` for every use case made each type claim errors its use case can't produce (a read "may" answer `intakeRequestDoesNotMatchSlot`), so callers handled impossible cases and a new error widened every function silently. Outcomes were already exact per use case; errors weren't.
 
 **Decided:**
-- Each fact is its own type (`DoctorNotFound`, `IntakeRequestInWrongState`, `SlotDoesNotMatchIntakeRequest`, …). A use case's facts are exactly those its shape implies: `<Entity>NotFound` for each never-deleted entity it receives by id, `<Entity>InWrongState` if some case is reachable from none of its source cases, and the refusal of a Domain function over inputs the caller chose (`error-vs-outcome-types`, in `triage-service-codegen`).
+- Each fact is its own type (`DoctorNotFound`, `IntakeRequestInWrongState`, `IntakeRequestDoesNotMatchSlot`, …). A use case's facts are exactly those its shape implies: `<Entity>NotFound` for each never-deleted entity it receives by id, `<Entity>InWrongState` if some case is reachable from none of its source cases, and the refusal of a Domain function over inputs the caller chose (`error-vs-outcome-types`, in `triage-service-codegen`).
 - No fact: the value is returned directly. One fact: that type is the `Left`. Several: a `<Function>Error` with constructors `<Function><Fact>`.
 - The wire tag is the fact type's name, so a fact has one tag in every answer, and an answer lists exactly its use case's outcomes and facts.
 - A decode failure is not an error but a 500: Service's `decoded` raises Persistence's `DecodeError`.
-- A write outcome carried inside another outcome is wrapped by a constructor named after its type (`PriorityMatchOutcome = NoMatchingIntakeRequest | MatchOutcome MatchOutcome`): it can also carry a fact found before the write, so a name like `MatchAttempted` would claim an attempt that didn't happen.
+- A write outcome carried inside another outcome is wrapped by a constructor named after its type (`MatchByPriorityOutcome = NoIntakeRequestMatched | MatchIntakeRequestToSlotOutcome MatchIntakeRequestToSlotOutcome`): it can also carry a fact found before the write, so a name like `MatchAttempted` would claim an attempt that didn't happen.
+- A fact about an entity carries what identifies it: `<Entity>NotFound` and `<Entity>Consumed` the id (`AvailableSlotConsumed` was nullary), `<Entity>InWrongState` and `MovedOn` the value.
+- Outcome names are derived from the Domain function a use case calls: `<DomainFunction>Outcome`, success as its past participle (`AvailableSlotAdded`, `IntakeRequestMatchedToSlot`), a decline over stored candidates `No<Subject><Verb>` (`NoIntakeRequestMatched`), a refusal of the caller's inputs `<Subject>DoesNot<Verb><Object>` (`IntakeRequestDoesNotMatchSlot`). A refusal caused by stored data is an outcome, never an error. Persistence's write outcomes follow `<TargetStage>ClaimOutcome` and `<Element>InsertOutcome = <Element>Inserted | <Element>Overlaps<Collection>`. These replaced names that had been chosen once and copied (`MatchOutcome`, `SlotCreated`, `PriorityMatchOutcome`, …): a clean-room run of the db and service skills reproduced every behaviour but could only match those names by having read this file.
 
 **Rejected:** the uniform `ServiceError` (the types were untrue); one sum per use case with prefixed constructors carrying raw ids, the tag made by stripping the prefix from a string; type-level error sets (machinery a 2–3 doctor practice doesn't justify); listing reachable errors by reading function bodies (nothing would catch it going wrong); raising decode failures in Persistence (it would change the db layer and its tests for nothing).
 
