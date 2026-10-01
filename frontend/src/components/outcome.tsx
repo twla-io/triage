@@ -23,7 +23,7 @@ export function outcomeSentence(answer: AnyAnswer, entity: string): string {
       return movedOn(entity, answer.detail.type)
     case 'intakeRequestMovedOn':
       return movedOn(prefixOf(answer.outcome, 'MovedOn') ?? entity, answer.detail.type)
-    case 'matchAttempted':
+    case 'matchOutcome':
       return outcomeSentence(answer.detail, entity)
     default: {
       const missing = prefixOf(answer.outcome, 'NotFound')

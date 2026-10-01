@@ -36,7 +36,7 @@ import qualified Service    as S
 
 import Domain
 import Persistence (ClaimOutcome (..), ConnectionPool)
-import Service     (MatchOutcome (..), PriorityMatchOutcome (..), ServiceError (..),
+import Service     (MatchOutcome (..), PriorityMatchOutcome (..),
                     SlotCreationOutcome (..), TransitionOutcome (..))
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -240,7 +240,7 @@ spec pool = do
       fx           <- fixture pool
       (_, slot, a) <- appoint pool fx t0
       stateOf pool a.triaged.submitted.id `shouldReturn` "appointed"
-      S.fetchAvailableSlot pool slot.id `shouldReturn` Right Nothing
+      S.fetchAvailableSlot pool slot.id `shouldReturn` Nothing
 
     it "matching an already booked request reports the booking" $ do
       fx        <- fixture pool
@@ -266,7 +266,7 @@ spec pool = do
       Just appointment <- pure (matchIntakeRequestToSlot slot t)
       withResource pool (\c -> P.persistAppointedIntakeRequest c slot appointment)
         `shouldReturn` P.IntakeRequestAlreadyClaimed
-      S.fetchAvailableSlot pool slot.id `shouldReturn` Right (Just slot)
+      S.fetchAvailableSlot pool slot.id `shouldReturn` (Just slot)
       stateOf pool t.submitted.id `shouldReturn` "stale"
 
     it "a request and slot that don't fit are the caller's mistake" $ do
@@ -277,22 +277,22 @@ spec pool = do
         S.acceptSubmittedIntakeRequest pool s.id other.id (Routine RoutineAnytime) AnyDoctor t0
       slot  <- slotAt pool fx t0
       S.matchAcceptedIntakeRequestToSlot pool t.submitted.id slot.id
-        `shouldReturn` Left SlotDoesNotMatchIntakeRequest
+        `shouldReturn` Left (S.MatchAcceptedIntakeRequestToSlotSlotDoesNotMatchIntakeRequest S.SlotDoesNotMatchIntakeRequest)
 
   describe "match by priority" $ do
     it "gives the slot to the waiting request that fits" $ do
       fx   <- fixture pool
       t    <- accept pool fx AnyDoctor
       slot <- slotAt pool fx t0
-      Right (MatchAttempted (Matched a)) <- S.matchAvailableSlotByPriority pool slot.id
+      (MatchOutcome (Matched a)) <- S.matchAvailableSlotByPriority pool slot.id
       a.triaged `shouldBe` t
       stateOf pool t.submitted.id `shouldReturn` "appointed"
 
     it "with nothing waiting, the slot stays available" $ do
       fx   <- fixture pool
       slot <- slotAt pool fx t0
-      S.matchAvailableSlotByPriority pool slot.id `shouldReturn` Right NoMatchingIntakeRequest
-      S.fetchAvailableSlot pool slot.id `shouldReturn` Right (Just slot)
+      S.matchAvailableSlotByPriority pool slot.id `shouldReturn` NoMatchingIntakeRequest
+      S.fetchAvailableSlot pool slot.id `shouldReturn` (Just slot)
 
   describe "close / stale" $ do
     it "cancelling an appointment frees its time" $ do
@@ -320,7 +320,7 @@ spec pool = do
       fx <- fixture pool
       t  <- accept pool fx AnyDoctor
       S.closeAppointedIntakeRequest pool t.submitted.id Completed
-        `shouldReturn` Left (IntakeRequestInWrongState (Accepted t))
+        `shouldReturn` Left (S.CloseAppointedIntakeRequestIntakeRequestInWrongState (S.IntakeRequestInWrongState (Accepted t)))
 
     it "mark stale works from accepted; from submitted it is the wrong state" $ do
       fx <- fixture pool
@@ -329,27 +329,27 @@ spec pool = do
         `shouldReturn` Right (Transitioned (StaleIntakeRequest t t0))
       s  <- submit pool fx
       S.markAcceptedIntakeRequestStale pool s.id t0
-        `shouldReturn` Left (IntakeRequestInWrongState (Submitted s))
+        `shouldReturn` Left (S.MarkAcceptedIntakeRequestStaleIntakeRequestInWrongState (S.IntakeRequestInWrongState (Submitted s)))
 
     it "a request withdrawn before triage was never accepted: marking it stale is the wrong state" $ do
       fx <- fixture pool
       s  <- submit pool fx
       Right (Transitioned w) <- S.withdrawIntakeRequest pool s.id t0 Nothing
       S.markAcceptedIntakeRequestStale pool s.id t0
-        `shouldReturn` Left (IntakeRequestInWrongState (Withdrawn w))
+        `shouldReturn` Left (S.MarkAcceptedIntakeRequestStaleIntakeRequestInWrongState (S.IntakeRequestInWrongState (Withdrawn w)))
 
   describe "unknown ids" $ do
     it "submitting for an unknown patient is PatientNotFound, and nothing is stored" $ do
       unknown <- PatientId <$> nextRandom
-      S.submitIntakeRequest pool unknown "needs care" t0 `shouldReturn` Left (PatientNotFound unknown)
-      S.fetchSubmittedIntakeRequests pool `shouldReturn` Right []
+      S.submitIntakeRequest pool unknown "needs care" t0 `shouldReturn` Left (S.PatientNotFound unknown)
+      S.fetchSubmittedIntakeRequests pool `shouldReturn` []
 
     it "accepting with an unknown service is HealthcareServiceNotFound, and it stays submitted" $ do
       fx      <- fixture pool
       s       <- submit pool fx
       unknown <- HealthcareServiceId <$> nextRandom
       S.acceptSubmittedIntakeRequest pool s.id unknown (Routine RoutineAnytime) AnyDoctor t0
-        `shouldReturn` Left (HealthcareServiceNotFound unknown)
+        `shouldReturn` Left (S.AcceptSubmittedIntakeRequestHealthcareServiceNotFound (S.HealthcareServiceNotFound unknown))
       stateOf pool s.id `shouldReturn` "submitted"
 
     it "accepting with an unknown required doctor is DoctorNotFound, and it stays submitted" $ do
@@ -357,17 +357,17 @@ spec pool = do
       s       <- submit pool fx
       unknown <- DoctorId <$> nextRandom
       S.acceptSubmittedIntakeRequest pool s.id fx.service.id (Routine RoutineAnytime) (SpecificDoctor unknown) t0
-        `shouldReturn` Left (DoctorNotFound unknown)
+        `shouldReturn` Left (S.AcceptSubmittedIntakeRequestDoctorNotFound (S.DoctorNotFound unknown))
       stateOf pool s.id `shouldReturn` "submitted"
 
     it "creating a slot for an unknown doctor is DoctorNotFound" $ do
       fx      <- fixture pool
       unknown <- DoctorId <$> nextRandom
-      S.createAvailableSlot pool unknown fx.service.id t0 `shouldReturn` Left (DoctorNotFound unknown)
+      S.createAvailableSlot pool unknown fx.service.id t0 `shouldReturn` Left (S.CreateAvailableSlotDoctorNotFound (S.DoctorNotFound unknown))
 
     it "reading an unknown request is IntakeRequestNotFound" $ do
       unknown <- IntakeRequestId <$> nextRandom
-      S.fetchIntakeRequest pool unknown `shouldReturn` Left (IntakeRequestNotFound unknown)
+      S.fetchIntakeRequest pool unknown `shouldReturn` Left (S.IntakeRequestNotFound unknown)
 
   describe "constraints" $ do
     it "a submitted request can't carry a decided doctor requirement" $ do

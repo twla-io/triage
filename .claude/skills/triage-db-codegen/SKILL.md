@@ -143,7 +143,7 @@ A sorting function in `Domain.hs` may reorder the result on top of this, in Serv
 A read built from several queries runs them in one `REPEATABLE READ` transaction.
 
 ### `fail-loudly-on-decode`
-Decoding returns `Either DecodeError`, one constructor per kind of failure, and never defaults or coerces a value. Check shapes the CHECKs "make impossible" anyway.
+Decoding returns `Either DecodeError`, one constructor per kind of failure, and never defaults or coerces a value. `DecodeError` has an `Exception` instance, so Service can raise it. Check shapes the CHECKs "make impossible" anyway.
 
 ### `sealed-type-replay`
 Build a sealed type from storage only through its exported smart constructor. A refusal is a `DecodeError`.

@@ -51,17 +51,19 @@ If `Domain.hs` has a sorting function over a read's element type (`sortBy<Key> :
 
 ### `error-vs-outcome-types`
 Two kinds of "this didn't simply succeed", never merged:
-- **`ServiceError`** (`Left`): the caller's mistake or a real failure.
-  - a decode failure: one constructor wrapping `Persistence.hs`'s `DecodeError`;
-  - an id that does not exist: `<Entity>NotFound`, one per entity type. It is checked in Service, never left to a foreign key (which would surface as an unhandled `SqlError`). Entities that are never deleted need no write-time guard for it. For an entity deleted on consumption, a missing id is an outcome ("no longer available"), not `<Entity>NotFound` (see below); its constructor is `<Entity>Consumed`, used by every use case that can find that fact.
-  - a request in a state that cannot follow the expected one: `<Entity>InWrongState`, carrying the value as it is;
-  - a `Domain.hs` function that declines inputs the caller chose: the inputs are fixed facts that don't fit, so it is the caller's mistake, one constructor named for what doesn't fit. One that declines over stored candidates (use case 3) is an outcome.
+- **An error** (`Left`): a fact about the caller's request that no concurrent operation can change. Each fact is its own type, named for the fact: `<Entity>NotFound` carrying the id, `<Entity>InWrongState` carrying the value as it is, and a `Domain.hs` function's refusal named for what doesn't fit. A use case's facts are exactly those its shape implies:
+  1. `<Entity>NotFound` for each entity it receives by id (a parameter, or an id inside a parameter's value) that is never deleted. It is checked in Service, never left to a foreign key. An entity deleted on consumption is the outcome `<Entity>Consumed` instead, used by every use case that can find that fact;
+  2. `<Entity>InWrongState` if some case of the entity is reachable from none of the use case's source cases (`request-state-answers-follow-the-lifecycle`);
+  3. the refusal of a `Domain.hs` function that declines inputs the caller chose. One that declines over stored candidates (use case 3) is an outcome.
+
+  With no fact, the use case returns its value directly (no `Either`). With one, that fact type is the `Left`. With several, the `Left` is `<Function>Error`, whose constructors are `<Function><Fact>`, each wrapping its fact.
+- **A decode failure is not an error:** stored data violating the spec is a `500`. `decoded` raises `Persistence.hs`'s `DecodeError` as an exception.
 - **An outcome** (`Right`): reality moved between two valid operations, which the caller reacts to.
   - A transition with a single guard returns `TransitionOutcome a = Transitioned a | MovedOn <entity>`.
   - A write whose `Persistence.hs` outcome has more constructors gets its own outcome type, one constructor per `Persistence.hs` constructor, translated one-to-one and named for the caller (e.g. a lost slot vs. a request that moved on).
-  - A use case 3 function's outcome wraps the outcome of the write it persists through: one constructor per way its Domain function declines, plus one carrying that write's outcome. No function's outcome type holds a constructor that function cannot return.
+  - A use case 3 function's outcome wraps the outcome of the write it persists through: one constructor per way its Domain function declines, plus one carrying that write's outcome, named after that outcome's type (e.g. `| MatchOutcome MatchOutcome`), since it can also carry a fact found before the write. No function's outcome type holds a constructor that function cannot return.
 
-A lost race is never the caller's fault, so it is never a `ServiceError`. **An answer depends on the fact, not on which check found it.** A fact found before the write and the same fact found by the write's guard or constraint get the same outcome (e.g. a slot missing at fetch and a slot whose delete hits no row; a new element the smart constructor declines and one the constraint rejects). Only a fact no concurrent operation can change is a `ServiceError`. Service imports `Persistence` qualified, so its own types take the plain names; constructor names are distinct across every type the module defines or imports unqualified.
+A lost race is never the caller's fault, so it is never an error. **An answer depends on the fact, not on which check found it.** A fact found before the write and the same fact found by the write's guard or constraint get the same outcome (e.g. a slot missing at fetch and a slot whose delete hits no row; a new element the smart constructor declines and one the constraint rejects). Only a fact no concurrent operation can change is an error. Service imports `Persistence` qualified, so its own types take the plain names; constructor names are distinct across every type the module defines or imports unqualified.
 
 ### `request-state-answers-follow-the-lifecycle`
 When a use case finds a stored value in a case other than the one it expects, it compares the two over `Domain.hs`'s transition graph:

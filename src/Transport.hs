@@ -1,20 +1,20 @@
-{-# LANGUAGE DataKinds                 #-}
-{-# LANGUAGE DuplicateRecordFields     #-}
-{-# LANGUAGE ExistentialQuantification #-}
-{-# LANGUAGE FlexibleInstances         #-}
-{-# LANGUAGE KindSignatures            #-}
-{-# LANGUAGE LambdaCase                #-}
-{-# LANGUAGE OverloadedRecordDot       #-}
-{-# LANGUAGE OverloadedStrings         #-}
-{-# LANGUAGE ScopedTypeVariables       #-}
-{-# LANGUAGE TypeApplications          #-}
+{-# LANGUAGE AllowAmbiguousTypes   #-}
+{-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE NamedFieldPuns        #-}
+{-# LANGUAGE NoFieldSelectors      #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
+{-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeApplications      #-}
 
--- Derived from src/Domain.hs and src/Service.hs by the triage-api-codegen
--- skill. The wire format: one DTO per Domain.hs type that crosses the wire,
--- one request type per Service function with caller-supplied facts, and
--- one answer type per Service function. Every ToJSON, FromJSON and
--- ToSchema is hand-written, built from one codec per object layout so a
--- key, its schema, its encoding and its decoding are stated once.
+-- Derived from src/Domain.hs (every name and shape) and src/Service.hs (the
+-- answers' outcomes and facts) by the triage-api-codegen skill.
+--
+-- Wire format: every sum type is one flat object per case, tagged by
+-- "type"; embedded stages are flattened into their case's object; a Maybe
+-- field's key is always present (null when absent). Every schema is exactly
+-- what ToJSON produces (OpenAPI 3: oneOf per case).
 module Transport
   ( -- ── IDs ──────────────────────────────────────────────────────────────
     DoctorIdDTO (..)
@@ -22,90 +22,61 @@ module Transport
   , HealthcareServiceIdDTO (..)
   , IntakeRequestIdDTO (..)
   , SlotIdDTO (..)
-  , toDomainDoctorId
-  , fromDomainDoctorId
-  , toDomainPatientId
-  , fromDomainPatientId
-  , toDomainHealthcareServiceId
-  , fromDomainHealthcareServiceId
-  , toDomainIntakeRequestId
-  , fromDomainIntakeRequestId
-  , toDomainSlotId
-  , fromDomainSlotId
+  , fromDomainDoctorId, toDomainDoctorId
+  , fromDomainPatientId, toDomainPatientId
+  , fromDomainHealthcareServiceId, toDomainHealthcareServiceId
+  , fromDomainIntakeRequestId, toDomainIntakeRequestId
+  , fromDomainSlotId, toDomainSlotId
 
-    -- ── Domain values ────────────────────────────────────────────────────
+    -- ── Domain DTOs ──────────────────────────────────────────────────────
   , DurationDTO (..)
-  , toDomainDuration
-  , fromDomainDuration
   , DoctorDTO (..)
-  , toDomainDoctor
-  , fromDomainDoctor
   , PatientDTO (..)
-  , toDomainPatient
-  , fromDomainPatient
   , HealthcareServiceDTO (..)
-  , toDomainHealthcareService
-  , fromDomainHealthcareService
   , DoctorRequirementDTO (..)
-  , toDomainDoctorRequirement
-  , fromDomainDoctorRequirement
   , MustBeSeenByDTO (..)
-  , toDomainMustBeSeenBy
-  , fromDomainMustBeSeenBy
-  , RoutineWindowDTO (..)        -- holds a RoutineWindow, so mkRoutineWindow has checked it
-  , toDomainRoutineWindow
-  , fromDomainRoutineWindow
+  , RoutineWindowDTO (..)
   , RoutineDueDTO (..)
-  , toDomainRoutineDue
-  , fromDomainRoutineDue
   , IntakeRequestPriorityDTO (..)
-  , toDomainIntakeRequestPriority
-  , fromDomainIntakeRequestPriority
   , SubmittedIntakeRequestDTO (..)
-  , toDomainSubmittedIntakeRequest
-  , fromDomainSubmittedIntakeRequest
   , RejectedIntakeRequestDTO (..)
-  , toDomainRejectedIntakeRequest
-  , fromDomainRejectedIntakeRequest
   , TriagedIntakeRequestDTO (..)
-  , toDomainTriagedIntakeRequest
-  , fromDomainTriagedIntakeRequest
   , AppointedIntakeRequestDTO (..)
-  , toDomainAppointedIntakeRequest
-  , fromDomainAppointedIntakeRequest
-  , WithdrawnIntakeRequestDTO (..)
-  , toDomainWithdrawnIntakeRequest
-  , fromDomainWithdrawnIntakeRequest
   , WithdrawnFromDTO (..)
-  , toDomainWithdrawnFrom
-  , fromDomainWithdrawnFrom
+  , WithdrawnIntakeRequestDTO (..)
   , StaleIntakeRequestDTO (..)
-  , toDomainStaleIntakeRequest
-  , fromDomainStaleIntakeRequest
   , AppointmentPartyDTO (..)
-  , toDomainAppointmentParty
-  , fromDomainAppointmentParty
   , CancellationDTO (..)
-  , toDomainCancellation
-  , fromDomainCancellation
   , AbsenceDTO (..)
-  , toDomainAbsence
-  , fromDomainAbsence
   , CloseReasonDTO (..)
-  , toDomainCloseReason
-  , fromDomainCloseReason
   , ClosedIntakeRequestDTO (..)
-  , toDomainClosedIntakeRequest
-  , fromDomainClosedIntakeRequest
   , IntakeRequestDTO (..)
-  , toDomainIntakeRequest
-  , fromDomainIntakeRequest
   , AvailableSlotDTO (..)
-  , toDomainAvailableSlot
-  , fromDomainAvailableSlot
   , DoctorCalendarEntryDTO (..)
-  , toDomainDoctorCalendarEntry
-  , fromDomainDoctorCalendarEntry
+  , fromDomainDuration, toDomainDuration
+  , fromDomainDoctor, toDomainDoctor
+  , fromDomainPatient, toDomainPatient
+  , fromDomainHealthcareService, toDomainHealthcareService
+  , fromDomainDoctorRequirement, toDomainDoctorRequirement
+  , fromDomainMustBeSeenBy, toDomainMustBeSeenBy
+  , fromDomainRoutineWindow, toDomainRoutineWindow
+  , fromDomainRoutineDue, toDomainRoutineDue
+  , fromDomainIntakeRequestPriority, toDomainIntakeRequestPriority
+  , fromDomainSubmittedIntakeRequest, toDomainSubmittedIntakeRequest
+  , fromDomainRejectedIntakeRequest, toDomainRejectedIntakeRequest
+  , fromDomainTriagedIntakeRequest, toDomainTriagedIntakeRequest
+  , fromDomainAppointedIntakeRequest, toDomainAppointedIntakeRequest
+  , fromDomainWithdrawnFrom, toDomainWithdrawnFrom
+  , fromDomainWithdrawnIntakeRequest, toDomainWithdrawnIntakeRequest
+  , fromDomainStaleIntakeRequest, toDomainStaleIntakeRequest
+  , fromDomainAppointmentParty, toDomainAppointmentParty
+  , fromDomainCancellation, toDomainCancellation
+  , fromDomainAbsence, toDomainAbsence
+  , fromDomainCloseReason, toDomainCloseReason
+  , fromDomainClosedIntakeRequest, toDomainClosedIntakeRequest
+  , fromDomainIntakeRequest, toDomainIntakeRequest
+  , fromDomainAvailableSlot, toDomainAvailableSlot
+  , fromDomainDoctorCalendarEntry, toDomainDoctorCalendarEntry
 
     -- ── Request bodies ───────────────────────────────────────────────────
   , CreateDoctorRequest (..)
@@ -116,1180 +87,1030 @@ module Transport
   , RejectSubmittedIntakeRequestRequest (..)
   , MatchAcceptedIntakeRequestToSlotRequest (..)
   , WithdrawIntakeRequestRequest (..)
-  , CloseAppointedIntakeRequestRequest (..)
-  , CloseReasonRequest (..)
   , CancellationRequest (..)
-  , requestedCloseReason
+  , CloseReasonRequest (..)
+  , CloseAppointedIntakeRequestRequest (..)
   , CreateAvailableSlotRequest (..)
+  , toDomainCloseReasonRequest
 
     -- ── Answers ──────────────────────────────────────────────────────────
-  , Answer (..)
-  , Outcomes
-  , Ok (..)
-  , ServiceErrorDTO (..)
-  , TransitionOutcomeDTO (..)
+  , Envelope
+  , Outcome
+  , NoDetail (..)
+  , answer
+    -- outcomes and facts, one tag each
+  , ok
+  , transitioned
+  , movedOn
+  , matched
+  , availableSlotConsumed
+  , intakeRequestMovedOn
+  , noMatchingIntakeRequest
+  , matchOutcome
+  , slotCreated
+  , slotOverlapsDoctorCalendar
+  , doctorNotFound
+  , patientNotFound
+  , healthcareServiceNotFound
+  , intakeRequestNotFound
+  , intakeRequestInWrongState
+  , slotDoesNotMatchIntakeRequest
+    -- answer types
   , MatchOutcomeDTO (..)
-  , PriorityMatchOutcomeDTO (..)
-  , SlotCreationOutcomeDTO (..)
-  , CreateDoctorAnswer
-  , CreatePatientAnswer
-  , CreateHealthcareServiceAnswer
-  , SubmitIntakeRequestAnswer
-  , AcceptSubmittedIntakeRequestAnswer
-  , RejectSubmittedIntakeRequestAnswer
-  , MatchAcceptedIntakeRequestToSlotAnswer
-  , WithdrawIntakeRequestAnswer
-  , MarkAcceptedIntakeRequestStaleAnswer
-  , CloseAppointedIntakeRequestAnswer
-  , MatchAvailableSlotByPriorityAnswer
-  , CreateAvailableSlotAnswer
-  , FetchDoctorAnswer
-  , FetchDoctorsAnswer
-  , FetchPatientAnswer
-  , FetchPatientsAnswer
-  , FetchHealthcareServiceAnswer
-  , FetchHealthcareServicesAnswer
-  , FetchAvailableSlotAnswer
-  , FetchIntakeRequestAnswer
-  , FetchSubmittedIntakeRequestsAnswer
-  , FetchAcceptedIntakeRequestsAnswer
-  , FetchAppointedIntakeRequestsAnswer
-  , FetchRejectedIntakeRequestsByRejectedAtAnswer
-  , FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer
-  , FetchStaleIntakeRequestsByStaleAtAnswer
-  , FetchClosedIntakeRequestsByStartAnswer
-  , FetchDoctorCalendarEntriesOverlappingAnswer
+  , CreateDoctorAnswer (..)
+  , CreatePatientAnswer (..)
+  , CreateHealthcareServiceAnswer (..)
+  , SubmitIntakeRequestAnswer (..)
+  , AcceptSubmittedIntakeRequestAnswer (..)
+  , RejectSubmittedIntakeRequestAnswer (..)
+  , MatchAcceptedIntakeRequestToSlotAnswer (..)
+  , WithdrawIntakeRequestAnswer (..)
+  , MarkAcceptedIntakeRequestStaleAnswer (..)
+  , CloseAppointedIntakeRequestAnswer (..)
+  , MatchAvailableSlotByPriorityAnswer (..)
+  , CreateAvailableSlotAnswer (..)
+  , FetchDoctorAnswer (..)
+  , FetchDoctorsAnswer (..)
+  , FetchPatientAnswer (..)
+  , FetchPatientsAnswer (..)
+  , FetchHealthcareServiceAnswer (..)
+  , FetchHealthcareServicesAnswer (..)
+  , FetchAvailableSlotAnswer (..)
+  , FetchIntakeRequestAnswer (..)
+  , FetchSubmittedIntakeRequestsAnswer (..)
+  , FetchAcceptedIntakeRequestsAnswer (..)
+  , FetchAppointedIntakeRequestsAnswer (..)
+  , FetchRejectedIntakeRequestsByRejectedAtAnswer (..)
+  , FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer (..)
+  , FetchStaleIntakeRequestsByStaleAtAnswer (..)
+  , FetchClosedIntakeRequestsByStartAnswer (..)
+  , FetchDoctorCalendarEntriesOverlappingAnswer (..)
   ) where
 
 import Prelude hiding (id)
 
-import Control.Lens           ((&), (.~), (?~))
-import Control.Monad          (ap)
-import Data.Aeson             (FromJSON (..), Object, ToJSON (..), Value (..), object, withObject, (.=))
-import Data.Aeson.Types       (Pair, Parser, explicitParseField)
-import Data.Char              (toLower, toUpper)
-import Data.List              (intercalate)
+import Control.Lens        ((&), (.~), (?~))
+import Control.Monad       (ap, forM, liftM, unless)
+import Data.Aeson
+  ( FromJSON (..), Object, ToJSON (..), Value (..), object, withObject, withText, (.:), (.=) )
+import Data.Aeson.Key      (Key)
+import Data.Aeson.Types    (Pair, Parser)
+import Data.Char           (toLower, toUpper)
 import Data.OpenApi
-  ( AdditionalProperties (..), Definitions, Discriminator (..), NamedSchema (..), OpenApiType (..)
-  , Reference (..), Referenced (..), Schema, ToParamSchema (..), ToSchema (..)
-  , additionalProperties, allOf, declareSchemaRef, discriminator, enum_, format, nullable, oneOf
-  , properties, required, type_ )
-import Data.OpenApi.Declare   (Declare, declare)
-import Data.Proxy             (Proxy (..))
-import Data.Text              (Text)
-import Data.Time              (UTCTime)
-import Data.Traversable       (for)
-import Data.Typeable          (Typeable)
-import Data.UUID              (UUID)
-import GHC.TypeLits           (KnownSymbol, Symbol, symbolVal)
-import Web.HttpApiData        (FromHttpApiData (..))
+  ( Definitions, Discriminator (..), NamedSchema (..), OpenApiType (..), Reference (..)
+  , Referenced (..), Schema, ToParamSchema (..), ToSchema (..), declareSchemaRef, discriminator
+  , enum_, format, nullable, oneOf, properties, required, type_ )
+import Data.OpenApi.Declare (Declare, declare)
+import Data.Proxy          (Proxy (..))
+import Data.Text           (Text)
+import Data.Time           (UTCTime)
+import Data.UUID           (UUID)
+import Servant             (FromHttpApiData (..))
 
 import qualified Data.Aeson.Key             as Key
 import qualified Data.Aeson.KeyMap          as KeyMap
 import qualified Data.HashMap.Strict.InsOrd as InsOrd
 import qualified Data.Text                  as Text
+import qualified Data.UUID                  as UUID
 
 import Domain
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- CODECS
--- One object layout: its keys with their schemas, how a value writes them,
--- and how they are read back. A layout has several variants only when it
--- flattens a field whose sum type's cases each carry a stage.
+-- MACHINERY
+-- Each shape is written once as three parts that compose when a stage or a
+-- payload is flattened into an enclosing object: its key/value pairs (ToJSON),
+-- its fields (FromJSON) and its properties (ToSchema).
 -- ═══════════════════════════════════════════════════════════════════════════
 
-type Defs = Declare (Definitions Schema)
-
-type Props = [(Text, Defs (Referenced Schema))]
-
--- Reads keys from one object and records which ones it read, so the whole
--- object can be checked for keys nobody asked for.
-newtype Fields a = Fields (Object -> Parser (a, [Key.Key]))
+-- A parser over one object that records the keys it read, so the enclosing
+-- object can reject every key nobody read (a 400).
+newtype Fields a = Fields (Object -> Parser ([Key], a))
 
 instance Functor Fields where
-  fmap f (Fields g) = Fields (fmap (\(a, keys) -> (f a, keys)) . g)
+  fmap = liftM
 
 instance Applicative Fields where
-  pure a = Fields (\_ -> pure (a, []))
+  pure x = Fields (\_ -> pure ([], x))
   (<*>)  = ap
 
 instance Monad Fields where
-  Fields g >>= k = Fields $ \o -> do
-    (a, keys)  <- g o
-    let Fields h = k a
-    (b, keys') <- h o
-    pure (b, keys ++ keys')
+  Fields p >>= f = Fields $ \o -> do
+    (keys, x) <- p o
+    let Fields q = f x
+    (keys', y) <- q o
+    pure (keys <> keys', y)
 
-failFields :: String -> Fields a
-failFields message = Fields (\_ -> fail message)
+field :: FromJSON a => Key -> Fields a
+field key = Fields (\o -> (\x -> ([key], x)) <$> o .: key)
 
-readKey :: (Value -> Parser a) -> Text -> Fields a
-readKey parse k = Fields $ \o -> (\a -> (a, [Key.fromText k])) <$> explicitParseField parse o (Key.fromText k)
+liftParser :: Parser a -> Fields a
+liftParser p = Fields (\_ -> (\x -> ([], x)) <$> p)
 
--- A missing key fails in readKey; an unknown one fails here.
-exactly :: Fields a -> Object -> Parser a
-exactly (Fields g) o = do
-  (a, used) <- g o
-  case filter (`notElem` used) (KeyMap.keys o) of
-    []      -> pure a
-    unknown -> fail ("unknown field(s): " <> intercalate ", " (map (Text.unpack . Key.toText) unknown))
+-- The whole object: exactly the keys its fields read.
+exactly :: String -> Fields a -> Value -> Parser a
+exactly name (Fields p) = withObject name $ \o -> do
+  (keys, x) <- p o
+  let unknown = filter (`notElem` keys) (KeyMap.keys o)
+  unless (null unknown) $
+    fail ("unknown keys " <> show (map Key.toText unknown) <> " in " <> name)
+  pure x
 
-data Codec s a = Codec
-  { codecVariants :: [(Text, Props)]   -- (schema-name suffix, keys)
-  , codecEncode   :: s -> [Pair]
-  , codecDecode   :: Fields a
-  }
+-- A sum's case, by its "type" tag.
+cases :: String -> [(Text, Fields a)] -> Fields a
+cases name alternatives = do
+  tag <- field "type"
+  case lookup tag alternatives of
+    Just fields -> fields
+    Nothing     -> liftParser (fail ("unknown " <> name <> " type " <> show (tag :: Text)))
 
-instance Functor (Codec s) where
-  fmap f (Codec variants enc dec) = Codec variants enc (fmap f dec)
+type Props = [(Text, Declare (Definitions Schema) (Referenced Schema))]
 
-instance Applicative (Codec s) where
-  pure a = Codec [("", [])] (const []) (pure a)
-  Codec v1 e1 d1 <*> Codec v2 e2 d2 =
-    Codec [ (n1 <> n2, p1 ++ p2) | (n1, p1) <- v1, (n2, p2) <- v2 ] (\s -> e1 s ++ e2 s) (d1 <*> d2)
+prop :: forall a. ToSchema a => Text -> Props
+prop key = [(key, declareSchemaRef (Proxy @a))]
 
--- A required key.
-key :: forall s a. (ToJSON a, FromJSON a, ToSchema a) => Text -> (s -> a) -> Codec s a
-key k get = Codec
-  { codecVariants = [("", [(k, declareSchemaRef (Proxy @a))])]
-  , codecEncode   = \s -> [Key.fromText k .= get s]
-  , codecDecode   = readKey parseJSON k
-  }
+nullableText :: Text -> Props
+nullableText key = [(key, pure (Inline (mempty & type_ ?~ OpenApiString & nullable ?~ True)))]
 
--- A Maybe field: the key is always present, its value possibly null.
-nullableKey :: forall s a. (ToJSON a, FromJSON a, ToSchema a) => Text -> (s -> Maybe a) -> Codec s (Maybe a)
-nullableKey k get = Codec
-  { codecVariants = [("", [(k, orNull <$> declareSchemaRef (Proxy @a))])]
-  , codecEncode   = \s -> [Key.fromText k .= get s]
-  , codecDecode   = readKey parseJSON k
-  }
-  where
-    orNull :: Referenced Schema -> Referenced Schema
-    orNull (Inline sch) = Inline (sch & nullable ?~ True)
-    orNull (Ref ref)    = Inline (mempty & allOf ?~ [Ref ref] & nullable ?~ True)
+tagProp :: Text -> Props
+tagProp tag = [("type", pure (Inline (oneValue tag)))]
 
--- An embedded stage: its keys join the enclosing object.
-embed :: (s -> t) -> Codec t a -> Codec s a
-embed get (Codec variants enc dec) = Codec variants (enc . get) dec
-
--- A decoded value refused by a smart constructor is a parse failure.
-refine :: (a -> Either String b) -> Codec s a -> Codec s b
-refine check (Codec variants enc dec) = Codec variants enc (dec >>= either failFields pure . check)
-
--- A field whose sum type's cases each carry a stage: the field keeps only
--- {"type": <case>}, and the case's stage joins the enclosing object.
-flattenStages :: Text -> (s -> t) -> Sum t -> Codec s t
-flattenStages k get s = Codec
-  { codecVariants =
-      [ (constructor <> suffix, (k, pure (Inline (objectOf [("type", tagSchema [tagOf constructor])]))) : props)
-      | Case (CaseOf constructor codec _) <- sumCases s
-      , (suffix, props) <- codecVariants codec ]
-  , codecEncode = \x ->
-      let (tag, pairs) = sumEncode s (get x)
-      in (Key.fromText k .= object ["type" .= tag]) : pairs
-  , codecDecode = do
-      tag <- readKey (withObject "tag" (exactly (readKey parseJSON "type"))) k
-      caseFields s tag
-  }
-
--- ═══════════════════════════════════════════════════════════════════════════
--- RECORDS, SUMS, ENUMERATIONS
--- ═══════════════════════════════════════════════════════════════════════════
-
-recordToJSON :: Codec s s -> s -> Value
-recordToJSON codec = object . codecEncode codec
-
-recordParseJSON :: Text -> Codec s s -> Value -> Parser s
-recordParseJSON typeName codec = withObject (Text.unpack typeName) (exactly (codecDecode codec))
-
-recordSchema :: Text -> Codec s s -> Defs NamedSchema
-recordSchema typeName codec =
-  NamedSchema (Just typeName) <$> variantsSchema typeName [] (codecVariants codec)
-
--- One case of a sum type: its constructor's name, its payload's layout,
--- and how the payload becomes the sum.
-data CaseOf p s = CaseOf Text (Codec p p) (p -> s)
-
-data Case s = forall p. Case (CaseOf p s)
-
-data Sum s = Sum
-  { sumName   :: Text
-  , sumCases  :: [Case s]
-  , sumEncode :: s -> (Text, [Pair])   -- written by an exhaustive match, using put
-  }
-
-put :: CaseOf p s -> p -> (Text, [Pair])
-put (CaseOf constructor codec _) p = (tagOf constructor, codecEncode codec p)
-
-caseFields :: Sum s -> Text -> Fields s
-caseFields s tag =
-  case [ c | c@(Case (CaseOf constructor _ _)) <- sumCases s, tagOf constructor == tag ] of
-    [Case (CaseOf _ codec inject)] -> inject <$> codecDecode codec
-    _ -> failFields ("unknown " <> Text.unpack (sumName s) <> " type: " <> Text.unpack tag)
-
-sumToJSON :: Sum s -> s -> Value
-sumToJSON s x = let (tag, pairs) = sumEncode s x in object (("type" .= tag) : pairs)
-
-sumParseJSON :: Sum s -> Value -> Parser s
-sumParseJSON s = withObject (Text.unpack (sumName s)) $
-  exactly (readKey parseJSON "type" >>= caseFields s)
-
--- oneOf one named schema per case, <Type><Constructor>, discriminated by
--- "type". A case whose keys depend on a nested tag is itself a oneOf of its
--- variants; a discriminator can't map to that, so such a sum has none (each
--- case's one-value "type" enum still tells them apart).
-sumSchema :: Sum s -> Defs NamedSchema
-sumSchema s = do
-  members <- for (sumCases s) $ \(Case (CaseOf constructor codec _)) -> do
-    let caseName = sumName s <> constructor
-        tag      = tagOf constructor
-        variants = codecVariants codec
-    schema <- variantsSchema caseName [("type", pure (Inline (tagSchema [tag])))] variants
-    declare (InsOrd.singleton caseName schema)
-    pure ((tag, caseName), length variants > 1)
-  let cases = map fst members
-      named
-        | any snd members = mempty & oneOf ?~ [ Ref (Reference member) | (_, member) <- cases ]
-        | otherwise       = discriminated "type" cases
-  pure (NamedSchema (Just (sumName s)) named)
-
--- An enumeration: an object with only "type".
-enumToJSON :: (a -> Text) -> a -> Value
-enumToJSON constructor x = object ["type" .= tagOf (constructor x)]
-
-enumParseJSON :: (Bounded a, Enum a) => Text -> (a -> Text) -> Value -> Parser a
-enumParseJSON typeName constructor = withObject (Text.unpack typeName) $ exactly $ do
-  tag <- readKey parseJSON "type"
-  case [ x | x <- [minBound .. maxBound], tagOf (constructor x) == tag ] of
-    [x] -> pure x
-    _   -> failFields ("unknown " <> Text.unpack typeName <> " type: " <> Text.unpack tag)
-
-enumSchema :: forall a. (Bounded a, Enum a) => Text -> (a -> Text) -> Defs NamedSchema
-enumSchema typeName constructor = pure . NamedSchema (Just typeName) $
-  objectOf [("type", tagSchema [ tagOf (constructor x) | x <- [minBound .. maxBound :: a] ])]
-
--- ═══════════════════════════════════════════════════════════════════════════
--- SCHEMA HELPERS
--- ═══════════════════════════════════════════════════════════════════════════
-
-tagOf :: Text -> Text
-tagOf t = case Text.uncons t of
-  Just (c, rest) -> Text.cons (toLower c) rest
-  Nothing        -> t
-
-capitalised :: Text -> Text
-capitalised t = case Text.uncons t of
-  Just (c, rest) -> Text.cons (toUpper c) rest
-  Nothing        -> t
-
-tagSchema :: [Text] -> Schema
-tagSchema tags = mempty & type_ ?~ OpenApiString & enum_ ?~ map String tags
+oneValue :: Text -> Schema
+oneValue v = mempty & type_ ?~ OpenApiString & enum_ ?~ [String v]
 
 -- An object with exactly these keys, all required.
-objectOf :: [(Text, Schema)] -> Schema
-objectOf props = mempty
-  & type_                ?~ OpenApiObject
-  & properties           .~ InsOrd.fromList [ (k, Inline s) | (k, s) <- props ]
-  & required             .~ map fst props
-  & additionalProperties ?~ AdditionalPropertiesAllowed False
-
-objectSchema :: Props -> Defs Schema
+objectSchema :: Props -> Declare (Definitions Schema) Schema
 objectSchema props = do
-  schemas <- traverse snd props
+  resolved <- forM props $ \(key, schema) -> (,) key <$> schema
   pure $ mempty
-    & type_                ?~ OpenApiObject
-    & properties           .~ InsOrd.fromList (zip (map fst props) schemas)
-    & required             .~ map fst props
-    & additionalProperties ?~ AdditionalPropertiesAllowed False
+    & type_      ?~ OpenApiObject
+    & properties .~ InsOrd.fromList resolved
+    & required   .~ map fst resolved
 
--- A layout with several variants is oneOf one named schema per variant.
-variantsSchema :: Text -> Props -> [(Text, Props)] -> Defs Schema
-variantsSchema _    prefix [(_, props)] = objectSchema (prefix ++ props)
-variantsSchema typeName prefix variants = do
-  names <- for variants $ \(suffix, props) -> do
-    schema <- objectSchema (prefix ++ props)
-    declare (InsOrd.singleton (typeName <> suffix) schema)
-    pure (typeName <> suffix)
-  pure (mempty & oneOf ?~ map (Ref . Reference) names)
+declared :: Text -> Schema -> Declare (Definitions Schema) (Referenced Schema)
+declared name schema = do
+  declare (InsOrd.singleton name schema)
+  pure (Ref (Reference name))
 
-discriminated :: Text -> [(Text, Text)] -> Schema
-discriminated property members = mempty
-  & oneOf         ?~ [ Ref (Reference member) | (_, member) <- members ]
-  & discriminator ?~ Discriminator property
-      (InsOrd.fromList [ (tag, "#/components/schemas/" <> member) | (tag, member) <- members ])
+schemaRef :: Text -> Text
+schemaRef name = "#/components/schemas/" <> name
 
--- The schema of a detail that is always null.
-nullSchema :: Schema
-nullSchema = mempty & nullable ?~ True & enum_ ?~ [Null]
+-- A sum case: one object, or (when its keys depend on a nested tag) oneOf
+-- its variants.
+data Case
+  = Plain    Text Props
+  | Variants Text [(Text, Props)]
+
+-- oneOf one named schema per case, <Type><Constructor>; discriminated by
+-- "type" unless a case is itself a oneOf.
+sumSchema :: Text -> [Case] -> Declare (Definitions Schema) NamedSchema
+sumSchema name alternatives = do
+  refs <- forM alternatives $ \case
+    Plain tag props -> do
+      let caseName = name <> upperFirst tag
+      ref <- declared caseName =<< objectSchema (tagProp tag <> props)
+      pure (tag, caseName, ref)
+    Variants tag variants -> do
+      let caseName = name <> upperFirst tag
+      variantRefs <- forM variants $ \(inner, props) ->
+        declared (caseName <> upperFirst inner) =<< objectSchema (tagProp tag <> props)
+      ref <- declared caseName (mempty & oneOf ?~ variantRefs)
+      pure (tag, caseName, ref)
+  let plain   = all isPlain alternatives
+      isPlain = \case Plain {} -> True; Variants {} -> False
+      schema  = mempty & oneOf ?~ [ ref | (_, _, ref) <- refs ]
+  pure . NamedSchema (Just name) $
+    if plain
+      then schema & discriminator ?~ Discriminator "type"
+             (InsOrd.fromList [ (tag, schemaRef caseName) | (tag, caseName, _) <- refs ])
+      else schema
+
+-- A record whose keys depend on a nested tag: oneOf its variants,
+-- <Type><InnerConstructor>.
+variantsSchema :: Text -> [(Text, Props)] -> Declare (Definitions Schema) NamedSchema
+variantsSchema name variants = do
+  refs <- forM variants $ \(inner, props) ->
+    declared (name <> upperFirst inner) =<< objectSchema props
+  pure (NamedSchema (Just name) (mempty & oneOf ?~ refs))
+
+recordSchema :: Text -> Props -> Declare (Definitions Schema) NamedSchema
+recordSchema name props = NamedSchema (Just name) <$> objectSchema props
+
+lowerFirst, upperFirst :: Text -> Text
+lowerFirst t = maybe t (\(c, rest) -> Text.cons (toLower c) rest) (Text.uncons t)
+upperFirst t = maybe t (\(c, rest) -> Text.cons (toUpper c) rest) (Text.uncons t)
+
+-- ── Enumerations: an object with only "type" ───────────────────────────────
+
+enumTag :: Show a => a -> Text
+enumTag = lowerFirst . Text.pack . show
+
+enumPairs :: Show a => a -> [Pair]
+enumPairs x = ["type" .= enumTag x]
+
+enumFields :: forall a. (Show a, Enum a, Bounded a) => String -> Fields a
+enumFields name = cases name [ (enumTag x, pure x) | x <- [minBound .. maxBound :: a] ]
+
+enumSchema :: forall a. (Show a, Enum a, Bounded a) => Text -> Proxy a -> NamedSchema
+enumSchema name _ =
+  NamedSchema (Just name) $ mempty
+    & type_      ?~ OpenApiObject
+    & properties .~ InsOrd.fromList
+        [ ("type", Inline (mempty & type_ ?~ OpenApiString
+                                  & enum_ ?~ [ String (enumTag x) | x <- [minBound .. maxBound :: a] ])) ]
+    & required   .~ ["type"]
+
+-- ── IDs: a plain UUID string, one named schema per ID type ─────────────────
 
 uuidSchema :: Schema
 uuidSchema = mempty & type_ ?~ OpenApiString & format ?~ "uuid"
 
+parseUUID :: String -> Value -> Parser UUID
+parseUUID name = withText name $ \t -> maybe (fail ("invalid " <> name)) pure (UUID.fromText t)
+
+uuidPiece :: Text -> Either Text UUID
+uuidPiece t = maybe (Left ("invalid UUID: " <> t)) Right (UUID.fromText t)
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- IDS
--- A plain UUID string; each ID type keeps its own schema name.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-newtype DoctorIdDTO            = DoctorIdDTO            UUID deriving (Show, Eq)
-newtype PatientIdDTO           = PatientIdDTO           UUID deriving (Show, Eq)
-newtype HealthcareServiceIdDTO = HealthcareServiceIdDTO UUID deriving (Show, Eq)
-newtype IntakeRequestIdDTO     = IntakeRequestIdDTO     UUID deriving (Show, Eq)
-newtype SlotIdDTO              = SlotIdDTO              UUID deriving (Show, Eq)
-
-instance ToJSON   DoctorIdDTO where toJSON (DoctorIdDTO u) = toJSON u
-instance FromJSON DoctorIdDTO where parseJSON = fmap DoctorIdDTO . parseJSON
-instance ToSchema DoctorIdDTO where declareNamedSchema _ = pure (NamedSchema (Just "DoctorId") uuidSchema)
-instance ToParamSchema   DoctorIdDTO where toParamSchema _ = uuidSchema
-instance FromHttpApiData DoctorIdDTO where parseUrlPiece = fmap DoctorIdDTO . parseUrlPiece
-
-instance ToJSON   PatientIdDTO where toJSON (PatientIdDTO u) = toJSON u
-instance FromJSON PatientIdDTO where parseJSON = fmap PatientIdDTO . parseJSON
-instance ToSchema PatientIdDTO where declareNamedSchema _ = pure (NamedSchema (Just "PatientId") uuidSchema)
-instance ToParamSchema   PatientIdDTO where toParamSchema _ = uuidSchema
-instance FromHttpApiData PatientIdDTO where parseUrlPiece = fmap PatientIdDTO . parseUrlPiece
-
-instance ToJSON   HealthcareServiceIdDTO where toJSON (HealthcareServiceIdDTO u) = toJSON u
-instance FromJSON HealthcareServiceIdDTO where parseJSON = fmap HealthcareServiceIdDTO . parseJSON
-instance ToSchema HealthcareServiceIdDTO where
-  declareNamedSchema _ = pure (NamedSchema (Just "HealthcareServiceId") uuidSchema)
-instance ToParamSchema   HealthcareServiceIdDTO where toParamSchema _ = uuidSchema
-instance FromHttpApiData HealthcareServiceIdDTO where parseUrlPiece = fmap HealthcareServiceIdDTO . parseUrlPiece
-
-instance ToJSON   IntakeRequestIdDTO where toJSON (IntakeRequestIdDTO u) = toJSON u
-instance FromJSON IntakeRequestIdDTO where parseJSON = fmap IntakeRequestIdDTO . parseJSON
-instance ToSchema IntakeRequestIdDTO where
-  declareNamedSchema _ = pure (NamedSchema (Just "IntakeRequestId") uuidSchema)
-instance ToParamSchema   IntakeRequestIdDTO where toParamSchema _ = uuidSchema
-instance FromHttpApiData IntakeRequestIdDTO where parseUrlPiece = fmap IntakeRequestIdDTO . parseUrlPiece
-
-instance ToJSON   SlotIdDTO where toJSON (SlotIdDTO u) = toJSON u
-instance FromJSON SlotIdDTO where parseJSON = fmap SlotIdDTO . parseJSON
-instance ToSchema SlotIdDTO where declareNamedSchema _ = pure (NamedSchema (Just "SlotId") uuidSchema)
-instance ToParamSchema   SlotIdDTO where toParamSchema _ = uuidSchema
-instance FromHttpApiData SlotIdDTO where parseUrlPiece = fmap SlotIdDTO . parseUrlPiece
-
-toDomainDoctorId :: DoctorIdDTO -> DoctorId
-toDomainDoctorId (DoctorIdDTO u) = DoctorId u
+newtype DoctorIdDTO            = DoctorIdDTO            DoctorId            deriving (Show, Eq)
+newtype PatientIdDTO           = PatientIdDTO           PatientId           deriving (Show, Eq)
+newtype HealthcareServiceIdDTO = HealthcareServiceIdDTO HealthcareServiceId deriving (Show, Eq)
+newtype IntakeRequestIdDTO     = IntakeRequestIdDTO     IntakeRequestId     deriving (Show, Eq)
+newtype SlotIdDTO              = SlotIdDTO              SlotId              deriving (Show, Eq)
 
 fromDomainDoctorId :: DoctorId -> DoctorIdDTO
-fromDomainDoctorId (DoctorId u) = DoctorIdDTO u
-
-toDomainPatientId :: PatientIdDTO -> PatientId
-toDomainPatientId (PatientIdDTO u) = PatientId u
+fromDomainDoctorId = DoctorIdDTO
+toDomainDoctorId :: DoctorIdDTO -> DoctorId
+toDomainDoctorId (DoctorIdDTO x) = x
 
 fromDomainPatientId :: PatientId -> PatientIdDTO
-fromDomainPatientId (PatientId u) = PatientIdDTO u
-
-toDomainHealthcareServiceId :: HealthcareServiceIdDTO -> HealthcareServiceId
-toDomainHealthcareServiceId (HealthcareServiceIdDTO u) = HealthcareServiceId u
+fromDomainPatientId = PatientIdDTO
+toDomainPatientId :: PatientIdDTO -> PatientId
+toDomainPatientId (PatientIdDTO x) = x
 
 fromDomainHealthcareServiceId :: HealthcareServiceId -> HealthcareServiceIdDTO
-fromDomainHealthcareServiceId (HealthcareServiceId u) = HealthcareServiceIdDTO u
-
-toDomainIntakeRequestId :: IntakeRequestIdDTO -> IntakeRequestId
-toDomainIntakeRequestId (IntakeRequestIdDTO u) = IntakeRequestId u
+fromDomainHealthcareServiceId = HealthcareServiceIdDTO
+toDomainHealthcareServiceId :: HealthcareServiceIdDTO -> HealthcareServiceId
+toDomainHealthcareServiceId (HealthcareServiceIdDTO x) = x
 
 fromDomainIntakeRequestId :: IntakeRequestId -> IntakeRequestIdDTO
-fromDomainIntakeRequestId (IntakeRequestId u) = IntakeRequestIdDTO u
-
-toDomainSlotId :: SlotIdDTO -> SlotId
-toDomainSlotId (SlotIdDTO u) = SlotId u
+fromDomainIntakeRequestId = IntakeRequestIdDTO
+toDomainIntakeRequestId :: IntakeRequestIdDTO -> IntakeRequestId
+toDomainIntakeRequestId (IntakeRequestIdDTO x) = x
 
 fromDomainSlotId :: SlotId -> SlotIdDTO
-fromDomainSlotId (SlotId u) = SlotIdDTO u
+fromDomainSlotId = SlotIdDTO
+toDomainSlotId :: SlotIdDTO -> SlotId
+toDomainSlotId (SlotIdDTO x) = x
+
+instance ToJSON DoctorIdDTO where toJSON (DoctorIdDTO (DoctorId u)) = toJSON (UUID.toText u)
+instance FromJSON DoctorIdDTO where parseJSON = fmap (DoctorIdDTO . DoctorId) . parseUUID "DoctorId"
+instance ToSchema DoctorIdDTO where declareNamedSchema _ = pure (NamedSchema (Just "DoctorId") uuidSchema)
+instance ToParamSchema DoctorIdDTO where toParamSchema _ = uuidSchema
+instance FromHttpApiData DoctorIdDTO where parseUrlPiece = fmap (DoctorIdDTO . DoctorId) . uuidPiece
+
+instance ToJSON PatientIdDTO where toJSON (PatientIdDTO (PatientId u)) = toJSON (UUID.toText u)
+instance FromJSON PatientIdDTO where parseJSON = fmap (PatientIdDTO . PatientId) . parseUUID "PatientId"
+instance ToSchema PatientIdDTO where declareNamedSchema _ = pure (NamedSchema (Just "PatientId") uuidSchema)
+instance ToParamSchema PatientIdDTO where toParamSchema _ = uuidSchema
+instance FromHttpApiData PatientIdDTO where parseUrlPiece = fmap (PatientIdDTO . PatientId) . uuidPiece
+
+instance ToJSON HealthcareServiceIdDTO where
+  toJSON (HealthcareServiceIdDTO (HealthcareServiceId u)) = toJSON (UUID.toText u)
+instance FromJSON HealthcareServiceIdDTO where
+  parseJSON = fmap (HealthcareServiceIdDTO . HealthcareServiceId) . parseUUID "HealthcareServiceId"
+instance ToSchema HealthcareServiceIdDTO where
+  declareNamedSchema _ = pure (NamedSchema (Just "HealthcareServiceId") uuidSchema)
+instance ToParamSchema HealthcareServiceIdDTO where toParamSchema _ = uuidSchema
+instance FromHttpApiData HealthcareServiceIdDTO where
+  parseUrlPiece = fmap (HealthcareServiceIdDTO . HealthcareServiceId) . uuidPiece
+
+instance ToJSON IntakeRequestIdDTO where
+  toJSON (IntakeRequestIdDTO (IntakeRequestId u)) = toJSON (UUID.toText u)
+instance FromJSON IntakeRequestIdDTO where
+  parseJSON = fmap (IntakeRequestIdDTO . IntakeRequestId) . parseUUID "IntakeRequestId"
+instance ToSchema IntakeRequestIdDTO where
+  declareNamedSchema _ = pure (NamedSchema (Just "IntakeRequestId") uuidSchema)
+instance ToParamSchema IntakeRequestIdDTO where toParamSchema _ = uuidSchema
+instance FromHttpApiData IntakeRequestIdDTO where
+  parseUrlPiece = fmap (IntakeRequestIdDTO . IntakeRequestId) . uuidPiece
+
+instance ToJSON SlotIdDTO where toJSON (SlotIdDTO (SlotId u)) = toJSON (UUID.toText u)
+instance FromJSON SlotIdDTO where parseJSON = fmap (SlotIdDTO . SlotId) . parseUUID "SlotId"
+instance ToSchema SlotIdDTO where declareNamedSchema _ = pure (NamedSchema (Just "SlotId") uuidSchema)
+instance ToParamSchema SlotIdDTO where toParamSchema _ = uuidSchema
+instance FromHttpApiData SlotIdDTO where parseUrlPiece = fmap (SlotIdDTO . SlotId) . uuidPiece
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- DURATION (enumeration)
+-- DURATION
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data DurationDTO
-  = QuarterOfAnHourDTO
-  | HalfAnHourDTO
-  | OneHourDTO
-  deriving (Show, Eq, Enum, Bounded)
-
-durationConstructor :: DurationDTO -> Text
-durationConstructor = \case
-  QuarterOfAnHourDTO -> "QuarterOfAnHour"
-  HalfAnHourDTO      -> "HalfAnHour"
-  OneHourDTO         -> "OneHour"
-
-instance ToJSON   DurationDTO where toJSON = enumToJSON durationConstructor
-instance FromJSON DurationDTO where parseJSON = enumParseJSON "Duration" durationConstructor
-instance ToSchema DurationDTO where declareNamedSchema _ = enumSchema "Duration" durationConstructor
-
-toDomainDuration :: DurationDTO -> Duration
-toDomainDuration = \case
-  QuarterOfAnHourDTO -> QuarterOfAnHour
-  HalfAnHourDTO      -> HalfAnHour
-  OneHourDTO         -> OneHour
+newtype DurationDTO = DurationDTO Duration deriving (Show, Eq)
 
 fromDomainDuration :: Duration -> DurationDTO
-fromDomainDuration = \case
-  QuarterOfAnHour -> QuarterOfAnHourDTO
-  HalfAnHour      -> HalfAnHourDTO
-  OneHour         -> OneHourDTO
+fromDomainDuration = DurationDTO
+toDomainDuration :: DurationDTO -> Duration
+toDomainDuration (DurationDTO x) = x
+
+instance ToJSON DurationDTO where toJSON (DurationDTO d) = object (enumPairs d)
+instance FromJSON DurationDTO where parseJSON = fmap DurationDTO . exactly "Duration" (enumFields "Duration")
+instance ToSchema DurationDTO where declareNamedSchema _ = pure (enumSchema "Duration" (Proxy @Duration))
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- DOCTOR / PATIENT
+-- DOCTOR / PATIENT / HEALTHCARE SERVICE
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data DoctorDTO = DoctorDTO
-  { id   :: DoctorIdDTO
-  , name :: Text
-  }
-  deriving (Show, Eq)
-
-doctorCodec :: Codec DoctorDTO DoctorDTO
-doctorCodec = DoctorDTO <$> key "id" (.id) <*> key "name" (.name)
-
-instance ToJSON   DoctorDTO where toJSON = recordToJSON doctorCodec
-instance FromJSON DoctorDTO where parseJSON = recordParseJSON "Doctor" doctorCodec
-instance ToSchema DoctorDTO where declareNamedSchema _ = recordSchema "Doctor" doctorCodec
-
-toDomainDoctor :: DoctorDTO -> Doctor
-toDomainDoctor d = Doctor { id = toDomainDoctorId d.id, name = d.name }
+newtype DoctorDTO = DoctorDTO Doctor deriving (Show, Eq)
 
 fromDomainDoctor :: Doctor -> DoctorDTO
-fromDomainDoctor d = DoctorDTO { id = fromDomainDoctorId d.id, name = d.name }
+fromDomainDoctor = DoctorDTO
+toDomainDoctor :: DoctorDTO -> Doctor
+toDomainDoctor (DoctorDTO x) = x
 
-data PatientDTO = PatientDTO
-  { id   :: PatientIdDTO
-  , name :: Text
-  }
-  deriving (Show, Eq)
+instance ToJSON DoctorDTO where
+  toJSON (DoctorDTO d) = object ["id" .= DoctorIdDTO d.id, "name" .= d.name]
+instance FromJSON DoctorDTO where
+  parseJSON = exactly "Doctor" $ do
+    DoctorIdDTO id <- field "id"
+    name           <- field "name"
+    pure (DoctorDTO Doctor { id, name })
+instance ToSchema DoctorDTO where
+  declareNamedSchema _ = recordSchema "Doctor" (prop @DoctorIdDTO "id" <> prop @Text "name")
 
-patientCodec :: Codec PatientDTO PatientDTO
-patientCodec = PatientDTO <$> key "id" (.id) <*> key "name" (.name)
-
-instance ToJSON   PatientDTO where toJSON = recordToJSON patientCodec
-instance FromJSON PatientDTO where parseJSON = recordParseJSON "Patient" patientCodec
-instance ToSchema PatientDTO where declareNamedSchema _ = recordSchema "Patient" patientCodec
-
-toDomainPatient :: PatientDTO -> Patient
-toDomainPatient p = Patient { id = toDomainPatientId p.id, name = p.name }
+newtype PatientDTO = PatientDTO Patient deriving (Show, Eq)
 
 fromDomainPatient :: Patient -> PatientDTO
-fromDomainPatient p = PatientDTO { id = fromDomainPatientId p.id, name = p.name }
+fromDomainPatient = PatientDTO
+toDomainPatient :: PatientDTO -> Patient
+toDomainPatient (PatientDTO x) = x
 
--- ═══════════════════════════════════════════════════════════════════════════
--- HEALTHCARE SERVICE
--- ═══════════════════════════════════════════════════════════════════════════
+instance ToJSON PatientDTO where
+  toJSON (PatientDTO p) = object ["id" .= PatientIdDTO p.id, "name" .= p.name]
+instance FromJSON PatientDTO where
+  parseJSON = exactly "Patient" $ do
+    PatientIdDTO id <- field "id"
+    name            <- field "name"
+    pure (PatientDTO Patient { id, name })
+instance ToSchema PatientDTO where
+  declareNamedSchema _ = recordSchema "Patient" (prop @PatientIdDTO "id" <> prop @Text "name")
 
-data HealthcareServiceDTO = HealthcareServiceDTO
-  { id       :: HealthcareServiceIdDTO
-  , name     :: Text
-  , duration :: DurationDTO
-  }
-  deriving (Show, Eq)
-
-healthcareServiceCodec :: Codec HealthcareServiceDTO HealthcareServiceDTO
-healthcareServiceCodec = HealthcareServiceDTO
-  <$> key "id"       (.id)
-  <*> key "name"     (.name)
-  <*> key "duration" (.duration)
-
-instance ToJSON   HealthcareServiceDTO where toJSON = recordToJSON healthcareServiceCodec
-instance FromJSON HealthcareServiceDTO where
-  parseJSON = recordParseJSON "HealthcareService" healthcareServiceCodec
-instance ToSchema HealthcareServiceDTO where
-  declareNamedSchema _ = recordSchema "HealthcareService" healthcareServiceCodec
-
-toDomainHealthcareService :: HealthcareServiceDTO -> HealthcareService
-toDomainHealthcareService s = HealthcareService
-  { id = toDomainHealthcareServiceId s.id, name = s.name, duration = toDomainDuration s.duration }
+newtype HealthcareServiceDTO = HealthcareServiceDTO HealthcareService deriving (Show, Eq)
 
 fromDomainHealthcareService :: HealthcareService -> HealthcareServiceDTO
-fromDomainHealthcareService s = HealthcareServiceDTO
-  { id = fromDomainHealthcareServiceId s.id, name = s.name, duration = fromDomainDuration s.duration }
+fromDomainHealthcareService = HealthcareServiceDTO
+toDomainHealthcareService :: HealthcareServiceDTO -> HealthcareService
+toDomainHealthcareService (HealthcareServiceDTO x) = x
+
+instance ToJSON HealthcareServiceDTO where
+  toJSON (HealthcareServiceDTO s) =
+    object [ "id" .= HealthcareServiceIdDTO s.id, "name" .= s.name, "duration" .= DurationDTO s.duration ]
+instance FromJSON HealthcareServiceDTO where
+  parseJSON = exactly "HealthcareService" $ do
+    HealthcareServiceIdDTO id <- field "id"
+    name                      <- field "name"
+    DurationDTO duration      <- field "duration"
+    pure (HealthcareServiceDTO HealthcareService { id, name, duration })
+instance ToSchema HealthcareServiceDTO where
+  declareNamedSchema _ = recordSchema "HealthcareService" $
+    prop @HealthcareServiceIdDTO "id" <> prop @Text "name" <> prop @DurationDTO "duration"
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DOCTOR REQUIREMENT
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data DoctorRequirementDTO
-  = AnyDoctorDTO
-  | SpecificDoctorDTO DoctorIdDTO
-  deriving (Show, Eq)
-
-doctorRequirementSum :: Sum DoctorRequirementDTO
-doctorRequirementSum = Sum "DoctorRequirement" [Case anyDoctor, Case specificDoctor] $ \case
-    AnyDoctorDTO        -> put anyDoctor ()
-    SpecificDoctorDTO d -> put specificDoctor d
-  where
-    anyDoctor      = CaseOf "AnyDoctor" (pure ()) (const AnyDoctorDTO)
-    specificDoctor = CaseOf "SpecificDoctor" (key "specificDoctor" (\d -> d)) SpecificDoctorDTO
-
-instance ToJSON   DoctorRequirementDTO where toJSON = sumToJSON doctorRequirementSum
-instance FromJSON DoctorRequirementDTO where parseJSON = sumParseJSON doctorRequirementSum
-instance ToSchema DoctorRequirementDTO where declareNamedSchema _ = sumSchema doctorRequirementSum
-
-toDomainDoctorRequirement :: DoctorRequirementDTO -> DoctorRequirement
-toDomainDoctorRequirement = \case
-  AnyDoctorDTO        -> AnyDoctor
-  SpecificDoctorDTO d -> SpecificDoctor (toDomainDoctorId d)
+newtype DoctorRequirementDTO = DoctorRequirementDTO DoctorRequirement deriving (Show, Eq)
 
 fromDomainDoctorRequirement :: DoctorRequirement -> DoctorRequirementDTO
-fromDomainDoctorRequirement = \case
-  AnyDoctor        -> AnyDoctorDTO
-  SpecificDoctor d -> SpecificDoctorDTO (fromDomainDoctorId d)
+fromDomainDoctorRequirement = DoctorRequirementDTO
+toDomainDoctorRequirement :: DoctorRequirementDTO -> DoctorRequirement
+toDomainDoctorRequirement (DoctorRequirementDTO x) = x
+
+instance ToJSON DoctorRequirementDTO where
+  toJSON (DoctorRequirementDTO r) = object $ case r of
+    AnyDoctor               -> ["type" .= ("anyDoctor" :: Text)]
+    SpecificDoctor doctorId -> ["type" .= ("specificDoctor" :: Text), "specificDoctor" .= DoctorIdDTO doctorId]
+instance FromJSON DoctorRequirementDTO where
+  parseJSON = fmap DoctorRequirementDTO . exactly "DoctorRequirement" (cases "DoctorRequirement"
+    [ ("anyDoctor",      pure AnyDoctor)
+    , ("specificDoctor", (\(DoctorIdDTO d) -> SpecificDoctor d) <$> field "specificDoctor")
+    ])
+instance ToSchema DoctorRequirementDTO where
+  declareNamedSchema _ = sumSchema "DoctorRequirement"
+    [ Plain "anyDoctor"      []
+    , Plain "specificDoctor" (prop @DoctorIdDTO "specificDoctor")
+    ]
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- PRIORITY / DUE CONSTRAINTS
 -- ═══════════════════════════════════════════════════════════════════════════
 
-newtype MustBeSeenByDTO = MustBeSeenByDTO UTCTime
-  deriving (Show, Eq)
-
-mustBeSeenByCodec :: Codec MustBeSeenByDTO MustBeSeenByDTO
-mustBeSeenByCodec = MustBeSeenByDTO <$> key "mustBeSeenBy" (\(MustBeSeenByDTO t) -> t)
-
-instance ToJSON   MustBeSeenByDTO where toJSON = recordToJSON mustBeSeenByCodec
-instance FromJSON MustBeSeenByDTO where parseJSON = recordParseJSON "MustBeSeenBy" mustBeSeenByCodec
-instance ToSchema MustBeSeenByDTO where declareNamedSchema _ = recordSchema "MustBeSeenBy" mustBeSeenByCodec
-
-toDomainMustBeSeenBy :: MustBeSeenByDTO -> MustBeSeenBy
-toDomainMustBeSeenBy (MustBeSeenByDTO t) = MustBeSeenBy t
+newtype MustBeSeenByDTO = MustBeSeenByDTO MustBeSeenBy deriving (Show, Eq)
 
 fromDomainMustBeSeenBy :: MustBeSeenBy -> MustBeSeenByDTO
-fromDomainMustBeSeenBy (MustBeSeenBy t) = MustBeSeenByDTO t
+fromDomainMustBeSeenBy = MustBeSeenByDTO
+toDomainMustBeSeenBy :: MustBeSeenByDTO -> MustBeSeenBy
+toDomainMustBeSeenBy (MustBeSeenByDTO x) = x
 
--- Sealed in Domain.hs: decoded only through mkRoutineWindow, so the DTO
--- holds a value that has passed it.
-newtype RoutineWindowDTO = RoutineWindowDTO RoutineWindow
-  deriving (Show, Eq)
+mustBeSeenByPairs :: MustBeSeenBy -> [Pair]
+mustBeSeenByPairs (MustBeSeenBy t) = ["mustBeSeenBy" .= t]
 
-routineWindowCodec :: Codec RoutineWindowDTO RoutineWindowDTO
-routineWindowCodec = refine checked $ (,)
-  <$> key "routineNotBefore" (\(RoutineWindowDTO w) -> routineNotBefore w)
-  <*> key "routineNotAfter"  (\(RoutineWindowDTO w) -> routineNotAfter w)
-  where
-    checked (notBefore, notAfter) =
-      maybe (Left "routineNotBefore must not be after routineNotAfter") (Right . RoutineWindowDTO)
-        (mkRoutineWindow notBefore notAfter)
+mustBeSeenByFields :: Fields MustBeSeenBy
+mustBeSeenByFields = MustBeSeenBy <$> field "mustBeSeenBy"
 
-instance ToJSON   RoutineWindowDTO where toJSON = recordToJSON routineWindowCodec
-instance FromJSON RoutineWindowDTO where parseJSON = recordParseJSON "RoutineWindow" routineWindowCodec
-instance ToSchema RoutineWindowDTO where declareNamedSchema _ = recordSchema "RoutineWindow" routineWindowCodec
+mustBeSeenByProps :: Props
+mustBeSeenByProps = prop @UTCTime "mustBeSeenBy"
 
-toDomainRoutineWindow :: RoutineWindowDTO -> RoutineWindow
-toDomainRoutineWindow (RoutineWindowDTO w) = w
+instance ToJSON MustBeSeenByDTO where toJSON (MustBeSeenByDTO m) = object (mustBeSeenByPairs m)
+instance FromJSON MustBeSeenByDTO where
+  parseJSON = fmap MustBeSeenByDTO . exactly "MustBeSeenBy" mustBeSeenByFields
+instance ToSchema MustBeSeenByDTO where
+  declareNamedSchema _ = recordSchema "MustBeSeenBy" mustBeSeenByProps
+
+-- Sealed: decoded only through mkRoutineWindow; a refusal is a parse failure.
+newtype RoutineWindowDTO = RoutineWindowDTO RoutineWindow deriving (Show, Eq)
 
 fromDomainRoutineWindow :: RoutineWindow -> RoutineWindowDTO
 fromDomainRoutineWindow = RoutineWindowDTO
+toDomainRoutineWindow :: RoutineWindowDTO -> RoutineWindow
+toDomainRoutineWindow (RoutineWindowDTO x) = x
 
-data RoutineDueDTO
-  = RoutineAnytimeDTO
-  | RoutineNotBeforeDTO UTCTime
-  | RoutineNotAfterDTO  UTCTime
-  | RoutineWithinDTO    RoutineWindowDTO
-  deriving (Show, Eq)
+routineWindowPairs :: RoutineWindow -> [Pair]
+routineWindowPairs w =
+  ["routineNotBefore" .= routineNotBefore w, "routineNotAfter" .= routineNotAfter w]
 
-routineDueSum :: Sum RoutineDueDTO
-routineDueSum =
-  Sum "RoutineDue" [Case anytime, Case notBefore, Case notAfter, Case within] $ \case
-    RoutineAnytimeDTO     -> put anytime ()
-    RoutineNotBeforeDTO t -> put notBefore t
-    RoutineNotAfterDTO  t -> put notAfter t
-    RoutineWithinDTO    w -> put within w
-  where
-    anytime   = CaseOf "RoutineAnytime" (pure ()) (const RoutineAnytimeDTO)
-    notBefore = CaseOf "RoutineNotBefore" (key "routineNotBefore" (\t -> t)) RoutineNotBeforeDTO
-    notAfter  = CaseOf "RoutineNotAfter" (key "routineNotAfter" (\t -> t)) RoutineNotAfterDTO
-    within    = CaseOf "RoutineWithin" routineWindowCodec RoutineWithinDTO
+routineWindowFields :: Fields RoutineWindow
+routineWindowFields = do
+  notBefore <- field "routineNotBefore"
+  notAfter  <- field "routineNotAfter"
+  maybe (liftParser (fail "routineNotBefore is after routineNotAfter")) pure
+    (mkRoutineWindow notBefore notAfter)
 
-instance ToJSON   RoutineDueDTO where toJSON = sumToJSON routineDueSum
-instance FromJSON RoutineDueDTO where parseJSON = sumParseJSON routineDueSum
-instance ToSchema RoutineDueDTO where declareNamedSchema _ = sumSchema routineDueSum
+routineWindowProps :: Props
+routineWindowProps = prop @UTCTime "routineNotBefore" <> prop @UTCTime "routineNotAfter"
 
-toDomainRoutineDue :: RoutineDueDTO -> RoutineDue
-toDomainRoutineDue = \case
-  RoutineAnytimeDTO     -> RoutineAnytime
-  RoutineNotBeforeDTO t -> RoutineNotBefore t
-  RoutineNotAfterDTO  t -> RoutineNotAfter t
-  RoutineWithinDTO    w -> RoutineWithin (toDomainRoutineWindow w)
+instance ToJSON RoutineWindowDTO where toJSON (RoutineWindowDTO w) = object (routineWindowPairs w)
+instance FromJSON RoutineWindowDTO where
+  parseJSON = fmap RoutineWindowDTO . exactly "RoutineWindow" routineWindowFields
+instance ToSchema RoutineWindowDTO where
+  declareNamedSchema _ = recordSchema "RoutineWindow" routineWindowProps
+
+newtype RoutineDueDTO = RoutineDueDTO RoutineDue deriving (Show, Eq)
 
 fromDomainRoutineDue :: RoutineDue -> RoutineDueDTO
-fromDomainRoutineDue = \case
-  RoutineAnytime     -> RoutineAnytimeDTO
-  RoutineNotBefore t -> RoutineNotBeforeDTO t
-  RoutineNotAfter  t -> RoutineNotAfterDTO t
-  RoutineWithin    w -> RoutineWithinDTO (fromDomainRoutineWindow w)
+fromDomainRoutineDue = RoutineDueDTO
+toDomainRoutineDue :: RoutineDueDTO -> RoutineDue
+toDomainRoutineDue (RoutineDueDTO x) = x
 
-data IntakeRequestPriorityDTO
-  = EmergencyDTO MustBeSeenByDTO
-  | UrgentDTO    MustBeSeenByDTO
-  | RoutineDTO   RoutineDueDTO
-  deriving (Show, Eq)
+instance ToJSON RoutineDueDTO where
+  toJSON (RoutineDueDTO due) = object $ case due of
+    RoutineAnytime     -> ["type" .= ("routineAnytime" :: Text)]
+    RoutineNotBefore t -> ["type" .= ("routineNotBefore" :: Text), "routineNotBefore" .= t]
+    RoutineNotAfter t  -> ["type" .= ("routineNotAfter" :: Text), "routineNotAfter" .= t]
+    RoutineWithin w    -> ("type" .= ("routineWithin" :: Text)) : routineWindowPairs w
+instance FromJSON RoutineDueDTO where
+  parseJSON = fmap RoutineDueDTO . exactly "RoutineDue" (cases "RoutineDue"
+    [ ("routineAnytime",   pure RoutineAnytime)
+    , ("routineNotBefore", RoutineNotBefore <$> field "routineNotBefore")
+    , ("routineNotAfter",  RoutineNotAfter <$> field "routineNotAfter")
+    , ("routineWithin",    RoutineWithin <$> routineWindowFields)
+    ])
+instance ToSchema RoutineDueDTO where
+  declareNamedSchema _ = sumSchema "RoutineDue"
+    [ Plain "routineAnytime"   []
+    , Plain "routineNotBefore" (prop @UTCTime "routineNotBefore")
+    , Plain "routineNotAfter"  (prop @UTCTime "routineNotAfter")
+    , Plain "routineWithin"    routineWindowProps
+    ]
 
--- Routine's payload is a sum type, so it nests under "routine".
-intakeRequestPrioritySum :: Sum IntakeRequestPriorityDTO
-intakeRequestPrioritySum =
-  Sum "IntakeRequestPriority" [Case emergency, Case urgent, Case routine] $ \case
-    EmergencyDTO d -> put emergency d
-    UrgentDTO    d -> put urgent d
-    RoutineDTO   d -> put routine d
-  where
-    emergency = CaseOf "Emergency" mustBeSeenByCodec EmergencyDTO
-    urgent    = CaseOf "Urgent" mustBeSeenByCodec UrgentDTO
-    routine   = CaseOf "Routine" (key "routine" (\d -> d)) RoutineDTO
-
-instance ToJSON   IntakeRequestPriorityDTO where toJSON = sumToJSON intakeRequestPrioritySum
-instance FromJSON IntakeRequestPriorityDTO where parseJSON = sumParseJSON intakeRequestPrioritySum
-instance ToSchema IntakeRequestPriorityDTO where declareNamedSchema _ = sumSchema intakeRequestPrioritySum
-
-toDomainIntakeRequestPriority :: IntakeRequestPriorityDTO -> IntakeRequestPriority
-toDomainIntakeRequestPriority = \case
-  EmergencyDTO d -> Emergency (toDomainMustBeSeenBy d)
-  UrgentDTO    d -> Urgent (toDomainMustBeSeenBy d)
-  RoutineDTO   d -> Routine (toDomainRoutineDue d)
+newtype IntakeRequestPriorityDTO = IntakeRequestPriorityDTO IntakeRequestPriority deriving (Show, Eq)
 
 fromDomainIntakeRequestPriority :: IntakeRequestPriority -> IntakeRequestPriorityDTO
-fromDomainIntakeRequestPriority = \case
-  Emergency d -> EmergencyDTO (fromDomainMustBeSeenBy d)
-  Urgent    d -> UrgentDTO (fromDomainMustBeSeenBy d)
-  Routine   d -> RoutineDTO (fromDomainRoutineDue d)
+fromDomainIntakeRequestPriority = IntakeRequestPriorityDTO
+toDomainIntakeRequestPriority :: IntakeRequestPriorityDTO -> IntakeRequestPriority
+toDomainIntakeRequestPriority (IntakeRequestPriorityDTO x) = x
+
+-- Routine's payload is a sum type, so it is nested under "routine".
+instance ToJSON IntakeRequestPriorityDTO where
+  toJSON (IntakeRequestPriorityDTO p) = object $ case p of
+    Emergency m -> ("type" .= ("emergency" :: Text)) : mustBeSeenByPairs m
+    Urgent m    -> ("type" .= ("urgent" :: Text)) : mustBeSeenByPairs m
+    Routine due -> ["type" .= ("routine" :: Text), "routine" .= RoutineDueDTO due]
+instance FromJSON IntakeRequestPriorityDTO where
+  parseJSON = fmap IntakeRequestPriorityDTO . exactly "IntakeRequestPriority" (cases "IntakeRequestPriority"
+    [ ("emergency", Emergency <$> mustBeSeenByFields)
+    , ("urgent",    Urgent <$> mustBeSeenByFields)
+    , ("routine",   (\(RoutineDueDTO due) -> Routine due) <$> field "routine")
+    ])
+instance ToSchema IntakeRequestPriorityDTO where
+  declareNamedSchema _ = sumSchema "IntakeRequestPriority"
+    [ Plain "emergency" mustBeSeenByProps
+    , Plain "urgent"    mustBeSeenByProps
+    , Plain "routine"   (prop @RoutineDueDTO "routine")
+    ]
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- INTAKE REQUEST STAGES
--- Each stage's object carries its own keys and every key of the stage it
--- embeds.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data SubmittedIntakeRequestDTO = SubmittedIntakeRequestDTO
-  { id        :: IntakeRequestIdDTO
-  , patientId :: PatientIdDTO
-  , narrative :: Text
-  , createdAt :: UTCTime
-  }
-  deriving (Show, Eq)
+-- ── Submitted ───────────────────────────────────────────────────────────────
 
-submittedIntakeRequestCodec :: Codec SubmittedIntakeRequestDTO SubmittedIntakeRequestDTO
-submittedIntakeRequestCodec = SubmittedIntakeRequestDTO
-  <$> key "id"        (.id)
-  <*> key "patientId" (.patientId)
-  <*> key "narrative" (.narrative)
-  <*> key "createdAt" (.createdAt)
-
-instance ToJSON   SubmittedIntakeRequestDTO where toJSON = recordToJSON submittedIntakeRequestCodec
-instance FromJSON SubmittedIntakeRequestDTO where
-  parseJSON = recordParseJSON "SubmittedIntakeRequest" submittedIntakeRequestCodec
-instance ToSchema SubmittedIntakeRequestDTO where
-  declareNamedSchema _ = recordSchema "SubmittedIntakeRequest" submittedIntakeRequestCodec
-
-toDomainSubmittedIntakeRequest :: SubmittedIntakeRequestDTO -> SubmittedIntakeRequest
-toDomainSubmittedIntakeRequest s = SubmittedIntakeRequest
-  { id        = toDomainIntakeRequestId s.id
-  , patientId = toDomainPatientId s.patientId
-  , narrative = s.narrative
-  , createdAt = s.createdAt
-  }
+newtype SubmittedIntakeRequestDTO = SubmittedIntakeRequestDTO SubmittedIntakeRequest deriving (Show, Eq)
 
 fromDomainSubmittedIntakeRequest :: SubmittedIntakeRequest -> SubmittedIntakeRequestDTO
-fromDomainSubmittedIntakeRequest s = SubmittedIntakeRequestDTO
-  { id        = fromDomainIntakeRequestId s.id
-  , patientId = fromDomainPatientId s.patientId
-  , narrative = s.narrative
-  , createdAt = s.createdAt
-  }
+fromDomainSubmittedIntakeRequest = SubmittedIntakeRequestDTO
+toDomainSubmittedIntakeRequest :: SubmittedIntakeRequestDTO -> SubmittedIntakeRequest
+toDomainSubmittedIntakeRequest (SubmittedIntakeRequestDTO x) = x
 
-data RejectedIntakeRequestDTO = RejectedIntakeRequestDTO
-  { submitted       :: SubmittedIntakeRequestDTO
-  , rejectedAt      :: UTCTime
-  , rejectionReason :: Text
-  }
-  deriving (Show, Eq)
+submittedPairs :: SubmittedIntakeRequest -> [Pair]
+submittedPairs s =
+  [ "id"        .= IntakeRequestIdDTO s.id
+  , "patientId" .= PatientIdDTO s.patientId
+  , "narrative" .= s.narrative
+  , "createdAt" .= s.createdAt
+  ]
 
-rejectedIntakeRequestCodec :: Codec RejectedIntakeRequestDTO RejectedIntakeRequestDTO
-rejectedIntakeRequestCodec = RejectedIntakeRequestDTO
-  <$> embed (.submitted) submittedIntakeRequestCodec
-  <*> key "rejectedAt"      (.rejectedAt)
-  <*> key "rejectionReason" (.rejectionReason)
+submittedFields :: Fields SubmittedIntakeRequest
+submittedFields = do
+  IntakeRequestIdDTO id  <- field "id"
+  PatientIdDTO patientId <- field "patientId"
+  narrative              <- field "narrative"
+  createdAt              <- field "createdAt"
+  pure SubmittedIntakeRequest { id, patientId, narrative, createdAt }
 
-instance ToJSON   RejectedIntakeRequestDTO where toJSON = recordToJSON rejectedIntakeRequestCodec
-instance FromJSON RejectedIntakeRequestDTO where
-  parseJSON = recordParseJSON "RejectedIntakeRequest" rejectedIntakeRequestCodec
-instance ToSchema RejectedIntakeRequestDTO where
-  declareNamedSchema _ = recordSchema "RejectedIntakeRequest" rejectedIntakeRequestCodec
+submittedProps :: Props
+submittedProps =
+  prop @IntakeRequestIdDTO "id" <> prop @PatientIdDTO "patientId"
+    <> prop @Text "narrative" <> prop @UTCTime "createdAt"
 
-toDomainRejectedIntakeRequest :: RejectedIntakeRequestDTO -> RejectedIntakeRequest
-toDomainRejectedIntakeRequest r = RejectedIntakeRequest
-  { submitted       = toDomainSubmittedIntakeRequest r.submitted
-  , rejectedAt      = r.rejectedAt
-  , rejectionReason = r.rejectionReason
-  }
+instance ToJSON SubmittedIntakeRequestDTO where
+  toJSON (SubmittedIntakeRequestDTO s) = object (submittedPairs s)
+instance FromJSON SubmittedIntakeRequestDTO where
+  parseJSON = fmap SubmittedIntakeRequestDTO . exactly "SubmittedIntakeRequest" submittedFields
+instance ToSchema SubmittedIntakeRequestDTO where
+  declareNamedSchema _ = recordSchema "SubmittedIntakeRequest" submittedProps
+
+-- ── Rejected ────────────────────────────────────────────────────────────────
+
+newtype RejectedIntakeRequestDTO = RejectedIntakeRequestDTO RejectedIntakeRequest deriving (Show, Eq)
 
 fromDomainRejectedIntakeRequest :: RejectedIntakeRequest -> RejectedIntakeRequestDTO
-fromDomainRejectedIntakeRequest r = RejectedIntakeRequestDTO
-  { submitted       = fromDomainSubmittedIntakeRequest r.submitted
-  , rejectedAt      = r.rejectedAt
-  , rejectionReason = r.rejectionReason
-  }
+fromDomainRejectedIntakeRequest = RejectedIntakeRequestDTO
+toDomainRejectedIntakeRequest :: RejectedIntakeRequestDTO -> RejectedIntakeRequest
+toDomainRejectedIntakeRequest (RejectedIntakeRequestDTO x) = x
 
-data TriagedIntakeRequestDTO = TriagedIntakeRequestDTO
-  { submitted           :: SubmittedIntakeRequestDTO
-  , healthcareServiceId :: HealthcareServiceIdDTO
-  , priority            :: IntakeRequestPriorityDTO
-  , doctorRequirement   :: DoctorRequirementDTO
-  , triagedAt           :: UTCTime
-  }
-  deriving (Show, Eq)
+rejectedPairs :: RejectedIntakeRequest -> [Pair]
+rejectedPairs r =
+  submittedPairs r.submitted
+    <> ["rejectedAt" .= r.rejectedAt, "rejectionReason" .= r.rejectionReason]
 
-triagedIntakeRequestCodec :: Codec TriagedIntakeRequestDTO TriagedIntakeRequestDTO
-triagedIntakeRequestCodec = TriagedIntakeRequestDTO
-  <$> embed (.submitted) submittedIntakeRequestCodec
-  <*> key "healthcareServiceId" (.healthcareServiceId)
-  <*> key "priority"            (.priority)
-  <*> key "doctorRequirement"   (.doctorRequirement)
-  <*> key "triagedAt"           (.triagedAt)
+rejectedFields :: Fields RejectedIntakeRequest
+rejectedFields = do
+  submitted       <- submittedFields
+  rejectedAt      <- field "rejectedAt"
+  rejectionReason <- field "rejectionReason"
+  pure RejectedIntakeRequest { submitted, rejectedAt, rejectionReason }
 
-instance ToJSON   TriagedIntakeRequestDTO where toJSON = recordToJSON triagedIntakeRequestCodec
-instance FromJSON TriagedIntakeRequestDTO where
-  parseJSON = recordParseJSON "TriagedIntakeRequest" triagedIntakeRequestCodec
-instance ToSchema TriagedIntakeRequestDTO where
-  declareNamedSchema _ = recordSchema "TriagedIntakeRequest" triagedIntakeRequestCodec
+rejectedProps :: Props
+rejectedProps = submittedProps <> prop @UTCTime "rejectedAt" <> prop @Text "rejectionReason"
 
-toDomainTriagedIntakeRequest :: TriagedIntakeRequestDTO -> TriagedIntakeRequest
-toDomainTriagedIntakeRequest t = TriagedIntakeRequest
-  { submitted           = toDomainSubmittedIntakeRequest t.submitted
-  , healthcareServiceId = toDomainHealthcareServiceId t.healthcareServiceId
-  , priority            = toDomainIntakeRequestPriority t.priority
-  , doctorRequirement   = toDomainDoctorRequirement t.doctorRequirement
-  , triagedAt           = t.triagedAt
-  }
+instance ToJSON RejectedIntakeRequestDTO where
+  toJSON (RejectedIntakeRequestDTO r) = object (rejectedPairs r)
+instance FromJSON RejectedIntakeRequestDTO where
+  parseJSON = fmap RejectedIntakeRequestDTO . exactly "RejectedIntakeRequest" rejectedFields
+instance ToSchema RejectedIntakeRequestDTO where
+  declareNamedSchema _ = recordSchema "RejectedIntakeRequest" rejectedProps
+
+-- ── Triaged ─────────────────────────────────────────────────────────────────
+
+newtype TriagedIntakeRequestDTO = TriagedIntakeRequestDTO TriagedIntakeRequest deriving (Show, Eq)
 
 fromDomainTriagedIntakeRequest :: TriagedIntakeRequest -> TriagedIntakeRequestDTO
-fromDomainTriagedIntakeRequest t = TriagedIntakeRequestDTO
-  { submitted           = fromDomainSubmittedIntakeRequest t.submitted
-  , healthcareServiceId = fromDomainHealthcareServiceId t.healthcareServiceId
-  , priority            = fromDomainIntakeRequestPriority t.priority
-  , doctorRequirement   = fromDomainDoctorRequirement t.doctorRequirement
-  , triagedAt           = t.triagedAt
-  }
+fromDomainTriagedIntakeRequest = TriagedIntakeRequestDTO
+toDomainTriagedIntakeRequest :: TriagedIntakeRequestDTO -> TriagedIntakeRequest
+toDomainTriagedIntakeRequest (TriagedIntakeRequestDTO x) = x
 
-data AppointedIntakeRequestDTO = AppointedIntakeRequestDTO
-  { triaged  :: TriagedIntakeRequestDTO
-  , doctorId :: DoctorIdDTO
-  , start    :: UTCTime
-  , duration :: DurationDTO
-  }
-  deriving (Show, Eq)
+triagedPairs :: TriagedIntakeRequest -> [Pair]
+triagedPairs t =
+  submittedPairs t.submitted <>
+    [ "healthcareServiceId" .= HealthcareServiceIdDTO t.healthcareServiceId
+    , "priority"            .= IntakeRequestPriorityDTO t.priority
+    , "doctorRequirement"   .= DoctorRequirementDTO t.doctorRequirement
+    , "triagedAt"           .= t.triagedAt
+    ]
 
-appointedIntakeRequestCodec :: Codec AppointedIntakeRequestDTO AppointedIntakeRequestDTO
-appointedIntakeRequestCodec = AppointedIntakeRequestDTO
-  <$> embed (.triaged) triagedIntakeRequestCodec
-  <*> key "doctorId" (.doctorId)
-  <*> key "start"    (.start)
-  <*> key "duration" (.duration)
+triagedFields :: Fields TriagedIntakeRequest
+triagedFields = do
+  submitted                                  <- submittedFields
+  HealthcareServiceIdDTO healthcareServiceId <- field "healthcareServiceId"
+  IntakeRequestPriorityDTO priority          <- field "priority"
+  DoctorRequirementDTO doctorRequirement     <- field "doctorRequirement"
+  triagedAt                                  <- field "triagedAt"
+  pure TriagedIntakeRequest { submitted, healthcareServiceId, priority, doctorRequirement, triagedAt }
 
-instance ToJSON   AppointedIntakeRequestDTO where toJSON = recordToJSON appointedIntakeRequestCodec
-instance FromJSON AppointedIntakeRequestDTO where
-  parseJSON = recordParseJSON "AppointedIntakeRequest" appointedIntakeRequestCodec
-instance ToSchema AppointedIntakeRequestDTO where
-  declareNamedSchema _ = recordSchema "AppointedIntakeRequest" appointedIntakeRequestCodec
+triagedProps :: Props
+triagedProps =
+  submittedProps
+    <> prop @HealthcareServiceIdDTO "healthcareServiceId"
+    <> prop @IntakeRequestPriorityDTO "priority"
+    <> prop @DoctorRequirementDTO "doctorRequirement"
+    <> prop @UTCTime "triagedAt"
 
-toDomainAppointedIntakeRequest :: AppointedIntakeRequestDTO -> AppointedIntakeRequest
-toDomainAppointedIntakeRequest a = AppointedIntakeRequest
-  { triaged  = toDomainTriagedIntakeRequest a.triaged
-  , doctorId = toDomainDoctorId a.doctorId
-  , start    = a.start
-  , duration = toDomainDuration a.duration
-  }
+instance ToJSON TriagedIntakeRequestDTO where
+  toJSON (TriagedIntakeRequestDTO t) = object (triagedPairs t)
+instance FromJSON TriagedIntakeRequestDTO where
+  parseJSON = fmap TriagedIntakeRequestDTO . exactly "TriagedIntakeRequest" triagedFields
+instance ToSchema TriagedIntakeRequestDTO where
+  declareNamedSchema _ = recordSchema "TriagedIntakeRequest" triagedProps
+
+-- ── Appointed ───────────────────────────────────────────────────────────────
+
+newtype AppointedIntakeRequestDTO = AppointedIntakeRequestDTO AppointedIntakeRequest deriving (Show, Eq)
 
 fromDomainAppointedIntakeRequest :: AppointedIntakeRequest -> AppointedIntakeRequestDTO
-fromDomainAppointedIntakeRequest a = AppointedIntakeRequestDTO
-  { triaged  = fromDomainTriagedIntakeRequest a.triaged
-  , doctorId = fromDomainDoctorId a.doctorId
-  , start    = a.start
-  , duration = fromDomainDuration a.duration
-  }
+fromDomainAppointedIntakeRequest = AppointedIntakeRequestDTO
+toDomainAppointedIntakeRequest :: AppointedIntakeRequestDTO -> AppointedIntakeRequest
+toDomainAppointedIntakeRequest (AppointedIntakeRequestDTO x) = x
 
--- Each case carries a stage, so where it is a field it is flattened:
--- WithdrawnIntakeRequest keeps {"withdrawnFrom": {"type": …}} and the
--- stage's keys join its object.
-data WithdrawnFromDTO
-  = FromSubmittedDTO SubmittedIntakeRequestDTO
-  | FromAcceptedDTO  TriagedIntakeRequestDTO
-  deriving (Show, Eq)
+appointedPairs :: AppointedIntakeRequest -> [Pair]
+appointedPairs a =
+  triagedPairs a.triaged <>
+    [ "doctorId" .= DoctorIdDTO a.doctorId
+    , "start"    .= a.start
+    , "duration" .= DurationDTO a.duration
+    ]
 
-withdrawnFromSum :: Sum WithdrawnFromDTO
-withdrawnFromSum = Sum "WithdrawnFrom" [Case fromSubmitted, Case fromAccepted] $ \case
-    FromSubmittedDTO s -> put fromSubmitted s
-    FromAcceptedDTO  t -> put fromAccepted t
-  where
-    fromSubmitted = CaseOf "FromSubmitted" submittedIntakeRequestCodec FromSubmittedDTO
-    fromAccepted  = CaseOf "FromAccepted" triagedIntakeRequestCodec FromAcceptedDTO
+appointedFields :: Fields AppointedIntakeRequest
+appointedFields = do
+  triaged              <- triagedFields
+  DoctorIdDTO doctorId <- field "doctorId"
+  start                <- field "start"
+  DurationDTO duration <- field "duration"
+  pure AppointedIntakeRequest { triaged, doctorId, start, duration }
 
-instance ToJSON   WithdrawnFromDTO where toJSON = sumToJSON withdrawnFromSum
-instance FromJSON WithdrawnFromDTO where parseJSON = sumParseJSON withdrawnFromSum
-instance ToSchema WithdrawnFromDTO where declareNamedSchema _ = sumSchema withdrawnFromSum
+appointedProps :: Props
+appointedProps =
+  triagedProps <> prop @DoctorIdDTO "doctorId" <> prop @UTCTime "start" <> prop @DurationDTO "duration"
 
-toDomainWithdrawnFrom :: WithdrawnFromDTO -> WithdrawnFrom
-toDomainWithdrawnFrom = \case
-  FromSubmittedDTO s -> FromSubmitted (toDomainSubmittedIntakeRequest s)
-  FromAcceptedDTO  t -> FromAccepted (toDomainTriagedIntakeRequest t)
+instance ToJSON AppointedIntakeRequestDTO where
+  toJSON (AppointedIntakeRequestDTO a) = object (appointedPairs a)
+instance FromJSON AppointedIntakeRequestDTO where
+  parseJSON = fmap AppointedIntakeRequestDTO . exactly "AppointedIntakeRequest" appointedFields
+instance ToSchema AppointedIntakeRequestDTO where
+  declareNamedSchema _ = recordSchema "AppointedIntakeRequest" appointedProps
+
+-- ── WithdrawnFrom ───────────────────────────────────────────────────────────
+
+newtype WithdrawnFromDTO = WithdrawnFromDTO WithdrawnFrom deriving (Show, Eq)
 
 fromDomainWithdrawnFrom :: WithdrawnFrom -> WithdrawnFromDTO
-fromDomainWithdrawnFrom = \case
-  FromSubmitted s -> FromSubmittedDTO (fromDomainSubmittedIntakeRequest s)
-  FromAccepted  t -> FromAcceptedDTO (fromDomainTriagedIntakeRequest t)
+fromDomainWithdrawnFrom = WithdrawnFromDTO
+toDomainWithdrawnFrom :: WithdrawnFromDTO -> WithdrawnFrom
+toDomainWithdrawnFrom (WithdrawnFromDTO x) = x
 
-data WithdrawnIntakeRequestDTO = WithdrawnIntakeRequestDTO
-  { withdrawnFrom  :: WithdrawnFromDTO
-  , withdrawnAt    :: UTCTime
-  , withdrawalNote :: Maybe Text
-  }
-  deriving (Show, Eq)
+withdrawnFromTag :: WithdrawnFrom -> Text
+withdrawnFromTag = \case
+  FromSubmitted _ -> "fromSubmitted"
+  FromAccepted _  -> "fromAccepted"
 
-withdrawnIntakeRequestCodec :: Codec WithdrawnIntakeRequestDTO WithdrawnIntakeRequestDTO
-withdrawnIntakeRequestCodec = WithdrawnIntakeRequestDTO
-  <$> flattenStages "withdrawnFrom" (.withdrawnFrom) withdrawnFromSum
-  <*> key "withdrawnAt"            (.withdrawnAt)
-  <*> nullableKey "withdrawalNote" (.withdrawalNote)
+-- The stage each case carries.
+withdrawnFromStagePairs :: WithdrawnFrom -> [Pair]
+withdrawnFromStagePairs = \case
+  FromSubmitted s -> submittedPairs s
+  FromAccepted t  -> triagedPairs t
 
-instance ToJSON   WithdrawnIntakeRequestDTO where toJSON = recordToJSON withdrawnIntakeRequestCodec
-instance FromJSON WithdrawnIntakeRequestDTO where
-  parseJSON = recordParseJSON "WithdrawnIntakeRequest" withdrawnIntakeRequestCodec
-instance ToSchema WithdrawnIntakeRequestDTO where
-  declareNamedSchema _ = recordSchema "WithdrawnIntakeRequest" withdrawnIntakeRequestCodec
+withdrawnFromStageFields :: Text -> Fields WithdrawnFrom
+withdrawnFromStageFields = \case
+  "fromSubmitted" -> FromSubmitted <$> submittedFields
+  "fromAccepted"  -> FromAccepted <$> triagedFields
+  other           -> liftParser (fail ("unknown WithdrawnFrom type " <> show other))
 
-toDomainWithdrawnIntakeRequest :: WithdrawnIntakeRequestDTO -> WithdrawnIntakeRequest
-toDomainWithdrawnIntakeRequest w = WithdrawnIntakeRequest
-  { withdrawnFrom  = toDomainWithdrawnFrom w.withdrawnFrom
-  , withdrawnAt    = w.withdrawnAt
-  , withdrawalNote = w.withdrawalNote
-  }
+withdrawnFromStageProps :: [(Text, Props)]
+withdrawnFromStageProps = [("fromSubmitted", submittedProps), ("fromAccepted", triagedProps)]
+
+instance ToJSON WithdrawnFromDTO where
+  toJSON (WithdrawnFromDTO w) = object (("type" .= withdrawnFromTag w) : withdrawnFromStagePairs w)
+instance FromJSON WithdrawnFromDTO where
+  parseJSON = fmap WithdrawnFromDTO . exactly "WithdrawnFrom" (field "type" >>= withdrawnFromStageFields)
+instance ToSchema WithdrawnFromDTO where
+  declareNamedSchema _ =
+    sumSchema "WithdrawnFrom" [ Plain tag props | (tag, props) <- withdrawnFromStageProps ]
+
+-- ── Withdrawn ───────────────────────────────────────────────────────────────
+
+-- withdrawnFrom's cases each carry a stage: the stage's fields join the
+-- object, and "withdrawnFrom" keeps only {"type": <case>}.
+newtype WithdrawnIntakeRequestDTO = WithdrawnIntakeRequestDTO WithdrawnIntakeRequest deriving (Show, Eq)
 
 fromDomainWithdrawnIntakeRequest :: WithdrawnIntakeRequest -> WithdrawnIntakeRequestDTO
-fromDomainWithdrawnIntakeRequest w = WithdrawnIntakeRequestDTO
-  { withdrawnFrom  = fromDomainWithdrawnFrom w.withdrawnFrom
-  , withdrawnAt    = w.withdrawnAt
-  , withdrawalNote = w.withdrawalNote
-  }
+fromDomainWithdrawnIntakeRequest = WithdrawnIntakeRequestDTO
+toDomainWithdrawnIntakeRequest :: WithdrawnIntakeRequestDTO -> WithdrawnIntakeRequest
+toDomainWithdrawnIntakeRequest (WithdrawnIntakeRequestDTO x) = x
 
-data StaleIntakeRequestDTO = StaleIntakeRequestDTO
-  { triaged :: TriagedIntakeRequestDTO
-  , staleAt :: UTCTime
-  }
-  deriving (Show, Eq)
+withdrawnPairs :: WithdrawnIntakeRequest -> [Pair]
+withdrawnPairs w =
+  withdrawnFromStagePairs w.withdrawnFrom <>
+    [ "withdrawnFrom"  .= object ["type" .= withdrawnFromTag w.withdrawnFrom]
+    , "withdrawnAt"    .= w.withdrawnAt
+    , "withdrawalNote" .= w.withdrawalNote
+    ]
 
-staleIntakeRequestCodec :: Codec StaleIntakeRequestDTO StaleIntakeRequestDTO
-staleIntakeRequestCodec = StaleIntakeRequestDTO
-  <$> embed (.triaged) triagedIntakeRequestCodec
-  <*> key "staleAt" (.staleAt)
+withdrawnFields :: Fields WithdrawnIntakeRequest
+withdrawnFields = do
+  fromTag        <- field "withdrawnFrom" >>= liftParser . exactly "withdrawnFrom" (field "type")
+  withdrawnFrom  <- withdrawnFromStageFields fromTag
+  withdrawnAt    <- field "withdrawnAt"
+  withdrawalNote <- field "withdrawalNote"
+  pure WithdrawnIntakeRequest { withdrawnFrom, withdrawnAt, withdrawalNote }
 
-instance ToJSON   StaleIntakeRequestDTO where toJSON = recordToJSON staleIntakeRequestCodec
-instance FromJSON StaleIntakeRequestDTO where
-  parseJSON = recordParseJSON "StaleIntakeRequest" staleIntakeRequestCodec
-instance ToSchema StaleIntakeRequestDTO where
-  declareNamedSchema _ = recordSchema "StaleIntakeRequest" staleIntakeRequestCodec
+-- One variant per withdrawnFrom case.
+withdrawnVariants :: [(Text, Props)]
+withdrawnVariants =
+  [ ( fromTag
+    , stageProps
+        <> [("withdrawnFrom", Inline <$> objectSchema (tagProp fromTag))]
+        <> prop @UTCTime "withdrawnAt"
+        <> nullableText "withdrawalNote" )
+  | (fromTag, stageProps) <- withdrawnFromStageProps ]
 
-toDomainStaleIntakeRequest :: StaleIntakeRequestDTO -> StaleIntakeRequest
-toDomainStaleIntakeRequest s = StaleIntakeRequest
-  { triaged = toDomainTriagedIntakeRequest s.triaged, staleAt = s.staleAt }
+instance ToJSON WithdrawnIntakeRequestDTO where
+  toJSON (WithdrawnIntakeRequestDTO w) = object (withdrawnPairs w)
+instance FromJSON WithdrawnIntakeRequestDTO where
+  parseJSON = fmap WithdrawnIntakeRequestDTO . exactly "WithdrawnIntakeRequest" withdrawnFields
+instance ToSchema WithdrawnIntakeRequestDTO where
+  declareNamedSchema _ = variantsSchema "WithdrawnIntakeRequest" withdrawnVariants
+
+-- ── Stale ───────────────────────────────────────────────────────────────────
+
+newtype StaleIntakeRequestDTO = StaleIntakeRequestDTO StaleIntakeRequest deriving (Show, Eq)
 
 fromDomainStaleIntakeRequest :: StaleIntakeRequest -> StaleIntakeRequestDTO
-fromDomainStaleIntakeRequest s = StaleIntakeRequestDTO
-  { triaged = fromDomainTriagedIntakeRequest s.triaged, staleAt = s.staleAt }
+fromDomainStaleIntakeRequest = StaleIntakeRequestDTO
+toDomainStaleIntakeRequest :: StaleIntakeRequestDTO -> StaleIntakeRequest
+toDomainStaleIntakeRequest (StaleIntakeRequestDTO x) = x
 
--- ═══════════════════════════════════════════════════════════════════════════
--- CLOSING
--- ═══════════════════════════════════════════════════════════════════════════
+stalePairs :: StaleIntakeRequest -> [Pair]
+stalePairs s = triagedPairs s.triaged <> ["staleAt" .= s.staleAt]
 
-data AppointmentPartyDTO
-  = DoctorPartyDTO
-  | PatientPartyDTO
-  deriving (Show, Eq, Enum, Bounded)
+staleFields :: Fields StaleIntakeRequest
+staleFields = do
+  triaged <- triagedFields
+  staleAt <- field "staleAt"
+  pure StaleIntakeRequest { triaged, staleAt }
 
-appointmentPartyConstructor :: AppointmentPartyDTO -> Text
-appointmentPartyConstructor = \case
-  DoctorPartyDTO  -> "DoctorParty"
-  PatientPartyDTO -> "PatientParty"
+staleProps :: Props
+staleProps = triagedProps <> prop @UTCTime "staleAt"
 
-instance ToJSON   AppointmentPartyDTO where toJSON = enumToJSON appointmentPartyConstructor
-instance FromJSON AppointmentPartyDTO where
-  parseJSON = enumParseJSON "AppointmentParty" appointmentPartyConstructor
-instance ToSchema AppointmentPartyDTO where
-  declareNamedSchema _ = enumSchema "AppointmentParty" appointmentPartyConstructor
+instance ToJSON StaleIntakeRequestDTO where
+  toJSON (StaleIntakeRequestDTO s) = object (stalePairs s)
+instance FromJSON StaleIntakeRequestDTO where
+  parseJSON = fmap StaleIntakeRequestDTO . exactly "StaleIntakeRequest" staleFields
+instance ToSchema StaleIntakeRequestDTO where
+  declareNamedSchema _ = recordSchema "StaleIntakeRequest" staleProps
 
-toDomainAppointmentParty :: AppointmentPartyDTO -> AppointmentParty
-toDomainAppointmentParty = \case
-  DoctorPartyDTO  -> DoctorParty
-  PatientPartyDTO -> PatientParty
+-- ── AppointmentParty / Cancellation / Absence / CloseReason ────────────────
+
+newtype AppointmentPartyDTO = AppointmentPartyDTO AppointmentParty deriving (Show, Eq)
 
 fromDomainAppointmentParty :: AppointmentParty -> AppointmentPartyDTO
-fromDomainAppointmentParty = \case
-  DoctorParty  -> DoctorPartyDTO
-  PatientParty -> PatientPartyDTO
+fromDomainAppointmentParty = AppointmentPartyDTO
+toDomainAppointmentParty :: AppointmentPartyDTO -> AppointmentParty
+toDomainAppointmentParty (AppointmentPartyDTO x) = x
 
-data CancellationDTO = CancellationDTO
-  { cancelledBy      :: AppointmentPartyDTO
-  , cancelledAt      :: UTCTime
-  , cancellationNote :: Maybe Text
-  }
-  deriving (Show, Eq)
+instance ToJSON AppointmentPartyDTO where toJSON (AppointmentPartyDTO p) = object (enumPairs p)
+instance FromJSON AppointmentPartyDTO where
+  parseJSON = fmap AppointmentPartyDTO . exactly "AppointmentParty" (enumFields "AppointmentParty")
+instance ToSchema AppointmentPartyDTO where
+  declareNamedSchema _ = pure (enumSchema "AppointmentParty" (Proxy @AppointmentParty))
 
-cancellationCodec :: Codec CancellationDTO CancellationDTO
-cancellationCodec = CancellationDTO
-  <$> key "cancelledBy"              (.cancelledBy)
-  <*> key "cancelledAt"              (.cancelledAt)
-  <*> nullableKey "cancellationNote" (.cancellationNote)
-
-instance ToJSON   CancellationDTO where toJSON = recordToJSON cancellationCodec
-instance FromJSON CancellationDTO where parseJSON = recordParseJSON "Cancellation" cancellationCodec
-instance ToSchema CancellationDTO where declareNamedSchema _ = recordSchema "Cancellation" cancellationCodec
-
-toDomainCancellation :: CancellationDTO -> Cancellation
-toDomainCancellation c = Cancellation
-  { cancelledBy      = toDomainAppointmentParty c.cancelledBy
-  , cancelledAt      = c.cancelledAt
-  , cancellationNote = c.cancellationNote
-  }
+newtype CancellationDTO = CancellationDTO Cancellation deriving (Show, Eq)
 
 fromDomainCancellation :: Cancellation -> CancellationDTO
-fromDomainCancellation c = CancellationDTO
-  { cancelledBy      = fromDomainAppointmentParty c.cancelledBy
-  , cancelledAt      = c.cancelledAt
-  , cancellationNote = c.cancellationNote
-  }
+fromDomainCancellation = CancellationDTO
+toDomainCancellation :: CancellationDTO -> Cancellation
+toDomainCancellation (CancellationDTO x) = x
 
-newtype AbsenceDTO = AbsenceDTO
-  { absentParty :: AppointmentPartyDTO
-  }
-  deriving (Show, Eq)
+cancellationPairs :: Cancellation -> [Pair]
+cancellationPairs c =
+  [ "cancelledBy"      .= AppointmentPartyDTO c.cancelledBy
+  , "cancelledAt"      .= c.cancelledAt
+  , "cancellationNote" .= c.cancellationNote
+  ]
 
-absenceCodec :: Codec AbsenceDTO AbsenceDTO
-absenceCodec = AbsenceDTO <$> key "absentParty" (.absentParty)
+cancellationFields :: Fields Cancellation
+cancellationFields = do
+  AppointmentPartyDTO cancelledBy <- field "cancelledBy"
+  cancelledAt                     <- field "cancelledAt"
+  cancellationNote                <- field "cancellationNote"
+  pure Cancellation { cancelledBy, cancelledAt, cancellationNote }
 
-instance ToJSON   AbsenceDTO where toJSON = recordToJSON absenceCodec
-instance FromJSON AbsenceDTO where parseJSON = recordParseJSON "Absence" absenceCodec
-instance ToSchema AbsenceDTO where declareNamedSchema _ = recordSchema "Absence" absenceCodec
+cancellationProps :: Props
+cancellationProps =
+  prop @AppointmentPartyDTO "cancelledBy" <> prop @UTCTime "cancelledAt" <> nullableText "cancellationNote"
 
-toDomainAbsence :: AbsenceDTO -> Absence
-toDomainAbsence a = Absence { absentParty = toDomainAppointmentParty a.absentParty }
+instance ToJSON CancellationDTO where toJSON (CancellationDTO c) = object (cancellationPairs c)
+instance FromJSON CancellationDTO where
+  parseJSON = fmap CancellationDTO . exactly "Cancellation" cancellationFields
+instance ToSchema CancellationDTO where
+  declareNamedSchema _ = recordSchema "Cancellation" cancellationProps
+
+newtype AbsenceDTO = AbsenceDTO Absence deriving (Show, Eq)
 
 fromDomainAbsence :: Absence -> AbsenceDTO
-fromDomainAbsence a = AbsenceDTO { absentParty = fromDomainAppointmentParty a.absentParty }
+fromDomainAbsence = AbsenceDTO
+toDomainAbsence :: AbsenceDTO -> Absence
+toDomainAbsence (AbsenceDTO x) = x
 
-data CloseReasonDTO
-  = CompletedDTO
-  | CancelledDTO CancellationDTO
-  | NoShowDTO    AbsenceDTO
-  deriving (Show, Eq)
+absencePairs :: Absence -> [Pair]
+absencePairs a = ["absentParty" .= AppointmentPartyDTO a.absentParty]
 
-closeReasonSum :: Sum CloseReasonDTO
-closeReasonSum = Sum "CloseReason" [Case completed, Case cancelled, Case noShow] $ \case
-    CompletedDTO   -> put completed ()
-    CancelledDTO c -> put cancelled c
-    NoShowDTO    a -> put noShow a
-  where
-    completed = CaseOf "Completed" (pure ()) (const CompletedDTO)
-    cancelled = CaseOf "Cancelled" cancellationCodec CancelledDTO
-    noShow    = CaseOf "NoShow" absenceCodec NoShowDTO
+absenceFields :: Fields Absence
+absenceFields = (\(AppointmentPartyDTO absentParty) -> Absence { absentParty }) <$> field "absentParty"
 
-instance ToJSON   CloseReasonDTO where toJSON = sumToJSON closeReasonSum
-instance FromJSON CloseReasonDTO where parseJSON = sumParseJSON closeReasonSum
-instance ToSchema CloseReasonDTO where declareNamedSchema _ = sumSchema closeReasonSum
+absenceProps :: Props
+absenceProps = prop @AppointmentPartyDTO "absentParty"
 
-toDomainCloseReason :: CloseReasonDTO -> CloseReason
-toDomainCloseReason = \case
-  CompletedDTO   -> Completed
-  CancelledDTO c -> Cancelled (toDomainCancellation c)
-  NoShowDTO    a -> NoShow (toDomainAbsence a)
+instance ToJSON AbsenceDTO where toJSON (AbsenceDTO a) = object (absencePairs a)
+instance FromJSON AbsenceDTO where parseJSON = fmap AbsenceDTO . exactly "Absence" absenceFields
+instance ToSchema AbsenceDTO where declareNamedSchema _ = recordSchema "Absence" absenceProps
+
+newtype CloseReasonDTO = CloseReasonDTO CloseReason deriving (Show, Eq)
 
 fromDomainCloseReason :: CloseReason -> CloseReasonDTO
-fromDomainCloseReason = \case
-  Completed   -> CompletedDTO
-  Cancelled c -> CancelledDTO (fromDomainCancellation c)
-  NoShow    a -> NoShowDTO (fromDomainAbsence a)
+fromDomainCloseReason = CloseReasonDTO
+toDomainCloseReason :: CloseReasonDTO -> CloseReason
+toDomainCloseReason (CloseReasonDTO x) = x
 
-data ClosedIntakeRequestDTO = ClosedIntakeRequestDTO
-  { appointed   :: AppointedIntakeRequestDTO
-  , closeReason :: CloseReasonDTO
-  }
-  deriving (Show, Eq)
+instance ToJSON CloseReasonDTO where
+  toJSON (CloseReasonDTO r) = object $ case r of
+    Completed   -> ["type" .= ("completed" :: Text)]
+    Cancelled c -> ("type" .= ("cancelled" :: Text)) : cancellationPairs c
+    NoShow a    -> ("type" .= ("noShow" :: Text)) : absencePairs a
+instance FromJSON CloseReasonDTO where
+  parseJSON = fmap CloseReasonDTO . exactly "CloseReason" (cases "CloseReason"
+    [ ("completed", pure Completed)
+    , ("cancelled", Cancelled <$> cancellationFields)
+    , ("noShow",    NoShow <$> absenceFields)
+    ])
+instance ToSchema CloseReasonDTO where
+  declareNamedSchema _ = sumSchema "CloseReason"
+    [ Plain "completed" []
+    , Plain "cancelled" cancellationProps
+    , Plain "noShow"    absenceProps
+    ]
 
-closedIntakeRequestCodec :: Codec ClosedIntakeRequestDTO ClosedIntakeRequestDTO
-closedIntakeRequestCodec = ClosedIntakeRequestDTO
-  <$> embed (.appointed) appointedIntakeRequestCodec
-  <*> key "closeReason" (.closeReason)
+-- ── Closed ──────────────────────────────────────────────────────────────────
 
-instance ToJSON   ClosedIntakeRequestDTO where toJSON = recordToJSON closedIntakeRequestCodec
-instance FromJSON ClosedIntakeRequestDTO where
-  parseJSON = recordParseJSON "ClosedIntakeRequest" closedIntakeRequestCodec
-instance ToSchema ClosedIntakeRequestDTO where
-  declareNamedSchema _ = recordSchema "ClosedIntakeRequest" closedIntakeRequestCodec
-
-toDomainClosedIntakeRequest :: ClosedIntakeRequestDTO -> ClosedIntakeRequest
-toDomainClosedIntakeRequest c = ClosedIntakeRequest
-  { appointed = toDomainAppointedIntakeRequest c.appointed, closeReason = toDomainCloseReason c.closeReason }
+newtype ClosedIntakeRequestDTO = ClosedIntakeRequestDTO ClosedIntakeRequest deriving (Show, Eq)
 
 fromDomainClosedIntakeRequest :: ClosedIntakeRequest -> ClosedIntakeRequestDTO
-fromDomainClosedIntakeRequest c = ClosedIntakeRequestDTO
-  { appointed = fromDomainAppointedIntakeRequest c.appointed, closeReason = fromDomainCloseReason c.closeReason }
+fromDomainClosedIntakeRequest = ClosedIntakeRequestDTO
+toDomainClosedIntakeRequest :: ClosedIntakeRequestDTO -> ClosedIntakeRequest
+toDomainClosedIntakeRequest (ClosedIntakeRequestDTO x) = x
 
--- ═══════════════════════════════════════════════════════════════════════════
--- INTAKE REQUEST
--- ═══════════════════════════════════════════════════════════════════════════
+closedPairs :: ClosedIntakeRequest -> [Pair]
+closedPairs c = appointedPairs c.appointed <> ["closeReason" .= CloseReasonDTO c.closeReason]
 
-data IntakeRequestDTO
-  = SubmittedDTO SubmittedIntakeRequestDTO
-  | RejectedDTO  RejectedIntakeRequestDTO
-  | AcceptedDTO  TriagedIntakeRequestDTO
-  | AppointedDTO AppointedIntakeRequestDTO
-  | WithdrawnDTO WithdrawnIntakeRequestDTO
-  | StaleDTO     StaleIntakeRequestDTO
-  | ClosedDTO    ClosedIntakeRequestDTO
-  deriving (Show, Eq)
+closedFields :: Fields ClosedIntakeRequest
+closedFields = do
+  appointed                  <- appointedFields
+  CloseReasonDTO closeReason <- field "closeReason"
+  pure ClosedIntakeRequest { appointed, closeReason }
 
-intakeRequestSum :: Sum IntakeRequestDTO
-intakeRequestSum =
-  Sum "IntakeRequest"
-    [ Case submittedCase, Case rejectedCase, Case acceptedCase, Case appointedCase
-    , Case withdrawnCase, Case staleCase, Case closedCase ] $ \case
-    SubmittedDTO r -> put submittedCase r
-    RejectedDTO  r -> put rejectedCase r
-    AcceptedDTO  r -> put acceptedCase r
-    AppointedDTO r -> put appointedCase r
-    WithdrawnDTO r -> put withdrawnCase r
-    StaleDTO     r -> put staleCase r
-    ClosedDTO    r -> put closedCase r
-  where
-    submittedCase = CaseOf "Submitted" submittedIntakeRequestCodec SubmittedDTO
-    rejectedCase  = CaseOf "Rejected" rejectedIntakeRequestCodec RejectedDTO
-    acceptedCase  = CaseOf "Accepted" triagedIntakeRequestCodec AcceptedDTO
-    appointedCase = CaseOf "Appointed" appointedIntakeRequestCodec AppointedDTO
-    withdrawnCase = CaseOf "Withdrawn" withdrawnIntakeRequestCodec WithdrawnDTO
-    staleCase     = CaseOf "Stale" staleIntakeRequestCodec StaleDTO
-    closedCase    = CaseOf "Closed" closedIntakeRequestCodec ClosedDTO
+closedProps :: Props
+closedProps = appointedProps <> prop @CloseReasonDTO "closeReason"
 
-instance ToJSON   IntakeRequestDTO where toJSON = sumToJSON intakeRequestSum
-instance FromJSON IntakeRequestDTO where parseJSON = sumParseJSON intakeRequestSum
-instance ToSchema IntakeRequestDTO where declareNamedSchema _ = sumSchema intakeRequestSum
+instance ToJSON ClosedIntakeRequestDTO where
+  toJSON (ClosedIntakeRequestDTO c) = object (closedPairs c)
+instance FromJSON ClosedIntakeRequestDTO where
+  parseJSON = fmap ClosedIntakeRequestDTO . exactly "ClosedIntakeRequest" closedFields
+instance ToSchema ClosedIntakeRequestDTO where
+  declareNamedSchema _ = recordSchema "ClosedIntakeRequest" closedProps
 
-toDomainIntakeRequest :: IntakeRequestDTO -> IntakeRequest
-toDomainIntakeRequest = \case
-  SubmittedDTO r -> Submitted (toDomainSubmittedIntakeRequest r)
-  RejectedDTO  r -> Rejected (toDomainRejectedIntakeRequest r)
-  AcceptedDTO  r -> Accepted (toDomainTriagedIntakeRequest r)
-  AppointedDTO r -> Appointed (toDomainAppointedIntakeRequest r)
-  WithdrawnDTO r -> Withdrawn (toDomainWithdrawnIntakeRequest r)
-  StaleDTO     r -> Stale (toDomainStaleIntakeRequest r)
-  ClosedDTO    r -> Closed (toDomainClosedIntakeRequest r)
+-- ── IntakeRequest ───────────────────────────────────────────────────────────
+
+newtype IntakeRequestDTO = IntakeRequestDTO IntakeRequest deriving (Show, Eq)
 
 fromDomainIntakeRequest :: IntakeRequest -> IntakeRequestDTO
-fromDomainIntakeRequest = \case
-  Submitted r -> SubmittedDTO (fromDomainSubmittedIntakeRequest r)
-  Rejected  r -> RejectedDTO (fromDomainRejectedIntakeRequest r)
-  Accepted  r -> AcceptedDTO (fromDomainTriagedIntakeRequest r)
-  Appointed r -> AppointedDTO (fromDomainAppointedIntakeRequest r)
-  Withdrawn r -> WithdrawnDTO (fromDomainWithdrawnIntakeRequest r)
-  Stale     r -> StaleDTO (fromDomainStaleIntakeRequest r)
-  Closed    r -> ClosedDTO (fromDomainClosedIntakeRequest r)
+fromDomainIntakeRequest = IntakeRequestDTO
+toDomainIntakeRequest :: IntakeRequestDTO -> IntakeRequest
+toDomainIntakeRequest (IntakeRequestDTO x) = x
+
+instance ToJSON IntakeRequestDTO where
+  toJSON (IntakeRequestDTO r) = object $ case r of
+    Submitted s -> ("type" .= ("submitted" :: Text)) : submittedPairs s
+    Rejected x  -> ("type" .= ("rejected" :: Text))  : rejectedPairs x
+    Accepted t  -> ("type" .= ("accepted" :: Text))  : triagedPairs t
+    Appointed a -> ("type" .= ("appointed" :: Text)) : appointedPairs a
+    Withdrawn w -> ("type" .= ("withdrawn" :: Text)) : withdrawnPairs w
+    Stale s     -> ("type" .= ("stale" :: Text))     : stalePairs s
+    Closed c    -> ("type" .= ("closed" :: Text))    : closedPairs c
+instance FromJSON IntakeRequestDTO where
+  parseJSON = fmap IntakeRequestDTO . exactly "IntakeRequest" (cases "IntakeRequest"
+    [ ("submitted", Submitted <$> submittedFields)
+    , ("rejected",  Rejected <$> rejectedFields)
+    , ("accepted",  Accepted <$> triagedFields)
+    , ("appointed", Appointed <$> appointedFields)
+    , ("withdrawn", Withdrawn <$> withdrawnFields)
+    , ("stale",     Stale <$> staleFields)
+    , ("closed",    Closed <$> closedFields)
+    ])
+instance ToSchema IntakeRequestDTO where
+  declareNamedSchema _ = sumSchema "IntakeRequest"
+    [ Plain    "submitted" submittedProps
+    , Plain    "rejected"  rejectedProps
+    , Plain    "accepted"  triagedProps
+    , Plain    "appointed" appointedProps
+    , Variants "withdrawn" withdrawnVariants
+    , Plain    "stale"     staleProps
+    , Plain    "closed"    closedProps
+    ]
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- SLOT / DOCTOR CALENDAR
 -- ═══════════════════════════════════════════════════════════════════════════
 
-data AvailableSlotDTO = AvailableSlotDTO
-  { id                  :: SlotIdDTO
-  , doctorId            :: DoctorIdDTO
-  , healthcareServiceId :: HealthcareServiceIdDTO
-  , start               :: UTCTime
-  , duration            :: DurationDTO
-  }
-  deriving (Show, Eq)
-
-availableSlotCodec :: Codec AvailableSlotDTO AvailableSlotDTO
-availableSlotCodec = AvailableSlotDTO
-  <$> key "id"                  (.id)
-  <*> key "doctorId"            (.doctorId)
-  <*> key "healthcareServiceId" (.healthcareServiceId)
-  <*> key "start"               (.start)
-  <*> key "duration"            (.duration)
-
-instance ToJSON   AvailableSlotDTO where toJSON = recordToJSON availableSlotCodec
-instance FromJSON AvailableSlotDTO where parseJSON = recordParseJSON "AvailableSlot" availableSlotCodec
-instance ToSchema AvailableSlotDTO where declareNamedSchema _ = recordSchema "AvailableSlot" availableSlotCodec
-
-toDomainAvailableSlot :: AvailableSlotDTO -> AvailableSlot
-toDomainAvailableSlot s = AvailableSlot
-  { id                  = toDomainSlotId s.id
-  , doctorId            = toDomainDoctorId s.doctorId
-  , healthcareServiceId = toDomainHealthcareServiceId s.healthcareServiceId
-  , start               = s.start
-  , duration            = toDomainDuration s.duration
-  }
+newtype AvailableSlotDTO = AvailableSlotDTO AvailableSlot deriving (Show, Eq)
 
 fromDomainAvailableSlot :: AvailableSlot -> AvailableSlotDTO
-fromDomainAvailableSlot s = AvailableSlotDTO
-  { id                  = fromDomainSlotId s.id
-  , doctorId            = fromDomainDoctorId s.doctorId
-  , healthcareServiceId = fromDomainHealthcareServiceId s.healthcareServiceId
-  , start               = s.start
-  , duration            = fromDomainDuration s.duration
-  }
+fromDomainAvailableSlot = AvailableSlotDTO
+toDomainAvailableSlot :: AvailableSlotDTO -> AvailableSlot
+toDomainAvailableSlot (AvailableSlotDTO x) = x
 
-data DoctorCalendarEntryDTO
-  = SlotDTO        AvailableSlotDTO
-  | AppointmentDTO AppointedIntakeRequestDTO
-  deriving (Show, Eq)
+slotPairs :: AvailableSlot -> [Pair]
+slotPairs s =
+  [ "id"                  .= SlotIdDTO s.id
+  , "doctorId"            .= DoctorIdDTO s.doctorId
+  , "healthcareServiceId" .= HealthcareServiceIdDTO s.healthcareServiceId
+  , "start"               .= s.start
+  , "duration"            .= DurationDTO s.duration
+  ]
 
-doctorCalendarEntrySum :: Sum DoctorCalendarEntryDTO
-doctorCalendarEntrySum = Sum "DoctorCalendarEntry" [Case slot, Case appointment] $ \case
-    SlotDTO        s -> put slot s
-    AppointmentDTO a -> put appointment a
-  where
-    slot        = CaseOf "Slot" availableSlotCodec SlotDTO
-    appointment = CaseOf "Appointment" appointedIntakeRequestCodec AppointmentDTO
+slotFields :: Fields AvailableSlot
+slotFields = do
+  SlotIdDTO id                               <- field "id"
+  DoctorIdDTO doctorId                       <- field "doctorId"
+  HealthcareServiceIdDTO healthcareServiceId <- field "healthcareServiceId"
+  start                                      <- field "start"
+  DurationDTO duration                       <- field "duration"
+  pure AvailableSlot { id, doctorId, healthcareServiceId, start, duration }
 
-instance ToJSON   DoctorCalendarEntryDTO where toJSON = sumToJSON doctorCalendarEntrySum
-instance FromJSON DoctorCalendarEntryDTO where parseJSON = sumParseJSON doctorCalendarEntrySum
-instance ToSchema DoctorCalendarEntryDTO where declareNamedSchema _ = sumSchema doctorCalendarEntrySum
+slotProps :: Props
+slotProps =
+  prop @SlotIdDTO "id" <> prop @DoctorIdDTO "doctorId"
+    <> prop @HealthcareServiceIdDTO "healthcareServiceId"
+    <> prop @UTCTime "start" <> prop @DurationDTO "duration"
 
-toDomainDoctorCalendarEntry :: DoctorCalendarEntryDTO -> DoctorCalendarEntry
-toDomainDoctorCalendarEntry = \case
-  SlotDTO        s -> Slot (toDomainAvailableSlot s)
-  AppointmentDTO a -> Appointment (toDomainAppointedIntakeRequest a)
+instance ToJSON AvailableSlotDTO where toJSON (AvailableSlotDTO s) = object (slotPairs s)
+instance FromJSON AvailableSlotDTO where
+  parseJSON = fmap AvailableSlotDTO . exactly "AvailableSlot" slotFields
+instance ToSchema AvailableSlotDTO where
+  declareNamedSchema _ = recordSchema "AvailableSlot" slotProps
+
+newtype DoctorCalendarEntryDTO = DoctorCalendarEntryDTO DoctorCalendarEntry deriving (Show, Eq)
 
 fromDomainDoctorCalendarEntry :: DoctorCalendarEntry -> DoctorCalendarEntryDTO
-fromDomainDoctorCalendarEntry = \case
-  Slot        s -> SlotDTO (fromDomainAvailableSlot s)
-  Appointment a -> AppointmentDTO (fromDomainAppointedIntakeRequest a)
+fromDomainDoctorCalendarEntry = DoctorCalendarEntryDTO
+toDomainDoctorCalendarEntry :: DoctorCalendarEntryDTO -> DoctorCalendarEntry
+toDomainDoctorCalendarEntry (DoctorCalendarEntryDTO x) = x
+
+instance ToJSON DoctorCalendarEntryDTO where
+  toJSON (DoctorCalendarEntryDTO e) = object $ case e of
+    Slot s        -> ("type" .= ("slot" :: Text)) : slotPairs s
+    Appointment a -> ("type" .= ("appointment" :: Text)) : appointedPairs a
+instance FromJSON DoctorCalendarEntryDTO where
+  parseJSON = fmap DoctorCalendarEntryDTO . exactly "DoctorCalendarEntry" (cases "DoctorCalendarEntry"
+    [ ("slot",        Slot <$> slotFields)
+    , ("appointment", Appointment <$> appointedFields)
+    ])
+instance ToSchema DoctorCalendarEntryDTO where
+  declareNamedSchema _ = sumSchema "DoctorCalendarEntry"
+    [ Plain "slot"        slotProps
+    , Plain "appointment" appointedProps
+    ]
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- REQUEST BODIES
--- Exactly a Service function's caller-supplied facts, keyed by the Domain
--- fields they land in. Times the server records are not among them.
+-- Exactly each Service function's caller-supplied facts, under the names of
+-- the Domain.hs fields they land in. Times the server records are absent.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-newtype CreateDoctorRequest = CreateDoctorRequest
-  { name :: Text
-  }
-  deriving (Show, Eq)
+newtype CreateDoctorRequest = CreateDoctorRequest { name :: Text } deriving (Show, Eq)
 
-createDoctorRequestCodec :: Codec CreateDoctorRequest CreateDoctorRequest
-createDoctorRequestCodec = CreateDoctorRequest <$> key "name" (.name)
-
-instance ToJSON   CreateDoctorRequest where toJSON = recordToJSON createDoctorRequestCodec
+instance ToJSON CreateDoctorRequest where toJSON r = object ["name" .= r.name]
 instance FromJSON CreateDoctorRequest where
-  parseJSON = recordParseJSON "CreateDoctorRequest" createDoctorRequestCodec
+  parseJSON = exactly "CreateDoctorRequest" (CreateDoctorRequest <$> field "name")
 instance ToSchema CreateDoctorRequest where
-  declareNamedSchema _ = recordSchema "CreateDoctorRequest" createDoctorRequestCodec
+  declareNamedSchema _ = recordSchema "CreateDoctorRequest" (prop @Text "name")
 
-newtype CreatePatientRequest = CreatePatientRequest
-  { name :: Text
-  }
-  deriving (Show, Eq)
+newtype CreatePatientRequest = CreatePatientRequest { name :: Text } deriving (Show, Eq)
 
-createPatientRequestCodec :: Codec CreatePatientRequest CreatePatientRequest
-createPatientRequestCodec = CreatePatientRequest <$> key "name" (.name)
-
-instance ToJSON   CreatePatientRequest where toJSON = recordToJSON createPatientRequestCodec
+instance ToJSON CreatePatientRequest where toJSON r = object ["name" .= r.name]
 instance FromJSON CreatePatientRequest where
-  parseJSON = recordParseJSON "CreatePatientRequest" createPatientRequestCodec
+  parseJSON = exactly "CreatePatientRequest" (CreatePatientRequest <$> field "name")
 instance ToSchema CreatePatientRequest where
-  declareNamedSchema _ = recordSchema "CreatePatientRequest" createPatientRequestCodec
+  declareNamedSchema _ = recordSchema "CreatePatientRequest" (prop @Text "name")
 
 data CreateHealthcareServiceRequest = CreateHealthcareServiceRequest
   { name     :: Text
@@ -1297,16 +1118,14 @@ data CreateHealthcareServiceRequest = CreateHealthcareServiceRequest
   }
   deriving (Show, Eq)
 
-createHealthcareServiceRequestCodec :: Codec CreateHealthcareServiceRequest CreateHealthcareServiceRequest
-createHealthcareServiceRequestCodec = CreateHealthcareServiceRequest
-  <$> key "name"     (.name)
-  <*> key "duration" (.duration)
-
-instance ToJSON   CreateHealthcareServiceRequest where toJSON = recordToJSON createHealthcareServiceRequestCodec
+instance ToJSON CreateHealthcareServiceRequest where
+  toJSON r = object ["name" .= r.name, "duration" .= r.duration]
 instance FromJSON CreateHealthcareServiceRequest where
-  parseJSON = recordParseJSON "CreateHealthcareServiceRequest" createHealthcareServiceRequestCodec
+  parseJSON = exactly "CreateHealthcareServiceRequest" $
+    CreateHealthcareServiceRequest <$> field "name" <*> field "duration"
 instance ToSchema CreateHealthcareServiceRequest where
-  declareNamedSchema _ = recordSchema "CreateHealthcareServiceRequest" createHealthcareServiceRequestCodec
+  declareNamedSchema _ =
+    recordSchema "CreateHealthcareServiceRequest" (prop @Text "name" <> prop @DurationDTO "duration")
 
 data SubmitIntakeRequestRequest = SubmitIntakeRequestRequest
   { patientId :: PatientIdDTO
@@ -1314,16 +1133,14 @@ data SubmitIntakeRequestRequest = SubmitIntakeRequestRequest
   }
   deriving (Show, Eq)
 
-submitIntakeRequestRequestCodec :: Codec SubmitIntakeRequestRequest SubmitIntakeRequestRequest
-submitIntakeRequestRequestCodec = SubmitIntakeRequestRequest
-  <$> key "patientId" (.patientId)
-  <*> key "narrative" (.narrative)
-
-instance ToJSON   SubmitIntakeRequestRequest where toJSON = recordToJSON submitIntakeRequestRequestCodec
+instance ToJSON SubmitIntakeRequestRequest where
+  toJSON r = object ["patientId" .= r.patientId, "narrative" .= r.narrative]
 instance FromJSON SubmitIntakeRequestRequest where
-  parseJSON = recordParseJSON "SubmitIntakeRequestRequest" submitIntakeRequestRequestCodec
+  parseJSON = exactly "SubmitIntakeRequestRequest" $
+    SubmitIntakeRequestRequest <$> field "patientId" <*> field "narrative"
 instance ToSchema SubmitIntakeRequestRequest where
-  declareNamedSchema _ = recordSchema "SubmitIntakeRequestRequest" submitIntakeRequestRequestCodec
+  declareNamedSchema _ = recordSchema "SubmitIntakeRequestRequest" $
+    prop @PatientIdDTO "patientId" <> prop @Text "narrative"
 
 data AcceptSubmittedIntakeRequestRequest = AcceptSubmittedIntakeRequestRequest
   { healthcareServiceId :: HealthcareServiceIdDTO
@@ -1332,143 +1149,129 @@ data AcceptSubmittedIntakeRequestRequest = AcceptSubmittedIntakeRequestRequest
   }
   deriving (Show, Eq)
 
-acceptSubmittedIntakeRequestRequestCodec
-  :: Codec AcceptSubmittedIntakeRequestRequest AcceptSubmittedIntakeRequestRequest
-acceptSubmittedIntakeRequestRequestCodec = AcceptSubmittedIntakeRequestRequest
-  <$> key "healthcareServiceId" (.healthcareServiceId)
-  <*> key "priority"            (.priority)
-  <*> key "doctorRequirement"   (.doctorRequirement)
-
-instance ToJSON   AcceptSubmittedIntakeRequestRequest where
-  toJSON = recordToJSON acceptSubmittedIntakeRequestRequestCodec
+instance ToJSON AcceptSubmittedIntakeRequestRequest where
+  toJSON r = object
+    [ "healthcareServiceId" .= r.healthcareServiceId
+    , "priority"            .= r.priority
+    , "doctorRequirement"   .= r.doctorRequirement
+    ]
 instance FromJSON AcceptSubmittedIntakeRequestRequest where
-  parseJSON = recordParseJSON "AcceptSubmittedIntakeRequestRequest" acceptSubmittedIntakeRequestRequestCodec
+  parseJSON = exactly "AcceptSubmittedIntakeRequestRequest" $
+    AcceptSubmittedIntakeRequestRequest
+      <$> field "healthcareServiceId" <*> field "priority" <*> field "doctorRequirement"
 instance ToSchema AcceptSubmittedIntakeRequestRequest where
-  declareNamedSchema _ =
-    recordSchema "AcceptSubmittedIntakeRequestRequest" acceptSubmittedIntakeRequestRequestCodec
+  declareNamedSchema _ = recordSchema "AcceptSubmittedIntakeRequestRequest" $
+    prop @HealthcareServiceIdDTO "healthcareServiceId"
+      <> prop @IntakeRequestPriorityDTO "priority"
+      <> prop @DoctorRequirementDTO "doctorRequirement"
 
 newtype RejectSubmittedIntakeRequestRequest = RejectSubmittedIntakeRequestRequest
-  { rejectionReason :: Text
-  }
+  { rejectionReason :: Text }
   deriving (Show, Eq)
 
-rejectSubmittedIntakeRequestRequestCodec
-  :: Codec RejectSubmittedIntakeRequestRequest RejectSubmittedIntakeRequestRequest
-rejectSubmittedIntakeRequestRequestCodec =
-  RejectSubmittedIntakeRequestRequest <$> key "rejectionReason" (.rejectionReason)
-
-instance ToJSON   RejectSubmittedIntakeRequestRequest where
-  toJSON = recordToJSON rejectSubmittedIntakeRequestRequestCodec
+instance ToJSON RejectSubmittedIntakeRequestRequest where
+  toJSON r = object ["rejectionReason" .= r.rejectionReason]
 instance FromJSON RejectSubmittedIntakeRequestRequest where
-  parseJSON = recordParseJSON "RejectSubmittedIntakeRequestRequest" rejectSubmittedIntakeRequestRequestCodec
+  parseJSON = exactly "RejectSubmittedIntakeRequestRequest" $
+    RejectSubmittedIntakeRequestRequest <$> field "rejectionReason"
 instance ToSchema RejectSubmittedIntakeRequestRequest where
   declareNamedSchema _ =
-    recordSchema "RejectSubmittedIntakeRequestRequest" rejectSubmittedIntakeRequestRequestCodec
+    recordSchema "RejectSubmittedIntakeRequestRequest" (prop @Text "rejectionReason")
 
--- The slot has no field of its own in the appointment, so its key is its
--- ID type's name.
+-- The slot's id lands in no Domain.hs field (the slot is consumed), so it
+-- takes its ID type's name.
 newtype MatchAcceptedIntakeRequestToSlotRequest = MatchAcceptedIntakeRequestToSlotRequest
-  { slotId :: SlotIdDTO
-  }
+  { slotId :: SlotIdDTO }
   deriving (Show, Eq)
 
-matchAcceptedIntakeRequestToSlotRequestCodec
-  :: Codec MatchAcceptedIntakeRequestToSlotRequest MatchAcceptedIntakeRequestToSlotRequest
-matchAcceptedIntakeRequestToSlotRequestCodec =
-  MatchAcceptedIntakeRequestToSlotRequest <$> key "slotId" (.slotId)
-
-instance ToJSON   MatchAcceptedIntakeRequestToSlotRequest where
-  toJSON = recordToJSON matchAcceptedIntakeRequestToSlotRequestCodec
+instance ToJSON MatchAcceptedIntakeRequestToSlotRequest where
+  toJSON r = object ["slotId" .= r.slotId]
 instance FromJSON MatchAcceptedIntakeRequestToSlotRequest where
-  parseJSON =
-    recordParseJSON "MatchAcceptedIntakeRequestToSlotRequest" matchAcceptedIntakeRequestToSlotRequestCodec
+  parseJSON = exactly "MatchAcceptedIntakeRequestToSlotRequest" $
+    MatchAcceptedIntakeRequestToSlotRequest <$> field "slotId"
 instance ToSchema MatchAcceptedIntakeRequestToSlotRequest where
   declareNamedSchema _ =
-    recordSchema "MatchAcceptedIntakeRequestToSlotRequest" matchAcceptedIntakeRequestToSlotRequestCodec
+    recordSchema "MatchAcceptedIntakeRequestToSlotRequest" (prop @SlotIdDTO "slotId")
 
 newtype WithdrawIntakeRequestRequest = WithdrawIntakeRequestRequest
-  { withdrawalNote :: Maybe Text
-  }
+  { withdrawalNote :: Maybe Text }
   deriving (Show, Eq)
 
-withdrawIntakeRequestRequestCodec :: Codec WithdrawIntakeRequestRequest WithdrawIntakeRequestRequest
-withdrawIntakeRequestRequestCodec =
-  WithdrawIntakeRequestRequest <$> nullableKey "withdrawalNote" (.withdrawalNote)
-
-instance ToJSON   WithdrawIntakeRequestRequest where toJSON = recordToJSON withdrawIntakeRequestRequestCodec
+instance ToJSON WithdrawIntakeRequestRequest where
+  toJSON r = object ["withdrawalNote" .= r.withdrawalNote]
 instance FromJSON WithdrawIntakeRequestRequest where
-  parseJSON = recordParseJSON "WithdrawIntakeRequestRequest" withdrawIntakeRequestRequestCodec
+  parseJSON = exactly "WithdrawIntakeRequestRequest" $
+    WithdrawIntakeRequestRequest <$> field "withdrawalNote"
 instance ToSchema WithdrawIntakeRequestRequest where
-  declareNamedSchema _ = recordSchema "WithdrawIntakeRequestRequest" withdrawIntakeRequestRequestCodec
+  declareNamedSchema _ =
+    recordSchema "WithdrawIntakeRequestRequest" (nullableText "withdrawalNote")
 
--- CloseReason as the caller supplies it: Cancellation without cancelledAt,
--- which the handler records.
+-- Cancellation without cancelledAt, which the server records.
 data CancellationRequest = CancellationRequest
   { cancelledBy      :: AppointmentPartyDTO
   , cancellationNote :: Maybe Text
   }
   deriving (Show, Eq)
 
-cancellationRequestCodec :: Codec CancellationRequest CancellationRequest
-cancellationRequestCodec = CancellationRequest
-  <$> key "cancelledBy"              (.cancelledBy)
-  <*> nullableKey "cancellationNote" (.cancellationNote)
+cancellationRequestPairs :: CancellationRequest -> [Pair]
+cancellationRequestPairs c = ["cancelledBy" .= c.cancelledBy, "cancellationNote" .= c.cancellationNote]
 
-instance ToJSON   CancellationRequest where toJSON = recordToJSON cancellationRequestCodec
+cancellationRequestFields :: Fields CancellationRequest
+cancellationRequestFields = CancellationRequest <$> field "cancelledBy" <*> field "cancellationNote"
+
+cancellationRequestProps :: Props
+cancellationRequestProps = prop @AppointmentPartyDTO "cancelledBy" <> nullableText "cancellationNote"
+
+instance ToJSON CancellationRequest where toJSON = object . cancellationRequestPairs
 instance FromJSON CancellationRequest where
-  parseJSON = recordParseJSON "CancellationRequest" cancellationRequestCodec
+  parseJSON = exactly "CancellationRequest" cancellationRequestFields
 instance ToSchema CancellationRequest where
-  declareNamedSchema _ = recordSchema "CancellationRequest" cancellationRequestCodec
+  declareNamedSchema _ = recordSchema "CancellationRequest" cancellationRequestProps
 
+-- CloseReason without the time the server records.
 data CloseReasonRequest
   = CompletedRequest
   | CancelledRequest CancellationRequest
   | NoShowRequest    AbsenceDTO
   deriving (Show, Eq)
 
-closeReasonRequestSum :: Sum CloseReasonRequest
-closeReasonRequestSum =
-  Sum "CloseReasonRequest" [Case completed, Case cancelled, Case noShow] $ \case
-    CompletedRequest   -> put completed ()
-    CancelledRequest c -> put cancelled c
-    NoShowRequest    a -> put noShow a
-  where
-    completed = CaseOf "Completed" (pure ()) (const CompletedRequest)
-    cancelled = CaseOf "Cancelled" cancellationRequestCodec CancelledRequest
-    noShow    = CaseOf "NoShow" absenceCodec NoShowRequest
+toDomainCloseReasonRequest :: UTCTime -> CloseReasonRequest -> CloseReason
+toDomainCloseReasonRequest cancelledAt = \case
+  CompletedRequest -> Completed
+  CancelledRequest CancellationRequest { cancelledBy = AppointmentPartyDTO cancelledBy, cancellationNote } ->
+    Cancelled Cancellation { cancelledBy, cancelledAt, cancellationNote }
+  NoShowRequest (AbsenceDTO absence) -> NoShow absence
 
-instance ToJSON   CloseReasonRequest where toJSON = sumToJSON closeReasonRequestSum
-instance FromJSON CloseReasonRequest where parseJSON = sumParseJSON closeReasonRequestSum
-instance ToSchema CloseReasonRequest where declareNamedSchema _ = sumSchema closeReasonRequestSum
-
--- The close reason once the handler has the time of the cancellation.
-requestedCloseReason :: UTCTime -> CloseReasonRequest -> CloseReason
-requestedCloseReason now = \case
-  CompletedRequest   -> Completed
-  CancelledRequest c -> Cancelled Cancellation
-    { cancelledBy      = toDomainAppointmentParty c.cancelledBy
-    , cancelledAt      = now
-    , cancellationNote = c.cancellationNote
-    }
-  NoShowRequest    a -> NoShow (toDomainAbsence a)
+instance ToJSON CloseReasonRequest where
+  toJSON r = object $ case r of
+    CompletedRequest                -> ["type" .= ("completed" :: Text)]
+    CancelledRequest c              -> ("type" .= ("cancelled" :: Text)) : cancellationRequestPairs c
+    NoShowRequest (AbsenceDTO a)    -> ("type" .= ("noShow" :: Text)) : absencePairs a
+instance FromJSON CloseReasonRequest where
+  parseJSON = exactly "CloseReasonRequest" (cases "CloseReasonRequest"
+    [ ("completed", pure CompletedRequest)
+    , ("cancelled", CancelledRequest <$> cancellationRequestFields)
+    , ("noShow",    NoShowRequest . AbsenceDTO <$> absenceFields)
+    ])
+instance ToSchema CloseReasonRequest where
+  declareNamedSchema _ = sumSchema "CloseReasonRequest"
+    [ Plain "completed" []
+    , Plain "cancelled" cancellationRequestProps
+    , Plain "noShow"    absenceProps
+    ]
 
 newtype CloseAppointedIntakeRequestRequest = CloseAppointedIntakeRequestRequest
-  { closeReason :: CloseReasonRequest
-  }
+  { closeReason :: CloseReasonRequest }
   deriving (Show, Eq)
 
-closeAppointedIntakeRequestRequestCodec
-  :: Codec CloseAppointedIntakeRequestRequest CloseAppointedIntakeRequestRequest
-closeAppointedIntakeRequestRequestCodec =
-  CloseAppointedIntakeRequestRequest <$> key "closeReason" (.closeReason)
-
-instance ToJSON   CloseAppointedIntakeRequestRequest where
-  toJSON = recordToJSON closeAppointedIntakeRequestRequestCodec
+instance ToJSON CloseAppointedIntakeRequestRequest where
+  toJSON r = object ["closeReason" .= r.closeReason]
 instance FromJSON CloseAppointedIntakeRequestRequest where
-  parseJSON = recordParseJSON "CloseAppointedIntakeRequestRequest" closeAppointedIntakeRequestRequestCodec
+  parseJSON = exactly "CloseAppointedIntakeRequestRequest" $
+    CloseAppointedIntakeRequestRequest <$> field "closeReason"
 instance ToSchema CloseAppointedIntakeRequestRequest where
   declareNamedSchema _ =
-    recordSchema "CloseAppointedIntakeRequestRequest" closeAppointedIntakeRequestRequestCodec
+    recordSchema "CloseAppointedIntakeRequestRequest" (prop @CloseReasonRequest "closeReason")
 
 data CreateAvailableSlotRequest = CreateAvailableSlotRequest
   { doctorId            :: DoctorIdDTO
@@ -1477,273 +1280,320 @@ data CreateAvailableSlotRequest = CreateAvailableSlotRequest
   }
   deriving (Show, Eq)
 
-createAvailableSlotRequestCodec :: Codec CreateAvailableSlotRequest CreateAvailableSlotRequest
-createAvailableSlotRequestCodec = CreateAvailableSlotRequest
-  <$> key "doctorId"            (.doctorId)
-  <*> key "healthcareServiceId" (.healthcareServiceId)
-  <*> key "start"               (.start)
-
-instance ToJSON   CreateAvailableSlotRequest where toJSON = recordToJSON createAvailableSlotRequestCodec
+instance ToJSON CreateAvailableSlotRequest where
+  toJSON r = object
+    [ "doctorId" .= r.doctorId, "healthcareServiceId" .= r.healthcareServiceId, "start" .= r.start ]
 instance FromJSON CreateAvailableSlotRequest where
-  parseJSON = recordParseJSON "CreateAvailableSlotRequest" createAvailableSlotRequestCodec
+  parseJSON = exactly "CreateAvailableSlotRequest" $
+    CreateAvailableSlotRequest <$> field "doctorId" <*> field "healthcareServiceId" <*> field "start"
 instance ToSchema CreateAvailableSlotRequest where
-  declareNamedSchema _ = recordSchema "CreateAvailableSlotRequest" createAvailableSlotRequestCodec
+  declareNamedSchema _ = recordSchema "CreateAvailableSlotRequest" $
+    prop @DoctorIdDTO "doctorId" <> prop @HealthcareServiceIdDTO "healthcareServiceId"
+      <> prop @UTCTime "start"
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ANSWERS
--- Every 200 body is {"outcome": <tag>, "detail": <payload or null>}. An
--- answer's schema is oneOf one named schema per tag, <Answer><Constructor>,
--- discriminated by "outcome", so each tag's detail is typed.
+-- Every 200 body is {"outcome": <tag>, "detail": <payload or null>}. Each
+-- tag is declared once below with its detail's DTO; an answer's schema is
+-- oneOf exactly the tags its use case can produce.
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- One outcome: its constructor's name, its detail's schema (Nothing: the
--- detail is null), and how a payload renders as the detail.
-data Outcome p = Outcome Text (Maybe (Defs (Referenced Schema))) (p -> Value)
-
-data SomeOutcome = forall p. SomeOutcome (Outcome p)
-
-withDetail :: forall p. (ToJSON p, ToSchema p) => Text -> Outcome p
-withDetail constructor = Outcome constructor (Just (declareSchemaRef (Proxy @p))) toJSON
-
-noDetail :: Text -> Outcome ()
-noDetail constructor = Outcome constructor Nothing (const Null)
-
-answerWith :: Outcome p -> p -> (Text, Value)
-answerWith (Outcome constructor _ render) p = (tagOf constructor, render p)
-
--- A type whose values are answered as tagged envelopes.
-class Outcomes a where
-  outcomes  :: Proxy a -> [SomeOutcome]
-  outcomeOf :: a -> (Text, Value)
-
-envelope :: Outcomes a => a -> Value
-envelope a = let (tag, detail) = outcomeOf a in object ["outcome" .= tag, "detail" .= detail]
-
-envelopeSchema :: Outcomes a => Proxy a -> Text -> Defs NamedSchema
-envelopeSchema proxy answerName = do
-  members <- for (outcomes proxy) $ \(SomeOutcome (Outcome constructor detail _)) -> do
-    let tag      = tagOf constructor
-        caseName = answerName <> capitalised constructor
-    schema <- objectSchema
-      [ ("outcome", pure (Inline (tagSchema [tag])))
-      , ("detail",  maybe (pure (Inline nullSchema)) (\d -> d) detail)
-      ]
-    declare (InsOrd.singleton caseName schema)
-    pure (tag, caseName)
-  pure (NamedSchema (Just answerName) (discriminated "outcome" members))
-
--- A Service function's answer, named <Function>Answer.
-newtype Answer (name :: Symbol) a = Answer a
-
-instance (KnownSymbol name, Outcomes a) => ToJSON (Answer name a) where
-  toJSON (Answer a) = envelope a
-
-instance (KnownSymbol name, Typeable a, Outcomes a) => ToSchema (Answer name a) where
-  declareNamedSchema _ = envelopeSchema (Proxy @a) (Text.pack (symbolVal (Proxy @name)))
-
--- A failure is answered with its ServiceError tag; success with its own.
-instance (Outcomes e, Outcomes a) => Outcomes (Either e a) where
-  outcomes _ = outcomes (Proxy @a) ++ outcomes (Proxy @e)
-  outcomeOf  = either outcomeOf outcomeOf
-
--- A plain value with no constructor of its own.
-newtype Ok a = Ok a
+data Envelope = Envelope Text Value
   deriving (Show, Eq)
 
-ok :: forall a. (ToJSON a, ToSchema a) => Outcome a
-ok = withDetail "Ok"
+instance ToJSON Envelope where
+  toJSON (Envelope tag detail) = object ["outcome" .= tag, "detail" .= detail]
 
-instance (ToJSON a, ToSchema a) => Outcomes (Ok a) where
-  outcomes _       = [SomeOutcome (ok @a)]
-  outcomeOf (Ok a) = answerWith ok a
+-- An outcome or fact tag, typed by its detail.
+newtype Outcome d = Outcome Text
 
--- A by-id read of a slot, which is deleted on consumption: Nothing has the
--- same tag as Service's outcome for that fact.
-instance Outcomes (Maybe AvailableSlotDTO) where
-  outcomes _ = [SomeOutcome (ok @AvailableSlotDTO), SomeOutcome availableSlotConsumed]
-  outcomeOf  = \case
-    Just slot -> answerWith ok slot
-    Nothing   -> answerWith availableSlotConsumed ()
+answer :: ToJSON d => Outcome d -> d -> Envelope
+answer (Outcome tag) detail = Envelope tag (toJSON detail)
 
--- Service.ServiceError, without DecodeFailed: that one is a 500.
-data ServiceErrorDTO
-  = DoctorNotFoundDTO             DoctorIdDTO
-  | PatientNotFoundDTO            PatientIdDTO
-  | HealthcareServiceNotFoundDTO  HealthcareServiceIdDTO
-  | IntakeRequestNotFoundDTO      IntakeRequestIdDTO
-  | IntakeRequestInWrongStateDTO  IntakeRequestDTO
-  | SlotDoesNotMatchIntakeRequestDTO
+-- The detail of a tag that has no payload: always null.
+data NoDetail = NoDetail
   deriving (Show, Eq)
 
-doctorNotFound :: Outcome DoctorIdDTO
-doctorNotFound = withDetail "DoctorNotFound"
+instance ToJSON NoDetail where toJSON NoDetail = Null
+instance ToSchema NoDetail where
+  declareNamedSchema _ = pure . NamedSchema Nothing $ mempty & nullable ?~ True & enum_ ?~ [Null]
 
-patientNotFound :: Outcome PatientIdDTO
-patientNotFound = withDetail "PatientNotFound"
+-- ── Tags: an outcome constructor's name, or a fact type's name ─────────────
 
-healthcareServiceNotFound :: Outcome HealthcareServiceIdDTO
-healthcareServiceNotFound = withDetail "HealthcareServiceNotFound"
+ok :: Outcome d
+ok = Outcome "ok"
 
-intakeRequestNotFound :: Outcome IntakeRequestIdDTO
-intakeRequestNotFound = withDetail "IntakeRequestNotFound"
-
-intakeRequestInWrongState :: Outcome IntakeRequestDTO
-intakeRequestInWrongState = withDetail "IntakeRequestInWrongState"
-
-slotDoesNotMatchIntakeRequest :: Outcome ()
-slotDoesNotMatchIntakeRequest = noDetail "SlotDoesNotMatchIntakeRequest"
-
-instance Outcomes ServiceErrorDTO where
-  outcomes _ =
-    [ SomeOutcome doctorNotFound, SomeOutcome patientNotFound, SomeOutcome healthcareServiceNotFound
-    , SomeOutcome intakeRequestNotFound, SomeOutcome intakeRequestInWrongState
-    , SomeOutcome slotDoesNotMatchIntakeRequest ]
-  outcomeOf = \case
-    DoctorNotFoundDTO d              -> answerWith doctorNotFound d
-    PatientNotFoundDTO p             -> answerWith patientNotFound p
-    HealthcareServiceNotFoundDTO s   -> answerWith healthcareServiceNotFound s
-    IntakeRequestNotFoundDTO r       -> answerWith intakeRequestNotFound r
-    IntakeRequestInWrongStateDTO r   -> answerWith intakeRequestInWrongState r
-    SlotDoesNotMatchIntakeRequestDTO -> answerWith slotDoesNotMatchIntakeRequest ()
-
--- Service.TransitionOutcome.
-data TransitionOutcomeDTO a
-  = TransitionedDTO a
-  | MovedOnDTO      IntakeRequestDTO
-  deriving (Show, Eq)
-
-transitioned :: forall a. (ToJSON a, ToSchema a) => Outcome a
-transitioned = withDetail "Transitioned"
+transitioned :: Outcome d
+transitioned = Outcome "transitioned"
 
 movedOn :: Outcome IntakeRequestDTO
-movedOn = withDetail "MovedOn"
-
-instance (ToJSON a, ToSchema a) => Outcomes (TransitionOutcomeDTO a) where
-  outcomes _ = [SomeOutcome (transitioned @a), SomeOutcome movedOn]
-  outcomeOf  = \case
-    TransitionedDTO a -> answerWith transitioned a
-    MovedOnDTO      r -> answerWith movedOn r
-
--- Service.MatchOutcome. Nested as a detail, it is an envelope of its own.
-data MatchOutcomeDTO
-  = MatchedDTO               AppointedIntakeRequestDTO
-  | AvailableSlotConsumedDTO
-  | IntakeRequestMovedOnDTO  IntakeRequestDTO
-  deriving (Show, Eq)
+movedOn = Outcome "movedOn"
 
 matched :: Outcome AppointedIntakeRequestDTO
-matched = withDetail "Matched"
+matched = Outcome "matched"
 
-availableSlotConsumed :: Outcome ()
-availableSlotConsumed = noDetail "AvailableSlotConsumed"
+availableSlotConsumed :: Outcome NoDetail
+availableSlotConsumed = Outcome "availableSlotConsumed"
 
 intakeRequestMovedOn :: Outcome IntakeRequestDTO
-intakeRequestMovedOn = withDetail "IntakeRequestMovedOn"
+intakeRequestMovedOn = Outcome "intakeRequestMovedOn"
 
-instance Outcomes MatchOutcomeDTO where
-  outcomes _ = [SomeOutcome matched, SomeOutcome availableSlotConsumed, SomeOutcome intakeRequestMovedOn]
-  outcomeOf  = \case
-    MatchedDTO a              -> answerWith matched a
-    AvailableSlotConsumedDTO  -> answerWith availableSlotConsumed ()
-    IntakeRequestMovedOnDTO r -> answerWith intakeRequestMovedOn r
+noMatchingIntakeRequest :: Outcome NoDetail
+noMatchingIntakeRequest = Outcome "noMatchingIntakeRequest"
 
-instance ToJSON   MatchOutcomeDTO where toJSON = envelope
-instance ToSchema MatchOutcomeDTO where declareNamedSchema _ = envelopeSchema (Proxy @MatchOutcomeDTO) "MatchOutcome"
-
--- Service.PriorityMatchOutcome.
-data PriorityMatchOutcomeDTO
-  = NoMatchingIntakeRequestDTO
-  | MatchAttemptedDTO MatchOutcomeDTO
-  deriving (Show, Eq)
-
-noMatchingIntakeRequest :: Outcome ()
-noMatchingIntakeRequest = noDetail "NoMatchingIntakeRequest"
-
-matchAttempted :: Outcome MatchOutcomeDTO
-matchAttempted = withDetail "MatchAttempted"
-
-instance Outcomes PriorityMatchOutcomeDTO where
-  outcomes _ = [SomeOutcome noMatchingIntakeRequest, SomeOutcome matchAttempted]
-  outcomeOf  = \case
-    NoMatchingIntakeRequestDTO -> answerWith noMatchingIntakeRequest ()
-    MatchAttemptedDTO m        -> answerWith matchAttempted m
-
--- Service.SlotCreationOutcome.
-data SlotCreationOutcomeDTO
-  = SlotCreatedDTO AvailableSlotDTO
-  | SlotOverlapsDoctorCalendarDTO
-  deriving (Show, Eq)
+matchOutcome :: Outcome MatchOutcomeDTO
+matchOutcome = Outcome "matchOutcome"
 
 slotCreated :: Outcome AvailableSlotDTO
-slotCreated = withDetail "SlotCreated"
+slotCreated = Outcome "slotCreated"
 
-slotOverlapsDoctorCalendar :: Outcome ()
-slotOverlapsDoctorCalendar = noDetail "SlotOverlapsDoctorCalendar"
+slotOverlapsDoctorCalendar :: Outcome NoDetail
+slotOverlapsDoctorCalendar = Outcome "slotOverlapsDoctorCalendar"
 
-instance Outcomes SlotCreationOutcomeDTO where
-  outcomes _ = [SomeOutcome slotCreated, SomeOutcome slotOverlapsDoctorCalendar]
-  outcomeOf  = \case
-    SlotCreatedDTO s              -> answerWith slotCreated s
-    SlotOverlapsDoctorCalendarDTO -> answerWith slotOverlapsDoctorCalendar ()
+doctorNotFound :: Outcome DoctorIdDTO
+doctorNotFound = Outcome "doctorNotFound"
 
--- One answer per public Service function.
-type CreateDoctorAnswer            = Answer "CreateDoctorAnswer" (Ok DoctorDTO)
-type CreatePatientAnswer           = Answer "CreatePatientAnswer" (Ok PatientDTO)
-type CreateHealthcareServiceAnswer = Answer "CreateHealthcareServiceAnswer" (Ok HealthcareServiceDTO)
-type SubmitIntakeRequestAnswer     =
-  Answer "SubmitIntakeRequestAnswer" (Either ServiceErrorDTO (Ok SubmittedIntakeRequestDTO))
+patientNotFound :: Outcome PatientIdDTO
+patientNotFound = Outcome "patientNotFound"
 
-type AcceptSubmittedIntakeRequestAnswer =
-  Answer "AcceptSubmittedIntakeRequestAnswer"
-    (Either ServiceErrorDTO (TransitionOutcomeDTO TriagedIntakeRequestDTO))
-type RejectSubmittedIntakeRequestAnswer =
-  Answer "RejectSubmittedIntakeRequestAnswer"
-    (Either ServiceErrorDTO (TransitionOutcomeDTO RejectedIntakeRequestDTO))
-type MatchAcceptedIntakeRequestToSlotAnswer =
-  Answer "MatchAcceptedIntakeRequestToSlotAnswer" (Either ServiceErrorDTO MatchOutcomeDTO)
-type WithdrawIntakeRequestAnswer =
-  Answer "WithdrawIntakeRequestAnswer"
-    (Either ServiceErrorDTO (TransitionOutcomeDTO WithdrawnIntakeRequestDTO))
-type MarkAcceptedIntakeRequestStaleAnswer =
-  Answer "MarkAcceptedIntakeRequestStaleAnswer"
-    (Either ServiceErrorDTO (TransitionOutcomeDTO StaleIntakeRequestDTO))
-type CloseAppointedIntakeRequestAnswer =
-  Answer "CloseAppointedIntakeRequestAnswer"
-    (Either ServiceErrorDTO (TransitionOutcomeDTO ClosedIntakeRequestDTO))
+healthcareServiceNotFound :: Outcome HealthcareServiceIdDTO
+healthcareServiceNotFound = Outcome "healthcareServiceNotFound"
 
-type MatchAvailableSlotByPriorityAnswer =
-  Answer "MatchAvailableSlotByPriorityAnswer" (Either ServiceErrorDTO PriorityMatchOutcomeDTO)
-type CreateAvailableSlotAnswer =
-  Answer "CreateAvailableSlotAnswer" (Either ServiceErrorDTO SlotCreationOutcomeDTO)
+intakeRequestNotFound :: Outcome IntakeRequestIdDTO
+intakeRequestNotFound = Outcome "intakeRequestNotFound"
 
-type FetchDoctorAnswer   = Answer "FetchDoctorAnswer" (Either ServiceErrorDTO (Ok DoctorDTO))
-type FetchDoctorsAnswer  = Answer "FetchDoctorsAnswer" (Ok [DoctorDTO])
-type FetchPatientAnswer  = Answer "FetchPatientAnswer" (Either ServiceErrorDTO (Ok PatientDTO))
-type FetchPatientsAnswer = Answer "FetchPatientsAnswer" (Ok [PatientDTO])
-type FetchHealthcareServiceAnswer =
-  Answer "FetchHealthcareServiceAnswer" (Either ServiceErrorDTO (Ok HealthcareServiceDTO))
-type FetchHealthcareServicesAnswer =
-  Answer "FetchHealthcareServicesAnswer" (Either ServiceErrorDTO (Ok [HealthcareServiceDTO]))
-type FetchAvailableSlotAnswer =
-  Answer "FetchAvailableSlotAnswer" (Either ServiceErrorDTO (Maybe AvailableSlotDTO))
-type FetchIntakeRequestAnswer =
-  Answer "FetchIntakeRequestAnswer" (Either ServiceErrorDTO (Ok IntakeRequestDTO))
-type FetchSubmittedIntakeRequestsAnswer =
-  Answer "FetchSubmittedIntakeRequestsAnswer" (Either ServiceErrorDTO (Ok [SubmittedIntakeRequestDTO]))
-type FetchAcceptedIntakeRequestsAnswer =
-  Answer "FetchAcceptedIntakeRequestsAnswer" (Either ServiceErrorDTO (Ok [TriagedIntakeRequestDTO]))
-type FetchAppointedIntakeRequestsAnswer =
-  Answer "FetchAppointedIntakeRequestsAnswer" (Either ServiceErrorDTO (Ok [AppointedIntakeRequestDTO]))
-type FetchRejectedIntakeRequestsByRejectedAtAnswer =
-  Answer "FetchRejectedIntakeRequestsByRejectedAtAnswer"
-    (Either ServiceErrorDTO (Ok [RejectedIntakeRequestDTO]))
-type FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer =
-  Answer "FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer"
-    (Either ServiceErrorDTO (Ok [WithdrawnIntakeRequestDTO]))
-type FetchStaleIntakeRequestsByStaleAtAnswer =
-  Answer "FetchStaleIntakeRequestsByStaleAtAnswer" (Either ServiceErrorDTO (Ok [StaleIntakeRequestDTO]))
-type FetchClosedIntakeRequestsByStartAnswer =
-  Answer "FetchClosedIntakeRequestsByStartAnswer" (Either ServiceErrorDTO (Ok [ClosedIntakeRequestDTO]))
-type FetchDoctorCalendarEntriesOverlappingAnswer =
-  Answer "FetchDoctorCalendarEntriesOverlappingAnswer"
-    (Either ServiceErrorDTO (Ok [DoctorCalendarEntryDTO]))
+intakeRequestInWrongState :: Outcome IntakeRequestDTO
+intakeRequestInWrongState = Outcome "intakeRequestInWrongState"
+
+slotDoesNotMatchIntakeRequest :: Outcome NoDetail
+slotDoesNotMatchIntakeRequest = Outcome "slotDoesNotMatchIntakeRequest"
+
+-- ── Answer schemas ──────────────────────────────────────────────────────────
+
+newtype AnswerCase = AnswerCase (Text, Declare (Definitions Schema) (Referenced Schema))
+
+on :: forall d. ToSchema d => Outcome d -> AnswerCase
+on (Outcome tag) = AnswerCase (tag, declareSchemaRef (Proxy @d))
+
+-- oneOf one schema per tag, <Answer><Tag>, discriminated by "outcome".
+answerSchema :: Text -> [AnswerCase] -> Declare (Definitions Schema) NamedSchema
+answerSchema name answerCases = do
+  refs <- forM answerCases $ \(AnswerCase (tag, detail)) -> do
+    let caseName = name <> upperFirst tag
+    s <- objectSchema [("outcome", pure (Inline (oneValue tag))), ("detail", detail)]
+    _ <- declared caseName s
+    pure (tag, caseName)
+  pure . NamedSchema (Just name) $ mempty
+    & oneOf ?~ [ Ref (Reference caseName) | (_, caseName) <- refs ]
+    & discriminator ?~ Discriminator "outcome"
+        (InsOrd.fromList [ (tag, schemaRef caseName) | (tag, caseName) <- refs ])
+
+transitionCases :: forall d. ToSchema d => [AnswerCase]
+transitionCases = [on (transitioned :: Outcome d), on movedOn]
+
+matchOutcomeCases :: [AnswerCase]
+matchOutcomeCases = [on matched, on availableSlotConsumed, on intakeRequestMovedOn]
+
+-- ── Answer types, one per Service function ─────────────────────────────────
+
+-- Matching's outcome, nested as the detail of matchOutcome.
+newtype MatchOutcomeDTO = MatchOutcomeDTO Envelope deriving (Show, Eq)
+instance ToJSON MatchOutcomeDTO where toJSON (MatchOutcomeDTO e) = toJSON e
+instance ToSchema MatchOutcomeDTO where
+  declareNamedSchema _ = answerSchema "MatchOutcome" matchOutcomeCases
+
+newtype CreateDoctorAnswer = CreateDoctorAnswer Envelope deriving (Show, Eq)
+instance ToJSON CreateDoctorAnswer where toJSON (CreateDoctorAnswer e) = toJSON e
+instance ToSchema CreateDoctorAnswer where
+  declareNamedSchema _ = answerSchema "CreateDoctorAnswer" [on (ok :: Outcome DoctorDTO)]
+
+newtype CreatePatientAnswer = CreatePatientAnswer Envelope deriving (Show, Eq)
+instance ToJSON CreatePatientAnswer where toJSON (CreatePatientAnswer e) = toJSON e
+instance ToSchema CreatePatientAnswer where
+  declareNamedSchema _ = answerSchema "CreatePatientAnswer" [on (ok :: Outcome PatientDTO)]
+
+newtype CreateHealthcareServiceAnswer = CreateHealthcareServiceAnswer Envelope deriving (Show, Eq)
+instance ToJSON CreateHealthcareServiceAnswer where toJSON (CreateHealthcareServiceAnswer e) = toJSON e
+instance ToSchema CreateHealthcareServiceAnswer where
+  declareNamedSchema _ =
+    answerSchema "CreateHealthcareServiceAnswer" [on (ok :: Outcome HealthcareServiceDTO)]
+
+newtype SubmitIntakeRequestAnswer = SubmitIntakeRequestAnswer Envelope deriving (Show, Eq)
+instance ToJSON SubmitIntakeRequestAnswer where toJSON (SubmitIntakeRequestAnswer e) = toJSON e
+instance ToSchema SubmitIntakeRequestAnswer where
+  declareNamedSchema _ = answerSchema "SubmitIntakeRequestAnswer"
+    [on (ok :: Outcome SubmittedIntakeRequestDTO), on patientNotFound]
+
+newtype AcceptSubmittedIntakeRequestAnswer = AcceptSubmittedIntakeRequestAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON AcceptSubmittedIntakeRequestAnswer where
+  toJSON (AcceptSubmittedIntakeRequestAnswer e) = toJSON e
+instance ToSchema AcceptSubmittedIntakeRequestAnswer where
+  declareNamedSchema _ = answerSchema "AcceptSubmittedIntakeRequestAnswer" $
+    transitionCases @TriagedIntakeRequestDTO
+      <> [on intakeRequestNotFound, on healthcareServiceNotFound, on doctorNotFound]
+
+newtype RejectSubmittedIntakeRequestAnswer = RejectSubmittedIntakeRequestAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON RejectSubmittedIntakeRequestAnswer where
+  toJSON (RejectSubmittedIntakeRequestAnswer e) = toJSON e
+instance ToSchema RejectSubmittedIntakeRequestAnswer where
+  declareNamedSchema _ = answerSchema "RejectSubmittedIntakeRequestAnswer" $
+    transitionCases @RejectedIntakeRequestDTO <> [on intakeRequestNotFound]
+
+newtype MatchAcceptedIntakeRequestToSlotAnswer = MatchAcceptedIntakeRequestToSlotAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON MatchAcceptedIntakeRequestToSlotAnswer where
+  toJSON (MatchAcceptedIntakeRequestToSlotAnswer e) = toJSON e
+instance ToSchema MatchAcceptedIntakeRequestToSlotAnswer where
+  declareNamedSchema _ = answerSchema "MatchAcceptedIntakeRequestToSlotAnswer" $
+    matchOutcomeCases
+      <> [on intakeRequestNotFound, on intakeRequestInWrongState, on slotDoesNotMatchIntakeRequest]
+
+newtype WithdrawIntakeRequestAnswer = WithdrawIntakeRequestAnswer Envelope deriving (Show, Eq)
+instance ToJSON WithdrawIntakeRequestAnswer where toJSON (WithdrawIntakeRequestAnswer e) = toJSON e
+instance ToSchema WithdrawIntakeRequestAnswer where
+  declareNamedSchema _ = answerSchema "WithdrawIntakeRequestAnswer" $
+    transitionCases @WithdrawnIntakeRequestDTO <> [on intakeRequestNotFound]
+
+newtype MarkAcceptedIntakeRequestStaleAnswer = MarkAcceptedIntakeRequestStaleAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON MarkAcceptedIntakeRequestStaleAnswer where
+  toJSON (MarkAcceptedIntakeRequestStaleAnswer e) = toJSON e
+instance ToSchema MarkAcceptedIntakeRequestStaleAnswer where
+  declareNamedSchema _ = answerSchema "MarkAcceptedIntakeRequestStaleAnswer" $
+    transitionCases @StaleIntakeRequestDTO <> [on intakeRequestNotFound, on intakeRequestInWrongState]
+
+newtype CloseAppointedIntakeRequestAnswer = CloseAppointedIntakeRequestAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON CloseAppointedIntakeRequestAnswer where
+  toJSON (CloseAppointedIntakeRequestAnswer e) = toJSON e
+instance ToSchema CloseAppointedIntakeRequestAnswer where
+  declareNamedSchema _ = answerSchema "CloseAppointedIntakeRequestAnswer" $
+    transitionCases @ClosedIntakeRequestDTO <> [on intakeRequestNotFound, on intakeRequestInWrongState]
+
+newtype MatchAvailableSlotByPriorityAnswer = MatchAvailableSlotByPriorityAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON MatchAvailableSlotByPriorityAnswer where
+  toJSON (MatchAvailableSlotByPriorityAnswer e) = toJSON e
+instance ToSchema MatchAvailableSlotByPriorityAnswer where
+  declareNamedSchema _ = answerSchema "MatchAvailableSlotByPriorityAnswer"
+    [on noMatchingIntakeRequest, on matchOutcome]
+
+newtype CreateAvailableSlotAnswer = CreateAvailableSlotAnswer Envelope deriving (Show, Eq)
+instance ToJSON CreateAvailableSlotAnswer where toJSON (CreateAvailableSlotAnswer e) = toJSON e
+instance ToSchema CreateAvailableSlotAnswer where
+  declareNamedSchema _ = answerSchema "CreateAvailableSlotAnswer"
+    [on slotCreated, on slotOverlapsDoctorCalendar, on doctorNotFound, on healthcareServiceNotFound]
+
+newtype FetchDoctorAnswer = FetchDoctorAnswer Envelope deriving (Show, Eq)
+instance ToJSON FetchDoctorAnswer where toJSON (FetchDoctorAnswer e) = toJSON e
+instance ToSchema FetchDoctorAnswer where
+  declareNamedSchema _ = answerSchema "FetchDoctorAnswer" [on (ok :: Outcome DoctorDTO), on doctorNotFound]
+
+newtype FetchDoctorsAnswer = FetchDoctorsAnswer Envelope deriving (Show, Eq)
+instance ToJSON FetchDoctorsAnswer where toJSON (FetchDoctorsAnswer e) = toJSON e
+instance ToSchema FetchDoctorsAnswer where
+  declareNamedSchema _ = answerSchema "FetchDoctorsAnswer" [on (ok :: Outcome [DoctorDTO])]
+
+newtype FetchPatientAnswer = FetchPatientAnswer Envelope deriving (Show, Eq)
+instance ToJSON FetchPatientAnswer where toJSON (FetchPatientAnswer e) = toJSON e
+instance ToSchema FetchPatientAnswer where
+  declareNamedSchema _ =
+    answerSchema "FetchPatientAnswer" [on (ok :: Outcome PatientDTO), on patientNotFound]
+
+newtype FetchPatientsAnswer = FetchPatientsAnswer Envelope deriving (Show, Eq)
+instance ToJSON FetchPatientsAnswer where toJSON (FetchPatientsAnswer e) = toJSON e
+instance ToSchema FetchPatientsAnswer where
+  declareNamedSchema _ = answerSchema "FetchPatientsAnswer" [on (ok :: Outcome [PatientDTO])]
+
+newtype FetchHealthcareServiceAnswer = FetchHealthcareServiceAnswer Envelope deriving (Show, Eq)
+instance ToJSON FetchHealthcareServiceAnswer where toJSON (FetchHealthcareServiceAnswer e) = toJSON e
+instance ToSchema FetchHealthcareServiceAnswer where
+  declareNamedSchema _ = answerSchema "FetchHealthcareServiceAnswer"
+    [on (ok :: Outcome HealthcareServiceDTO), on healthcareServiceNotFound]
+
+newtype FetchHealthcareServicesAnswer = FetchHealthcareServicesAnswer Envelope deriving (Show, Eq)
+instance ToJSON FetchHealthcareServicesAnswer where toJSON (FetchHealthcareServicesAnswer e) = toJSON e
+instance ToSchema FetchHealthcareServicesAnswer where
+  declareNamedSchema _ =
+    answerSchema "FetchHealthcareServicesAnswer" [on (ok :: Outcome [HealthcareServiceDTO])]
+
+newtype FetchAvailableSlotAnswer = FetchAvailableSlotAnswer Envelope deriving (Show, Eq)
+instance ToJSON FetchAvailableSlotAnswer where toJSON (FetchAvailableSlotAnswer e) = toJSON e
+instance ToSchema FetchAvailableSlotAnswer where
+  declareNamedSchema _ = answerSchema "FetchAvailableSlotAnswer"
+    [on (ok :: Outcome AvailableSlotDTO), on availableSlotConsumed]
+
+newtype FetchIntakeRequestAnswer = FetchIntakeRequestAnswer Envelope deriving (Show, Eq)
+instance ToJSON FetchIntakeRequestAnswer where toJSON (FetchIntakeRequestAnswer e) = toJSON e
+instance ToSchema FetchIntakeRequestAnswer where
+  declareNamedSchema _ = answerSchema "FetchIntakeRequestAnswer"
+    [on (ok :: Outcome IntakeRequestDTO), on intakeRequestNotFound]
+
+newtype FetchSubmittedIntakeRequestsAnswer = FetchSubmittedIntakeRequestsAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON FetchSubmittedIntakeRequestsAnswer where
+  toJSON (FetchSubmittedIntakeRequestsAnswer e) = toJSON e
+instance ToSchema FetchSubmittedIntakeRequestsAnswer where
+  declareNamedSchema _ = answerSchema "FetchSubmittedIntakeRequestsAnswer"
+    [on (ok :: Outcome [SubmittedIntakeRequestDTO])]
+
+newtype FetchAcceptedIntakeRequestsAnswer = FetchAcceptedIntakeRequestsAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON FetchAcceptedIntakeRequestsAnswer where
+  toJSON (FetchAcceptedIntakeRequestsAnswer e) = toJSON e
+instance ToSchema FetchAcceptedIntakeRequestsAnswer where
+  declareNamedSchema _ = answerSchema "FetchAcceptedIntakeRequestsAnswer"
+    [on (ok :: Outcome [TriagedIntakeRequestDTO])]
+
+newtype FetchAppointedIntakeRequestsAnswer = FetchAppointedIntakeRequestsAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON FetchAppointedIntakeRequestsAnswer where
+  toJSON (FetchAppointedIntakeRequestsAnswer e) = toJSON e
+instance ToSchema FetchAppointedIntakeRequestsAnswer where
+  declareNamedSchema _ = answerSchema "FetchAppointedIntakeRequestsAnswer"
+    [on (ok :: Outcome [AppointedIntakeRequestDTO])]
+
+newtype FetchRejectedIntakeRequestsByRejectedAtAnswer =
+  FetchRejectedIntakeRequestsByRejectedAtAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON FetchRejectedIntakeRequestsByRejectedAtAnswer where
+  toJSON (FetchRejectedIntakeRequestsByRejectedAtAnswer e) = toJSON e
+instance ToSchema FetchRejectedIntakeRequestsByRejectedAtAnswer where
+  declareNamedSchema _ = answerSchema "FetchRejectedIntakeRequestsByRejectedAtAnswer"
+    [on (ok :: Outcome [RejectedIntakeRequestDTO])]
+
+newtype FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer =
+  FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer where
+  toJSON (FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer e) = toJSON e
+instance ToSchema FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer where
+  declareNamedSchema _ = answerSchema "FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer"
+    [on (ok :: Outcome [WithdrawnIntakeRequestDTO])]
+
+newtype FetchStaleIntakeRequestsByStaleAtAnswer = FetchStaleIntakeRequestsByStaleAtAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON FetchStaleIntakeRequestsByStaleAtAnswer where
+  toJSON (FetchStaleIntakeRequestsByStaleAtAnswer e) = toJSON e
+instance ToSchema FetchStaleIntakeRequestsByStaleAtAnswer where
+  declareNamedSchema _ = answerSchema "FetchStaleIntakeRequestsByStaleAtAnswer"
+    [on (ok :: Outcome [StaleIntakeRequestDTO])]
+
+newtype FetchClosedIntakeRequestsByStartAnswer = FetchClosedIntakeRequestsByStartAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON FetchClosedIntakeRequestsByStartAnswer where
+  toJSON (FetchClosedIntakeRequestsByStartAnswer e) = toJSON e
+instance ToSchema FetchClosedIntakeRequestsByStartAnswer where
+  declareNamedSchema _ = answerSchema "FetchClosedIntakeRequestsByStartAnswer"
+    [on (ok :: Outcome [ClosedIntakeRequestDTO])]
+
+newtype FetchDoctorCalendarEntriesOverlappingAnswer =
+  FetchDoctorCalendarEntriesOverlappingAnswer Envelope
+  deriving (Show, Eq)
+instance ToJSON FetchDoctorCalendarEntriesOverlappingAnswer where
+  toJSON (FetchDoctorCalendarEntriesOverlappingAnswer e) = toJSON e
+instance ToSchema FetchDoctorCalendarEntriesOverlappingAnswer where
+  declareNamedSchema _ = answerSchema "FetchDoctorCalendarEntriesOverlappingAnswer"
+    [on (ok :: Outcome [DoctorCalendarEntryDTO])]

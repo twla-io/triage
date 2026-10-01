@@ -88,7 +88,7 @@ bottom.
 
 **Why it's recorded:** a later session could "simplify" the guards or the matching transaction without seeing what they prevent.
 
-**Rejected:** catching constraint violations in general (see "Unknown ids are ServiceErrors" for the foreign-key case).
+**Rejected:** catching constraint violations in general (see "Unknown ids are error facts" for the foreign-key case).
 
 ## Withdrawal exists only before an appointment (2026-07-11)
 
@@ -183,7 +183,7 @@ bottom.
 
 ## A slot's duration comes from its healthcare service (2026-09-27)
 
-**Decided:** `addAvailableSlot` takes the `HealthcareService` and copies its duration into the new slot. The request body has no duration field; the UI shows the duration read-only. The slot keeps its own copy, so a later change to the service won't alter existing slots. An unknown service is the `ServiceError` `HealthcareServiceNotFound`, since services are never deleted.
+**Decided:** `addAvailableSlot` takes the `HealthcareService` and copies its duration into the new slot. The request body has no duration field; the UI shows the duration read-only. The slot keeps its own copy, so a later change to the service won't alter existing slots. An unknown service is the error `HealthcareServiceNotFound`, since services are never deleted.
 
 **Rejected:** a composite foreign key `(healthcare_service_id, duration) REFERENCES healthcare_services (id, duration)`. It would block ever changing a service's duration, and existing slots should keep the duration they were created with.
 
@@ -215,7 +215,7 @@ bottom.
 
 **Rejected: sealing `AvailableSlot`.** A pure module can't prove a value came from storage: `mkDoctorCalendar` is exported, so any single slot can be made to fit an empty calendar. The seal would cost an extra query per slot read and add friction without a guarantee. Revisit only if fabricated slots cause a real bug, and then look at provenance, not sealing.
 
-## Unknown ids are ServiceErrors, checked in Service (2026-09-28)
+## Unknown ids are error facts, checked in Service (2026-09-28)
 
 **Found:** a patient, doctor or service id that didn't exist reached the database, failed a foreign key, and surfaced as a 500.
 
@@ -236,11 +236,11 @@ bottom.
 **Decided:** an operation compares the state it expects with the state the request is in.
 
 - **The current state comes after the expected one:** someone else acted first. This is an outcome carrying the request as it is now, whether the fetch noticed or the write did: `TransitionOutcome a = Transitioned a | MovedOn IntakeRequest`, and `IntakeRequestMovedOn` in `MatchOutcome`. On the wire it is `movedOn` or `intakeRequestMovedOn`, with the request as `detail`.
-- **The current state can't come after the expected one:** the caller made a mistake. This is the `ServiceError` `IntakeRequestInWrongState IntakeRequest`, on the wire `intakeRequestInWrongState`.
+- **The current state can't come after the expected one:** the caller made a mistake. This is the error `IntakeRequestInWrongState`, carrying the request, on the wire `intakeRequestInWrongState`.
 
 After a lost write, Service reads the request once more, and that read always finds a later state. Nothing retries, with one exception: a use case with several source states (withdraw) continues once from another of its sources if the re-read finds one (`guard-every-fetch-then-write-gap`). Withdrawn records which state it came from, which keeps the comparison decidable. The comparison lives in each Service operation's case split, exhaustive with no wildcard (`request-state-answers-follow-the-lifecycle`). It is not a Domain function, because an ordering type would exist only to serve error reporting.
 
-**Rejected:** a split that depends on timing (a `ServiceError` if the fetch noticed, an outcome if the write did), which was the earlier behaviour; `ChangedSinceRead` everywhere (it throws away a state that is now knowable, and doesn't separate lost races from caller mistakes).
+**Rejected:** a split that depends on timing (an error if the fetch noticed, an outcome if the write did), which was the earlier behaviour; `ChangedSinceRead` everywhere (it throws away a state that is now knowable, and doesn't separate lost races from caller mistakes).
 
 ## RoutineWindow's notBefore ≤ notAfter is also a database CHECK (2026-09-28)
 
@@ -299,7 +299,7 @@ After a lost write, Service reads the request once more, and that read always fi
 
 **Found:** the clean-room regeneration dropped the logging: a decode failure's `DecodeError` was discarded, and database errors fell through to Warp's own "Something went wrong". The skill specified the 500 response but never said it must be recorded.
 
-**Decided:** one `toHandler` catches every synchronous exception, writes it to stderr and answers with the plain body. `DecodeFailed` raises `DecodeFailure`, so it reaches the same log.
+**Decided:** one `toHandler` catches every synchronous exception, writes it to stderr and answers with the plain body. Service raises a decode failure as Persistence's `DecodeError`, which reaches the same log.
 
 **Rejected:** logging decode failures only (two mechanisms and two bodies); a structured logging library (infrastructure a practice of 2–3 doctors doesn't need).
 
@@ -309,17 +309,18 @@ After a lost write, Service reads the request once more, and that read always fi
 
 **Rejected:** reading Transport or Api (copying another layer's code, the cause of the CHECK bug); the contract alone (it has no lifecycle or rules, and under Swagger 2.0 it couldn't describe sum types); TypeScript copies of `Ord` or the smart constructors (a second, untested implementation, where a wrong copy can make a valid value impossible to enter).
 
-## ServiceError stays uniform, for now (2026-10-01)
+## Errors are facts, typed per use case (2026-10-01)
 
-**Decided:** one `ServiceError` for every use case, so every answer lists all six error tags.
+**Found:** one `ServiceError` for every use case made each type claim errors its use case can't produce (a read "may" answer `slotDoesNotMatchIntakeRequest`), so callers handled impossible cases and a new error widened every function silently. Outcomes were already exact per use case; errors weren't.
 
-**Known cost:** the types claim errors a use case can't produce (a read "may" answer `slotDoesNotMatchIntakeRequest`). Callers must handle impossible cases, and a new case would widen every function silently.
+**Decided:**
+- Each fact is its own type (`DoctorNotFound`, `IntakeRequestInWrongState`, `SlotDoesNotMatchIntakeRequest`, …). A use case's facts are exactly those its shape implies: `<Entity>NotFound` for each never-deleted entity it receives by id, `<Entity>InWrongState` if some case is reachable from none of its source cases, and the refusal of a Domain function over inputs the caller chose (`error-vs-outcome-types`, in `triage-service-codegen`).
+- No fact: the value is returned directly. One fact: that type is the `Left`. Several: a `<Function>Error` with constructors `<Function><Fact>`.
+- The wire tag is the fact type's name, so a fact has one tag in every answer, and an answer lists exactly its use case's outcomes and facts.
+- A decode failure is not an error but a 500: Service's `decoded` raises Persistence's `DecodeError`.
+- A write outcome carried inside another outcome is wrapped by a constructor named after its type (`PriorityMatchOutcome = NoMatchingIntakeRequest | MatchOutcome MatchOutcome`): it can also carry a fact found before the write, so a name like `MatchAttempted` would claim an attempt that didn't happen.
 
-**Planned, in its own service-skill round:** an error type per use case, derived from the use case's shape: each id parameter gives `<Entity>NotFound`; a transition source that a later state can't follow gives `InWrongState`; a Domain function returning `Maybe` gives its refusal.
-
-**Rejected:** listing the reachable tags by reading function bodies (derived from code rather than types; nothing would catch it going wrong).
-
----
+**Rejected:** the uniform `ServiceError` (the types were untrue); one sum per use case with prefixed constructors carrying raw ids, the tag made by stripping the prefix from a string; type-level error sets (machinery a 2–3 doctor practice doesn't justify); listing reachable errors by reading function bodies (nothing would catch it going wrong); raising decode failures in Persistence (it would change the db layer and its tests for nothing).
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
 

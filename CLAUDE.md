@@ -74,9 +74,12 @@ Direct imports between internal modules (no cycles):
 - **`src/Service.hs`** — one function per use case, each taking a
   `ConnectionPool`: fetch, check the stored state, call the Domain function
   (or construct the Domain case directly), persist. Mints IDs; takes
-  timestamps as parameters. Reports caller mistakes/failures as
-  `ServiceError` and legitimate concurrent results as outcome types
-  (`TransitionOutcome`, `MatchOutcome`, `SlotCreationOutcome`). A request found
+  timestamps as parameters. Reports each caller mistake as its own fact
+  type (`DoctorNotFound`, `IntakeRequestInWrongState`, …; a use case with
+  several wraps them in `<Function>Error`), raises a decode failure as an
+  exception (a 500), and returns legitimate concurrent results as outcome
+  types (`TransitionOutcome`, `MatchOutcome`, `PriorityMatchOutcome`,
+  `SlotCreationOutcome`). A request found
   past the state an operation expects is `MovedOn`/`IntakeRequestMovedOn`;
   one in a state that can't follow it is `IntakeRequestInWrongState`. Also
   exposes read pass-throughs and the `DoctorCalendarEntry` view.

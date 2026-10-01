@@ -199,3 +199,15 @@ below.
 **Why:** both halves of the old name claimed something the function doesn't do. "check" suggests a predicate or a validation; the function decides — it sorts the requests by priority and matches the first one that fits the slot, the many-request counterpart of `matchIntakeRequestToSlot`. "Waitlist" claims the list is the waitlist, which a function taking any `[TriagedIntakeRequest]` can't know — the very argument `Service.hs`'s naming rule (`verifies-the-precondition`) uses to give "waitlist" to `Service.matchWaitlistToSlot`, which fetches the real waitlist. The new name states what decides between eligible requests: priority.
 
 **Rejected:** `matchHighestPriorityToSlot` (pairs with `matchIntakeRequestToSlot`, but long) and names built on "most corresponding" or "best" (every eligible request fits equally; priority is what decides). `triage-api-codegen`'s rule `checkwaitlist-not-an-endpoint` becomes `match-by-priority-not-an-endpoint`.
+
+## ServiceError stays uniform, for now (2026-10-01)
+
+**Decided:** one `ServiceError` for every use case, so every answer lists all six error tags.
+
+**Known cost:** the types claim errors a use case can't produce (a read "may" answer `slotDoesNotMatchIntakeRequest`). Callers must handle impossible cases, and a new case would widen every function silently.
+
+**Planned, in its own service-skill round:** an error type per use case, derived from the use case's shape: each id parameter gives `<Entity>NotFound`; a transition source that a later state can't follow gives `InWrongState`; a Domain function returning `Maybe` gives its refusal.
+
+**Rejected:** listing the reachable tags by reading function bodies (derived from code rather than types; nothing would catch it going wrong).
+
+---

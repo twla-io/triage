@@ -30,6 +30,8 @@ import Data.Time (UTCTime (..), fromGregorian, addUTCTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import Domain
+import qualified Api as A
+import qualified Service as S
 import qualified Transport as T
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -277,45 +279,74 @@ genCloseReasonRequest = oneof
   , T.NoShowRequest . T.fromDomainAbsence . Absence <$> genParty
   ]
 
--- Answers.
+-- Answers: every Service value each use case can return, rendered by the
+-- same function its handler uses.
 
-genServiceError :: Gen T.ServiceErrorDTO
-genServiceError = oneof
-  [ T.DoctorNotFoundDTO . T.fromDomainDoctorId <$> arbitrary
-  , T.PatientNotFoundDTO . T.fromDomainPatientId <$> arbitrary
-  , T.HealthcareServiceNotFoundDTO . T.fromDomainHealthcareServiceId <$> arbitrary
-  , T.IntakeRequestNotFoundDTO . T.fromDomainIntakeRequestId <$> arbitrary
-  , T.IntakeRequestInWrongStateDTO . T.fromDomainIntakeRequest <$> genIntakeRequest
-  , pure T.SlotDoesNotMatchIntakeRequestDTO
+genDoctorNotFound :: Gen S.DoctorNotFound
+genDoctorNotFound = S.DoctorNotFound <$> arbitrary
+
+genPatientNotFound :: Gen S.PatientNotFound
+genPatientNotFound = S.PatientNotFound <$> arbitrary
+
+genHealthcareServiceNotFound :: Gen S.HealthcareServiceNotFound
+genHealthcareServiceNotFound = S.HealthcareServiceNotFound <$> arbitrary
+
+genIntakeRequestNotFound :: Gen S.IntakeRequestNotFound
+genIntakeRequestNotFound = S.IntakeRequestNotFound <$> arbitrary
+
+genIntakeRequestInWrongState :: Gen S.IntakeRequestInWrongState
+genIntakeRequestInWrongState = S.IntakeRequestInWrongState <$> genIntakeRequest
+
+genAcceptSubmittedIntakeRequestError :: Gen S.AcceptSubmittedIntakeRequestError
+genAcceptSubmittedIntakeRequestError = oneof
+  [ S.AcceptSubmittedIntakeRequestIntakeRequestNotFound <$> genIntakeRequestNotFound
+  , S.AcceptSubmittedIntakeRequestHealthcareServiceNotFound <$> genHealthcareServiceNotFound
+  , S.AcceptSubmittedIntakeRequestDoctorNotFound <$> genDoctorNotFound
   ]
 
-orError :: Gen a -> Gen (Either T.ServiceErrorDTO a)
-orError g = oneof [Left <$> genServiceError, Right <$> g]
-
-okOf :: Gen a -> Gen (T.Ok a)
-okOf = fmap T.Ok
-
-genTransition :: Gen a -> Gen (T.TransitionOutcomeDTO a)
-genTransition g = oneof
-  [ T.TransitionedDTO <$> g
-  , T.MovedOnDTO . T.fromDomainIntakeRequest <$> genIntakeRequest
+genMatchAcceptedIntakeRequestToSlotError :: Gen S.MatchAcceptedIntakeRequestToSlotError
+genMatchAcceptedIntakeRequestToSlotError = oneof
+  [ S.MatchAcceptedIntakeRequestToSlotIntakeRequestNotFound <$> genIntakeRequestNotFound
+  , S.MatchAcceptedIntakeRequestToSlotIntakeRequestInWrongState <$> genIntakeRequestInWrongState
+  , pure (S.MatchAcceptedIntakeRequestToSlotSlotDoesNotMatchIntakeRequest S.SlotDoesNotMatchIntakeRequest)
   ]
 
-genMatchOutcome :: Gen T.MatchOutcomeDTO
+genMarkAcceptedIntakeRequestStaleError :: Gen S.MarkAcceptedIntakeRequestStaleError
+genMarkAcceptedIntakeRequestStaleError = oneof
+  [ S.MarkAcceptedIntakeRequestStaleIntakeRequestNotFound <$> genIntakeRequestNotFound
+  , S.MarkAcceptedIntakeRequestStaleIntakeRequestInWrongState <$> genIntakeRequestInWrongState
+  ]
+
+genCloseAppointedIntakeRequestError :: Gen S.CloseAppointedIntakeRequestError
+genCloseAppointedIntakeRequestError = oneof
+  [ S.CloseAppointedIntakeRequestIntakeRequestNotFound <$> genIntakeRequestNotFound
+  , S.CloseAppointedIntakeRequestIntakeRequestInWrongState <$> genIntakeRequestInWrongState
+  ]
+
+genCreateAvailableSlotError :: Gen S.CreateAvailableSlotError
+genCreateAvailableSlotError = oneof
+  [ S.CreateAvailableSlotDoctorNotFound <$> genDoctorNotFound
+  , S.CreateAvailableSlotHealthcareServiceNotFound <$> genHealthcareServiceNotFound
+  ]
+
+orFact :: Gen e -> Gen a -> Gen (Either e a)
+orFact e a = oneof [Left <$> e, Right <$> a]
+
+genTransition :: Gen a -> Gen (S.TransitionOutcome a)
+genTransition g = oneof [S.Transitioned <$> g, S.MovedOn <$> genIntakeRequest]
+
+genMatchOutcome :: Gen S.MatchOutcome
 genMatchOutcome = oneof
-  [ T.MatchedDTO . T.fromDomainAppointedIntakeRequest <$> genAppointed
-  , pure T.AvailableSlotConsumedDTO
-  , T.IntakeRequestMovedOnDTO . T.fromDomainIntakeRequest <$> genIntakeRequest
+  [ S.Matched <$> genAppointed
+  , pure S.AvailableSlotConsumed
+  , S.IntakeRequestMovedOn <$> genIntakeRequest
   ]
 
-genPriorityMatchOutcome :: Gen T.PriorityMatchOutcomeDTO
-genPriorityMatchOutcome = oneof [pure T.NoMatchingIntakeRequestDTO, T.MatchAttemptedDTO <$> genMatchOutcome]
+genPriorityMatchOutcome :: Gen S.PriorityMatchOutcome
+genPriorityMatchOutcome = oneof [pure S.NoMatchingIntakeRequest, S.MatchOutcome <$> genMatchOutcome]
 
-genSlotCreationOutcome :: Gen T.SlotCreationOutcomeDTO
-genSlotCreationOutcome = oneof
-  [ T.SlotCreatedDTO . T.fromDomainAvailableSlot <$> genAnySlot
-  , pure T.SlotOverlapsDoctorCalendarDTO
-  ]
+genSlotCreationOutcome :: Gen S.SlotCreationOutcome
+genSlotCreationOutcome = oneof [S.SlotCreated <$> genAnySlot, pure S.SlotOverlapsDoctorCalendar]
 
 -- Short lists, possibly empty.
 shortListOf :: Gen a -> Gen [a]
@@ -639,83 +670,73 @@ main = hspec $ do
         (T.fromDomainHealthcareServiceId slot.healthcareServiceId) slot.start)
 
   describe "wire format: every answer's ToJSON matches its OpenAPI 3 schema" $ do
-    prop "MatchOutcome (nested envelope)" $ forAll genMatchOutcome matchesSchema
-    prop "CreateDoctorAnswer" $
-      forAll (okOf (T.fromDomainDoctor <$> genDoctor)) (matchesSchema @T.CreateDoctorAnswer . T.Answer)
-    prop "CreatePatientAnswer" $
-      forAll (okOf (T.fromDomainPatient <$> genPatient)) (matchesSchema @T.CreatePatientAnswer . T.Answer)
+    prop "MatchOutcome (nested envelope)" $
+      forAll genMatchOutcome (matchesSchema . T.MatchOutcomeDTO . A.renderMatchOutcome)
+    prop "CreateDoctorAnswer" $ forAll genDoctor (matchesSchema . A.renderCreateDoctorAnswer)
+    prop "CreatePatientAnswer" $ forAll genPatient (matchesSchema . A.renderCreatePatientAnswer)
     prop "CreateHealthcareServiceAnswer" $
-      forAll (okOf (T.fromDomainHealthcareService <$> genService))
-        (matchesSchema @T.CreateHealthcareServiceAnswer . T.Answer)
+      forAll genService (matchesSchema . A.renderCreateHealthcareServiceAnswer)
     prop "SubmitIntakeRequestAnswer" $
-      forAll (orError (okOf (T.fromDomainSubmittedIntakeRequest <$> genSubmittedIntakeRequest)))
-        (matchesSchema @T.SubmitIntakeRequestAnswer . T.Answer)
+      forAll (orFact genPatientNotFound genSubmittedIntakeRequest)
+        (matchesSchema . A.renderSubmitIntakeRequestAnswer)
     prop "AcceptSubmittedIntakeRequestAnswer" $
-      forAll (orError (genTransition (T.fromDomainTriagedIntakeRequest <$> genAnyTriaged)))
-        (matchesSchema @T.AcceptSubmittedIntakeRequestAnswer . T.Answer)
+      forAll (orFact genAcceptSubmittedIntakeRequestError (genTransition genAnyTriaged))
+        (matchesSchema . A.renderAcceptSubmittedIntakeRequestAnswer)
     prop "RejectSubmittedIntakeRequestAnswer" $
-      forAll (orError (genTransition (T.fromDomainRejectedIntakeRequest <$> genRejected)))
-        (matchesSchema @T.RejectSubmittedIntakeRequestAnswer . T.Answer)
+      forAll (orFact genIntakeRequestNotFound (genTransition genRejected))
+        (matchesSchema . A.renderRejectSubmittedIntakeRequestAnswer)
     prop "MatchAcceptedIntakeRequestToSlotAnswer" $
-      forAll (orError genMatchOutcome) (matchesSchema @T.MatchAcceptedIntakeRequestToSlotAnswer . T.Answer)
+      forAll (orFact genMatchAcceptedIntakeRequestToSlotError genMatchOutcome)
+        (matchesSchema . A.renderMatchAcceptedIntakeRequestToSlotAnswer)
     prop "WithdrawIntakeRequestAnswer" $
-      forAll (orError (genTransition (T.fromDomainWithdrawnIntakeRequest <$> genWithdrawn)))
-        (matchesSchema @T.WithdrawIntakeRequestAnswer . T.Answer)
+      forAll (orFact genIntakeRequestNotFound (genTransition genWithdrawn))
+        (matchesSchema . A.renderWithdrawIntakeRequestAnswer)
     prop "MarkAcceptedIntakeRequestStaleAnswer" $
-      forAll (orError (genTransition (T.fromDomainStaleIntakeRequest <$> genStale)))
-        (matchesSchema @T.MarkAcceptedIntakeRequestStaleAnswer . T.Answer)
+      forAll (orFact genMarkAcceptedIntakeRequestStaleError (genTransition genStale))
+        (matchesSchema . A.renderMarkAcceptedIntakeRequestStaleAnswer)
     prop "CloseAppointedIntakeRequestAnswer" $
-      forAll (orError (genTransition (T.fromDomainClosedIntakeRequest <$> genClosed)))
-        (matchesSchema @T.CloseAppointedIntakeRequestAnswer . T.Answer)
+      forAll (orFact genCloseAppointedIntakeRequestError (genTransition genClosed))
+        (matchesSchema . A.renderCloseAppointedIntakeRequestAnswer)
     prop "MatchAvailableSlotByPriorityAnswer" $
-      forAll (orError genPriorityMatchOutcome)
-        (matchesSchema @T.MatchAvailableSlotByPriorityAnswer . T.Answer)
+      forAll genPriorityMatchOutcome (matchesSchema . A.renderMatchAvailableSlotByPriorityAnswer)
     prop "CreateAvailableSlotAnswer" $
-      forAll (orError genSlotCreationOutcome) (matchesSchema @T.CreateAvailableSlotAnswer . T.Answer)
+      forAll (orFact genCreateAvailableSlotError genSlotCreationOutcome)
+        (matchesSchema . A.renderCreateAvailableSlotAnswer)
     prop "FetchDoctorAnswer" $
-      forAll (orError (okOf (T.fromDomainDoctor <$> genDoctor))) (matchesSchema @T.FetchDoctorAnswer . T.Answer)
+      forAll (orFact genDoctorNotFound genDoctor) (matchesSchema . A.renderFetchDoctorAnswer)
     prop "FetchDoctorsAnswer" $
-      forAll (okOf (shortListOf (T.fromDomainDoctor <$> genDoctor)))
-        (matchesSchema @T.FetchDoctorsAnswer . T.Answer)
+      forAll (shortListOf genDoctor) (matchesSchema . A.renderFetchDoctorsAnswer)
     prop "FetchPatientAnswer" $
-      forAll (orError (okOf (T.fromDomainPatient <$> genPatient)))
-        (matchesSchema @T.FetchPatientAnswer . T.Answer)
+      forAll (orFact genPatientNotFound genPatient) (matchesSchema . A.renderFetchPatientAnswer)
     prop "FetchPatientsAnswer" $
-      forAll (okOf (shortListOf (T.fromDomainPatient <$> genPatient)))
-        (matchesSchema @T.FetchPatientsAnswer . T.Answer)
+      forAll (shortListOf genPatient) (matchesSchema . A.renderFetchPatientsAnswer)
     prop "FetchHealthcareServiceAnswer" $
-      forAll (orError (okOf (T.fromDomainHealthcareService <$> genService)))
-        (matchesSchema @T.FetchHealthcareServiceAnswer . T.Answer)
+      forAll (orFact genHealthcareServiceNotFound genService)
+        (matchesSchema . A.renderFetchHealthcareServiceAnswer)
     prop "FetchHealthcareServicesAnswer" $
-      forAll (orError (okOf (shortListOf (T.fromDomainHealthcareService <$> genService))))
-        (matchesSchema @T.FetchHealthcareServicesAnswer . T.Answer)
+      forAll (shortListOf genService) (matchesSchema . A.renderFetchHealthcareServicesAnswer)
     prop "FetchAvailableSlotAnswer" $
-      forAll (orError (oneof [pure Nothing, Just . T.fromDomainAvailableSlot <$> genAnySlot]))
-        (matchesSchema @T.FetchAvailableSlotAnswer . T.Answer)
+      forAll (oneof [pure Nothing, Just <$> genAnySlot]) (matchesSchema . A.renderFetchAvailableSlotAnswer)
     prop "FetchIntakeRequestAnswer" $
-      forAll (orError (okOf (T.fromDomainIntakeRequest <$> genIntakeRequest)))
-        (matchesSchema @T.FetchIntakeRequestAnswer . T.Answer)
+      forAll (orFact genIntakeRequestNotFound genIntakeRequest)
+        (matchesSchema . A.renderFetchIntakeRequestAnswer)
     prop "FetchSubmittedIntakeRequestsAnswer" $
-      forAll (orError (okOf (shortListOf (T.fromDomainSubmittedIntakeRequest <$> genSubmittedIntakeRequest))))
-        (matchesSchema @T.FetchSubmittedIntakeRequestsAnswer . T.Answer)
+      forAll (shortListOf genSubmittedIntakeRequest)
+        (matchesSchema . A.renderFetchSubmittedIntakeRequestsAnswer)
     prop "FetchAcceptedIntakeRequestsAnswer" $
-      forAll (orError (okOf (shortListOf (T.fromDomainTriagedIntakeRequest <$> genAnyTriaged))))
-        (matchesSchema @T.FetchAcceptedIntakeRequestsAnswer . T.Answer)
+      forAll (shortListOf genAnyTriaged) (matchesSchema . A.renderFetchAcceptedIntakeRequestsAnswer)
     prop "FetchAppointedIntakeRequestsAnswer" $
-      forAll (orError (okOf (shortListOf (T.fromDomainAppointedIntakeRequest <$> genAppointed))))
-        (matchesSchema @T.FetchAppointedIntakeRequestsAnswer . T.Answer)
+      forAll (shortListOf genAppointed) (matchesSchema . A.renderFetchAppointedIntakeRequestsAnswer)
     prop "FetchRejectedIntakeRequestsByRejectedAtAnswer" $
-      forAll (orError (okOf (shortListOf (T.fromDomainRejectedIntakeRequest <$> genRejected))))
-        (matchesSchema @T.FetchRejectedIntakeRequestsByRejectedAtAnswer . T.Answer)
+      forAll (shortListOf genRejected)
+        (matchesSchema . A.renderFetchRejectedIntakeRequestsByRejectedAtAnswer)
     prop "FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer" $
-      forAll (orError (okOf (shortListOf (T.fromDomainWithdrawnIntakeRequest <$> genWithdrawn))))
-        (matchesSchema @T.FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer . T.Answer)
+      forAll (shortListOf genWithdrawn)
+        (matchesSchema . A.renderFetchWithdrawnIntakeRequestsByWithdrawnAtAnswer)
     prop "FetchStaleIntakeRequestsByStaleAtAnswer" $
-      forAll (orError (okOf (shortListOf (T.fromDomainStaleIntakeRequest <$> genStale))))
-        (matchesSchema @T.FetchStaleIntakeRequestsByStaleAtAnswer . T.Answer)
+      forAll (shortListOf genStale) (matchesSchema . A.renderFetchStaleIntakeRequestsByStaleAtAnswer)
     prop "FetchClosedIntakeRequestsByStartAnswer" $
-      forAll (orError (okOf (shortListOf (T.fromDomainClosedIntakeRequest <$> genClosed))))
-        (matchesSchema @T.FetchClosedIntakeRequestsByStartAnswer . T.Answer)
+      forAll (shortListOf genClosed) (matchesSchema . A.renderFetchClosedIntakeRequestsByStartAnswer)
     prop "FetchDoctorCalendarEntriesOverlappingAnswer" $
-      forAll (orError (okOf (map T.fromDomainDoctorCalendarEntry <$> genDoctorCalendarEntries)))
-        (matchesSchema @T.FetchDoctorCalendarEntriesOverlappingAnswer . T.Answer)
+      forAll genDoctorCalendarEntries
+        (matchesSchema . A.renderFetchDoctorCalendarEntriesOverlappingAnswer)

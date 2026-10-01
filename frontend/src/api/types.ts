@@ -75,6 +75,13 @@ export interface paths {
                         "application/json;charset=utf-8": components["schemas"]["FetchAvailableSlotAnswer"];
                     };
                 };
+                /** @description `slotId` not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
             };
         };
         put?: never;
@@ -112,6 +119,13 @@ export interface paths {
                     content: {
                         "application/json;charset=utf-8": components["schemas"]["MatchAvailableSlotByPriorityAnswer"];
                     };
+                };
+                /** @description `slotId` not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
                 };
             };
         };
@@ -254,6 +268,13 @@ export interface paths {
                         "application/json;charset=utf-8": components["schemas"]["FetchDoctorAnswer"];
                     };
                 };
+                /** @description `doctorId` not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
             };
         };
         put?: never;
@@ -352,6 +373,13 @@ export interface paths {
                     content: {
                         "application/json;charset=utf-8": components["schemas"]["FetchHealthcareServiceAnswer"];
                     };
+                };
+                /** @description `healthcareServiceId` not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
                 };
             };
         };
@@ -712,6 +740,13 @@ export interface paths {
                         "application/json;charset=utf-8": components["schemas"]["FetchIntakeRequestAnswer"];
                     };
                 };
+                /** @description `intakeRequestId` not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
             };
         };
         put?: never;
@@ -756,6 +791,13 @@ export interface paths {
                 };
                 /** @description Invalid `body` */
                 400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `intakeRequestId` not found */
+                404: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -808,6 +850,13 @@ export interface paths {
                     };
                     content?: never;
                 };
+                /** @description `intakeRequestId` not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
             };
         };
         delete?: never;
@@ -843,6 +892,13 @@ export interface paths {
                     content: {
                         "application/json;charset=utf-8": components["schemas"]["MarkAcceptedIntakeRequestStaleAnswer"];
                     };
+                };
+                /** @description `intakeRequestId` not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
                 };
             };
         };
@@ -886,6 +942,13 @@ export interface paths {
                 };
                 /** @description Invalid `body` */
                 400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `intakeRequestId` not found */
+                404: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -938,6 +1001,13 @@ export interface paths {
                     };
                     content?: never;
                 };
+                /** @description `intakeRequestId` not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
             };
         };
         delete?: never;
@@ -980,6 +1050,13 @@ export interface paths {
                 };
                 /** @description Invalid `body` */
                 400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                /** @description `intakeRequestId` not found */
+                404: {
                     headers: {
                         [name: string]: unknown;
                     };
@@ -1082,6 +1159,13 @@ export interface paths {
                         "application/json;charset=utf-8": components["schemas"]["FetchPatientAnswer"];
                     };
                 };
+                /** @description `patientId` not found */
+                404: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
             };
         };
         put?: never;
@@ -1096,7 +1180,7 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        AcceptSubmittedIntakeRequestAnswer: components["schemas"]["AcceptSubmittedIntakeRequestAnswerTransitioned"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerMovedOn"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerDoctorNotFound"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerPatientNotFound"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerHealthcareServiceNotFound"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerIntakeRequestNotFound"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerIntakeRequestInWrongState"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerSlotDoesNotMatchIntakeRequest"];
+        AcceptSubmittedIntakeRequestAnswer: components["schemas"]["AcceptSubmittedIntakeRequestAnswerTransitioned"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerMovedOn"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerIntakeRequestNotFound"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerHealthcareServiceNotFound"] | components["schemas"]["AcceptSubmittedIntakeRequestAnswerDoctorNotFound"];
         AcceptSubmittedIntakeRequestAnswerDoctorNotFound: {
             detail: components["schemas"]["DoctorId"];
             /**
@@ -1113,14 +1197,6 @@ export interface components {
              */
             outcome: "healthcareServiceNotFound";
         };
-        AcceptSubmittedIntakeRequestAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
         AcceptSubmittedIntakeRequestAnswerIntakeRequestNotFound: {
             detail: components["schemas"]["IntakeRequestId"];
             /**
@@ -1136,23 +1212,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "movedOn";
-        };
-        AcceptSubmittedIntakeRequestAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        AcceptSubmittedIntakeRequestAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
         };
         AcceptSubmittedIntakeRequestAnswerTransitioned: {
             detail: components["schemas"]["TriagedIntakeRequest"];
@@ -1191,23 +1250,7 @@ export interface components {
             id: components["schemas"]["SlotId"];
             start: components["schemas"]["UTCTime"];
         };
-        CloseAppointedIntakeRequestAnswer: components["schemas"]["CloseAppointedIntakeRequestAnswerTransitioned"] | components["schemas"]["CloseAppointedIntakeRequestAnswerMovedOn"] | components["schemas"]["CloseAppointedIntakeRequestAnswerDoctorNotFound"] | components["schemas"]["CloseAppointedIntakeRequestAnswerPatientNotFound"] | components["schemas"]["CloseAppointedIntakeRequestAnswerHealthcareServiceNotFound"] | components["schemas"]["CloseAppointedIntakeRequestAnswerIntakeRequestNotFound"] | components["schemas"]["CloseAppointedIntakeRequestAnswerIntakeRequestInWrongState"] | components["schemas"]["CloseAppointedIntakeRequestAnswerSlotDoesNotMatchIntakeRequest"];
-        CloseAppointedIntakeRequestAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        CloseAppointedIntakeRequestAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
+        CloseAppointedIntakeRequestAnswer: components["schemas"]["CloseAppointedIntakeRequestAnswerTransitioned"] | components["schemas"]["CloseAppointedIntakeRequestAnswerMovedOn"] | components["schemas"]["CloseAppointedIntakeRequestAnswerIntakeRequestNotFound"] | components["schemas"]["CloseAppointedIntakeRequestAnswerIntakeRequestInWrongState"];
         CloseAppointedIntakeRequestAnswerIntakeRequestInWrongState: {
             detail: components["schemas"]["IntakeRequest"];
             /**
@@ -1231,23 +1274,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "movedOn";
-        };
-        CloseAppointedIntakeRequestAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        CloseAppointedIntakeRequestAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
         };
         CloseAppointedIntakeRequestAnswerTransitioned: {
             detail: components["schemas"]["ClosedIntakeRequest"];
@@ -1325,7 +1351,7 @@ export interface components {
             start: components["schemas"]["UTCTime"];
             triagedAt: components["schemas"]["UTCTime"];
         };
-        CreateAvailableSlotAnswer: components["schemas"]["CreateAvailableSlotAnswerSlotCreated"] | components["schemas"]["CreateAvailableSlotAnswerSlotOverlapsDoctorCalendar"] | components["schemas"]["CreateAvailableSlotAnswerDoctorNotFound"] | components["schemas"]["CreateAvailableSlotAnswerPatientNotFound"] | components["schemas"]["CreateAvailableSlotAnswerHealthcareServiceNotFound"] | components["schemas"]["CreateAvailableSlotAnswerIntakeRequestNotFound"] | components["schemas"]["CreateAvailableSlotAnswerIntakeRequestInWrongState"] | components["schemas"]["CreateAvailableSlotAnswerSlotDoesNotMatchIntakeRequest"];
+        CreateAvailableSlotAnswer: components["schemas"]["CreateAvailableSlotAnswerSlotCreated"] | components["schemas"]["CreateAvailableSlotAnswerSlotOverlapsDoctorCalendar"] | components["schemas"]["CreateAvailableSlotAnswerDoctorNotFound"] | components["schemas"]["CreateAvailableSlotAnswerHealthcareServiceNotFound"];
         CreateAvailableSlotAnswerDoctorNotFound: {
             detail: components["schemas"]["DoctorId"];
             /**
@@ -1342,30 +1368,6 @@ export interface components {
              */
             outcome: "healthcareServiceNotFound";
         };
-        CreateAvailableSlotAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        CreateAvailableSlotAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
-        CreateAvailableSlotAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
         CreateAvailableSlotAnswerSlotCreated: {
             detail: components["schemas"]["AvailableSlot"];
             /**
@@ -1373,15 +1375,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "slotCreated";
-        };
-        CreateAvailableSlotAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
         };
         CreateAvailableSlotAnswerSlotOverlapsDoctorCalendar: {
             /** @enum {unknown|null} */
@@ -1491,39 +1484,7 @@ export interface components {
             /** @enum {string} */
             type: "quarterOfAnHour" | "halfAnHour" | "oneHour";
         };
-        FetchAcceptedIntakeRequestsAnswer: components["schemas"]["FetchAcceptedIntakeRequestsAnswerOk"] | components["schemas"]["FetchAcceptedIntakeRequestsAnswerDoctorNotFound"] | components["schemas"]["FetchAcceptedIntakeRequestsAnswerPatientNotFound"] | components["schemas"]["FetchAcceptedIntakeRequestsAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchAcceptedIntakeRequestsAnswerIntakeRequestNotFound"] | components["schemas"]["FetchAcceptedIntakeRequestsAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchAcceptedIntakeRequestsAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchAcceptedIntakeRequestsAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchAcceptedIntakeRequestsAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchAcceptedIntakeRequestsAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchAcceptedIntakeRequestsAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        FetchAcceptedIntakeRequestsAnswer: components["schemas"]["FetchAcceptedIntakeRequestsAnswerOk"];
         FetchAcceptedIntakeRequestsAnswerOk: {
             detail: components["schemas"]["TriagedIntakeRequest"][];
             /**
@@ -1532,56 +1493,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchAcceptedIntakeRequestsAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchAcceptedIntakeRequestsAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchAppointedIntakeRequestsAnswer: components["schemas"]["FetchAppointedIntakeRequestsAnswerOk"] | components["schemas"]["FetchAppointedIntakeRequestsAnswerDoctorNotFound"] | components["schemas"]["FetchAppointedIntakeRequestsAnswerPatientNotFound"] | components["schemas"]["FetchAppointedIntakeRequestsAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchAppointedIntakeRequestsAnswerIntakeRequestNotFound"] | components["schemas"]["FetchAppointedIntakeRequestsAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchAppointedIntakeRequestsAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchAppointedIntakeRequestsAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchAppointedIntakeRequestsAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchAppointedIntakeRequestsAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchAppointedIntakeRequestsAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        FetchAppointedIntakeRequestsAnswer: components["schemas"]["FetchAppointedIntakeRequestsAnswerOk"];
         FetchAppointedIntakeRequestsAnswerOk: {
             detail: components["schemas"]["AppointedIntakeRequest"][];
             /**
@@ -1590,24 +1502,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchAppointedIntakeRequestsAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchAppointedIntakeRequestsAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchAvailableSlotAnswer: components["schemas"]["FetchAvailableSlotAnswerOk"] | components["schemas"]["FetchAvailableSlotAnswerAvailableSlotConsumed"] | components["schemas"]["FetchAvailableSlotAnswerDoctorNotFound"] | components["schemas"]["FetchAvailableSlotAnswerPatientNotFound"] | components["schemas"]["FetchAvailableSlotAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchAvailableSlotAnswerIntakeRequestNotFound"] | components["schemas"]["FetchAvailableSlotAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchAvailableSlotAnswerSlotDoesNotMatchIntakeRequest"];
+        FetchAvailableSlotAnswer: components["schemas"]["FetchAvailableSlotAnswerOk"] | components["schemas"]["FetchAvailableSlotAnswerAvailableSlotConsumed"];
         FetchAvailableSlotAnswerAvailableSlotConsumed: {
             /** @enum {unknown|null} */
             detail: null;
@@ -1617,38 +1512,6 @@ export interface components {
              */
             outcome: "availableSlotConsumed";
         };
-        FetchAvailableSlotAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchAvailableSlotAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchAvailableSlotAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchAvailableSlotAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
         FetchAvailableSlotAnswerOk: {
             detail: components["schemas"]["AvailableSlot"];
             /**
@@ -1657,56 +1520,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchAvailableSlotAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchAvailableSlotAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchClosedIntakeRequestsByStartAnswer: components["schemas"]["FetchClosedIntakeRequestsByStartAnswerOk"] | components["schemas"]["FetchClosedIntakeRequestsByStartAnswerDoctorNotFound"] | components["schemas"]["FetchClosedIntakeRequestsByStartAnswerPatientNotFound"] | components["schemas"]["FetchClosedIntakeRequestsByStartAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchClosedIntakeRequestsByStartAnswerIntakeRequestNotFound"] | components["schemas"]["FetchClosedIntakeRequestsByStartAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchClosedIntakeRequestsByStartAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchClosedIntakeRequestsByStartAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchClosedIntakeRequestsByStartAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchClosedIntakeRequestsByStartAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchClosedIntakeRequestsByStartAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        FetchClosedIntakeRequestsByStartAnswer: components["schemas"]["FetchClosedIntakeRequestsByStartAnswerOk"];
         FetchClosedIntakeRequestsByStartAnswerOk: {
             detail: components["schemas"]["ClosedIntakeRequest"][];
             /**
@@ -1715,24 +1529,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchClosedIntakeRequestsByStartAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchClosedIntakeRequestsByStartAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchDoctorAnswer: components["schemas"]["FetchDoctorAnswerOk"] | components["schemas"]["FetchDoctorAnswerDoctorNotFound"] | components["schemas"]["FetchDoctorAnswerPatientNotFound"] | components["schemas"]["FetchDoctorAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchDoctorAnswerIntakeRequestNotFound"] | components["schemas"]["FetchDoctorAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchDoctorAnswerSlotDoesNotMatchIntakeRequest"];
+        FetchDoctorAnswer: components["schemas"]["FetchDoctorAnswerOk"] | components["schemas"]["FetchDoctorAnswerDoctorNotFound"];
         FetchDoctorAnswerDoctorNotFound: {
             detail: components["schemas"]["DoctorId"];
             /**
@@ -1740,30 +1537,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "doctorNotFound";
-        };
-        FetchDoctorAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchDoctorAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchDoctorAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
         };
         FetchDoctorAnswerOk: {
             detail: components["schemas"]["Doctor"];
@@ -1773,56 +1546,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchDoctorAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchDoctorAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchDoctorCalendarEntriesOverlappingAnswer: components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswerOk"] | components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswerDoctorNotFound"] | components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswerPatientNotFound"] | components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswerIntakeRequestNotFound"] | components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchDoctorCalendarEntriesOverlappingAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchDoctorCalendarEntriesOverlappingAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchDoctorCalendarEntriesOverlappingAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchDoctorCalendarEntriesOverlappingAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        FetchDoctorCalendarEntriesOverlappingAnswer: components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswerOk"];
         FetchDoctorCalendarEntriesOverlappingAnswerOk: {
             detail: components["schemas"]["DoctorCalendarEntry"][];
             /**
@@ -1830,23 +1554,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "ok";
-        };
-        FetchDoctorCalendarEntriesOverlappingAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchDoctorCalendarEntriesOverlappingAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
         };
         FetchDoctorsAnswer: components["schemas"]["FetchDoctorsAnswerOk"];
         FetchDoctorsAnswerOk: {
@@ -1857,15 +1564,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchHealthcareServiceAnswer: components["schemas"]["FetchHealthcareServiceAnswerOk"] | components["schemas"]["FetchHealthcareServiceAnswerDoctorNotFound"] | components["schemas"]["FetchHealthcareServiceAnswerPatientNotFound"] | components["schemas"]["FetchHealthcareServiceAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchHealthcareServiceAnswerIntakeRequestNotFound"] | components["schemas"]["FetchHealthcareServiceAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchHealthcareServiceAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchHealthcareServiceAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
+        FetchHealthcareServiceAnswer: components["schemas"]["FetchHealthcareServiceAnswerOk"] | components["schemas"]["FetchHealthcareServiceAnswerHealthcareServiceNotFound"];
         FetchHealthcareServiceAnswerHealthcareServiceNotFound: {
             detail: components["schemas"]["HealthcareServiceId"];
             /**
@@ -1873,22 +1572,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "healthcareServiceNotFound";
-        };
-        FetchHealthcareServiceAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchHealthcareServiceAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
         };
         FetchHealthcareServiceAnswerOk: {
             detail: components["schemas"]["HealthcareService"];
@@ -1898,56 +1581,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchHealthcareServiceAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchHealthcareServiceAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchHealthcareServicesAnswer: components["schemas"]["FetchHealthcareServicesAnswerOk"] | components["schemas"]["FetchHealthcareServicesAnswerDoctorNotFound"] | components["schemas"]["FetchHealthcareServicesAnswerPatientNotFound"] | components["schemas"]["FetchHealthcareServicesAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchHealthcareServicesAnswerIntakeRequestNotFound"] | components["schemas"]["FetchHealthcareServicesAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchHealthcareServicesAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchHealthcareServicesAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchHealthcareServicesAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchHealthcareServicesAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchHealthcareServicesAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        FetchHealthcareServicesAnswer: components["schemas"]["FetchHealthcareServicesAnswerOk"];
         FetchHealthcareServicesAnswerOk: {
             detail: components["schemas"]["HealthcareService"][];
             /**
@@ -1956,48 +1590,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchHealthcareServicesAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchHealthcareServicesAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchIntakeRequestAnswer: components["schemas"]["FetchIntakeRequestAnswerOk"] | components["schemas"]["FetchIntakeRequestAnswerDoctorNotFound"] | components["schemas"]["FetchIntakeRequestAnswerPatientNotFound"] | components["schemas"]["FetchIntakeRequestAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchIntakeRequestAnswerIntakeRequestNotFound"] | components["schemas"]["FetchIntakeRequestAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchIntakeRequestAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchIntakeRequestAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchIntakeRequestAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchIntakeRequestAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
+        FetchIntakeRequestAnswer: components["schemas"]["FetchIntakeRequestAnswerOk"] | components["schemas"]["FetchIntakeRequestAnswerIntakeRequestNotFound"];
         FetchIntakeRequestAnswerIntakeRequestNotFound: {
             detail: components["schemas"]["IntakeRequestId"];
             /**
@@ -2014,56 +1607,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchIntakeRequestAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchIntakeRequestAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchPatientAnswer: components["schemas"]["FetchPatientAnswerOk"] | components["schemas"]["FetchPatientAnswerDoctorNotFound"] | components["schemas"]["FetchPatientAnswerPatientNotFound"] | components["schemas"]["FetchPatientAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchPatientAnswerIntakeRequestNotFound"] | components["schemas"]["FetchPatientAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchPatientAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchPatientAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchPatientAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchPatientAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchPatientAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        FetchPatientAnswer: components["schemas"]["FetchPatientAnswerOk"] | components["schemas"]["FetchPatientAnswerPatientNotFound"];
         FetchPatientAnswerOk: {
             detail: components["schemas"]["Patient"];
             /**
@@ -2080,15 +1624,6 @@ export interface components {
              */
             outcome: "patientNotFound";
         };
-        FetchPatientAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
         FetchPatientsAnswer: components["schemas"]["FetchPatientsAnswerOk"];
         FetchPatientsAnswerOk: {
             detail: components["schemas"]["Patient"][];
@@ -2098,39 +1633,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchRejectedIntakeRequestsByRejectedAtAnswer: components["schemas"]["FetchRejectedIntakeRequestsByRejectedAtAnswerOk"] | components["schemas"]["FetchRejectedIntakeRequestsByRejectedAtAnswerDoctorNotFound"] | components["schemas"]["FetchRejectedIntakeRequestsByRejectedAtAnswerPatientNotFound"] | components["schemas"]["FetchRejectedIntakeRequestsByRejectedAtAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchRejectedIntakeRequestsByRejectedAtAnswerIntakeRequestNotFound"] | components["schemas"]["FetchRejectedIntakeRequestsByRejectedAtAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchRejectedIntakeRequestsByRejectedAtAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchRejectedIntakeRequestsByRejectedAtAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchRejectedIntakeRequestsByRejectedAtAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchRejectedIntakeRequestsByRejectedAtAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchRejectedIntakeRequestsByRejectedAtAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        FetchRejectedIntakeRequestsByRejectedAtAnswer: components["schemas"]["FetchRejectedIntakeRequestsByRejectedAtAnswerOk"];
         FetchRejectedIntakeRequestsByRejectedAtAnswerOk: {
             detail: components["schemas"]["RejectedIntakeRequest"][];
             /**
@@ -2139,56 +1642,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchRejectedIntakeRequestsByRejectedAtAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchRejectedIntakeRequestsByRejectedAtAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchStaleIntakeRequestsByStaleAtAnswer: components["schemas"]["FetchStaleIntakeRequestsByStaleAtAnswerOk"] | components["schemas"]["FetchStaleIntakeRequestsByStaleAtAnswerDoctorNotFound"] | components["schemas"]["FetchStaleIntakeRequestsByStaleAtAnswerPatientNotFound"] | components["schemas"]["FetchStaleIntakeRequestsByStaleAtAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchStaleIntakeRequestsByStaleAtAnswerIntakeRequestNotFound"] | components["schemas"]["FetchStaleIntakeRequestsByStaleAtAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchStaleIntakeRequestsByStaleAtAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchStaleIntakeRequestsByStaleAtAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchStaleIntakeRequestsByStaleAtAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchStaleIntakeRequestsByStaleAtAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchStaleIntakeRequestsByStaleAtAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        FetchStaleIntakeRequestsByStaleAtAnswer: components["schemas"]["FetchStaleIntakeRequestsByStaleAtAnswerOk"];
         FetchStaleIntakeRequestsByStaleAtAnswerOk: {
             detail: components["schemas"]["StaleIntakeRequest"][];
             /**
@@ -2197,56 +1651,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchStaleIntakeRequestsByStaleAtAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchStaleIntakeRequestsByStaleAtAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchSubmittedIntakeRequestsAnswer: components["schemas"]["FetchSubmittedIntakeRequestsAnswerOk"] | components["schemas"]["FetchSubmittedIntakeRequestsAnswerDoctorNotFound"] | components["schemas"]["FetchSubmittedIntakeRequestsAnswerPatientNotFound"] | components["schemas"]["FetchSubmittedIntakeRequestsAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchSubmittedIntakeRequestsAnswerIntakeRequestNotFound"] | components["schemas"]["FetchSubmittedIntakeRequestsAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchSubmittedIntakeRequestsAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchSubmittedIntakeRequestsAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchSubmittedIntakeRequestsAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchSubmittedIntakeRequestsAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchSubmittedIntakeRequestsAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        FetchSubmittedIntakeRequestsAnswer: components["schemas"]["FetchSubmittedIntakeRequestsAnswerOk"];
         FetchSubmittedIntakeRequestsAnswerOk: {
             detail: components["schemas"]["SubmittedIntakeRequest"][];
             /**
@@ -2255,56 +1660,7 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchSubmittedIntakeRequestsAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchSubmittedIntakeRequestsAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
-        FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer: components["schemas"]["FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerOk"] | components["schemas"]["FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerDoctorNotFound"] | components["schemas"]["FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerPatientNotFound"] | components["schemas"]["FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerHealthcareServiceNotFound"] | components["schemas"]["FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerIntakeRequestNotFound"] | components["schemas"]["FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerIntakeRequestInWrongState"] | components["schemas"]["FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerSlotDoesNotMatchIntakeRequest"];
-        FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer: components["schemas"]["FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerOk"];
         FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerOk: {
             detail: components["schemas"]["WithdrawnIntakeRequest"][];
             /**
@@ -2312,23 +1668,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "ok";
-        };
-        FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        FetchWithdrawnIntakeRequestsByWithdrawnAtAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
         };
         HealthcareService: {
             duration: components["schemas"]["Duration"];
@@ -2472,23 +1811,7 @@ export interface components {
                 type: "fromSubmitted";
             };
         };
-        MarkAcceptedIntakeRequestStaleAnswer: components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerTransitioned"] | components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerMovedOn"] | components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerDoctorNotFound"] | components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerPatientNotFound"] | components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerHealthcareServiceNotFound"] | components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerIntakeRequestNotFound"] | components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerIntakeRequestInWrongState"] | components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerSlotDoesNotMatchIntakeRequest"];
-        MarkAcceptedIntakeRequestStaleAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        MarkAcceptedIntakeRequestStaleAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
+        MarkAcceptedIntakeRequestStaleAnswer: components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerTransitioned"] | components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerMovedOn"] | components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerIntakeRequestNotFound"] | components["schemas"]["MarkAcceptedIntakeRequestStaleAnswerIntakeRequestInWrongState"];
         MarkAcceptedIntakeRequestStaleAnswerIntakeRequestInWrongState: {
             detail: components["schemas"]["IntakeRequest"];
             /**
@@ -2513,23 +1836,6 @@ export interface components {
              */
             outcome: "movedOn";
         };
-        MarkAcceptedIntakeRequestStaleAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        MarkAcceptedIntakeRequestStaleAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
-        };
         MarkAcceptedIntakeRequestStaleAnswerTransitioned: {
             detail: components["schemas"]["StaleIntakeRequest"];
             /**
@@ -2538,7 +1844,7 @@ export interface components {
              */
             outcome: "transitioned";
         };
-        MatchAcceptedIntakeRequestToSlotAnswer: components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerMatched"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerAvailableSlotConsumed"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestMovedOn"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerDoctorNotFound"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerPatientNotFound"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerHealthcareServiceNotFound"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestNotFound"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestInWrongState"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerSlotDoesNotMatchIntakeRequest"];
+        MatchAcceptedIntakeRequestToSlotAnswer: components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerMatched"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerAvailableSlotConsumed"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestMovedOn"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestNotFound"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestInWrongState"] | components["schemas"]["MatchAcceptedIntakeRequestToSlotAnswerSlotDoesNotMatchIntakeRequest"];
         MatchAcceptedIntakeRequestToSlotAnswerAvailableSlotConsumed: {
             /** @enum {unknown|null} */
             detail: null;
@@ -2547,22 +1853,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "availableSlotConsumed";
-        };
-        MatchAcceptedIntakeRequestToSlotAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        MatchAcceptedIntakeRequestToSlotAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
         };
         MatchAcceptedIntakeRequestToSlotAnswerIntakeRequestInWrongState: {
             detail: components["schemas"]["IntakeRequest"];
@@ -2596,14 +1886,6 @@ export interface components {
              */
             outcome: "matched";
         };
-        MatchAcceptedIntakeRequestToSlotAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
         MatchAcceptedIntakeRequestToSlotAnswerSlotDoesNotMatchIntakeRequest: {
             /** @enum {unknown|null} */
             detail: null;
@@ -2616,46 +1898,14 @@ export interface components {
         MatchAcceptedIntakeRequestToSlotRequest: {
             slotId: components["schemas"]["SlotId"];
         };
-        MatchAvailableSlotByPriorityAnswer: components["schemas"]["MatchAvailableSlotByPriorityAnswerNoMatchingIntakeRequest"] | components["schemas"]["MatchAvailableSlotByPriorityAnswerMatchAttempted"] | components["schemas"]["MatchAvailableSlotByPriorityAnswerDoctorNotFound"] | components["schemas"]["MatchAvailableSlotByPriorityAnswerPatientNotFound"] | components["schemas"]["MatchAvailableSlotByPriorityAnswerHealthcareServiceNotFound"] | components["schemas"]["MatchAvailableSlotByPriorityAnswerIntakeRequestNotFound"] | components["schemas"]["MatchAvailableSlotByPriorityAnswerIntakeRequestInWrongState"] | components["schemas"]["MatchAvailableSlotByPriorityAnswerSlotDoesNotMatchIntakeRequest"];
-        MatchAvailableSlotByPriorityAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        MatchAvailableSlotByPriorityAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        MatchAvailableSlotByPriorityAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        MatchAvailableSlotByPriorityAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
-        MatchAvailableSlotByPriorityAnswerMatchAttempted: {
+        MatchAvailableSlotByPriorityAnswer: components["schemas"]["MatchAvailableSlotByPriorityAnswerNoMatchingIntakeRequest"] | components["schemas"]["MatchAvailableSlotByPriorityAnswerMatchOutcome"];
+        MatchAvailableSlotByPriorityAnswerMatchOutcome: {
             detail: components["schemas"]["MatchOutcome"];
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
              */
-            outcome: "matchAttempted";
+            outcome: "matchOutcome";
         };
         MatchAvailableSlotByPriorityAnswerNoMatchingIntakeRequest: {
             /** @enum {unknown|null} */
@@ -2665,23 +1915,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "noMatchingIntakeRequest";
-        };
-        MatchAvailableSlotByPriorityAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        MatchAvailableSlotByPriorityAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
         };
         MatchOutcome: components["schemas"]["MatchOutcomeMatched"] | components["schemas"]["MatchOutcomeAvailableSlotConsumed"] | components["schemas"]["MatchOutcomeIntakeRequestMovedOn"];
         MatchOutcomeAvailableSlotConsumed: {
@@ -2715,31 +1948,7 @@ export interface components {
         };
         /** Format: uuid */
         PatientId: string;
-        RejectSubmittedIntakeRequestAnswer: components["schemas"]["RejectSubmittedIntakeRequestAnswerTransitioned"] | components["schemas"]["RejectSubmittedIntakeRequestAnswerMovedOn"] | components["schemas"]["RejectSubmittedIntakeRequestAnswerDoctorNotFound"] | components["schemas"]["RejectSubmittedIntakeRequestAnswerPatientNotFound"] | components["schemas"]["RejectSubmittedIntakeRequestAnswerHealthcareServiceNotFound"] | components["schemas"]["RejectSubmittedIntakeRequestAnswerIntakeRequestNotFound"] | components["schemas"]["RejectSubmittedIntakeRequestAnswerIntakeRequestInWrongState"] | components["schemas"]["RejectSubmittedIntakeRequestAnswerSlotDoesNotMatchIntakeRequest"];
-        RejectSubmittedIntakeRequestAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        RejectSubmittedIntakeRequestAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        RejectSubmittedIntakeRequestAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
+        RejectSubmittedIntakeRequestAnswer: components["schemas"]["RejectSubmittedIntakeRequestAnswerTransitioned"] | components["schemas"]["RejectSubmittedIntakeRequestAnswerMovedOn"] | components["schemas"]["RejectSubmittedIntakeRequestAnswerIntakeRequestNotFound"];
         RejectSubmittedIntakeRequestAnswerIntakeRequestNotFound: {
             detail: components["schemas"]["IntakeRequestId"];
             /**
@@ -2755,23 +1964,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "movedOn";
-        };
-        RejectSubmittedIntakeRequestAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        RejectSubmittedIntakeRequestAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
         };
         RejectSubmittedIntakeRequestAnswerTransitioned: {
             detail: components["schemas"]["RejectedIntakeRequest"];
@@ -2838,39 +2030,7 @@ export interface components {
             staleAt: components["schemas"]["UTCTime"];
             triagedAt: components["schemas"]["UTCTime"];
         };
-        SubmitIntakeRequestAnswer: components["schemas"]["SubmitIntakeRequestAnswerOk"] | components["schemas"]["SubmitIntakeRequestAnswerDoctorNotFound"] | components["schemas"]["SubmitIntakeRequestAnswerPatientNotFound"] | components["schemas"]["SubmitIntakeRequestAnswerHealthcareServiceNotFound"] | components["schemas"]["SubmitIntakeRequestAnswerIntakeRequestNotFound"] | components["schemas"]["SubmitIntakeRequestAnswerIntakeRequestInWrongState"] | components["schemas"]["SubmitIntakeRequestAnswerSlotDoesNotMatchIntakeRequest"];
-        SubmitIntakeRequestAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        SubmitIntakeRequestAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        SubmitIntakeRequestAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
-        SubmitIntakeRequestAnswerIntakeRequestNotFound: {
-            detail: components["schemas"]["IntakeRequestId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestNotFound";
-        };
+        SubmitIntakeRequestAnswer: components["schemas"]["SubmitIntakeRequestAnswerOk"] | components["schemas"]["SubmitIntakeRequestAnswerPatientNotFound"];
         SubmitIntakeRequestAnswerOk: {
             detail: components["schemas"]["SubmittedIntakeRequest"];
             /**
@@ -2886,15 +2046,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "patientNotFound";
-        };
-        SubmitIntakeRequestAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
         };
         SubmitIntakeRequestRequest: {
             narrative: string;
@@ -2921,31 +2072,7 @@ export interface components {
          * @example 2016-07-22T00:00:00Z
          */
         UTCTime: string;
-        WithdrawIntakeRequestAnswer: components["schemas"]["WithdrawIntakeRequestAnswerTransitioned"] | components["schemas"]["WithdrawIntakeRequestAnswerMovedOn"] | components["schemas"]["WithdrawIntakeRequestAnswerDoctorNotFound"] | components["schemas"]["WithdrawIntakeRequestAnswerPatientNotFound"] | components["schemas"]["WithdrawIntakeRequestAnswerHealthcareServiceNotFound"] | components["schemas"]["WithdrawIntakeRequestAnswerIntakeRequestNotFound"] | components["schemas"]["WithdrawIntakeRequestAnswerIntakeRequestInWrongState"] | components["schemas"]["WithdrawIntakeRequestAnswerSlotDoesNotMatchIntakeRequest"];
-        WithdrawIntakeRequestAnswerDoctorNotFound: {
-            detail: components["schemas"]["DoctorId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "doctorNotFound";
-        };
-        WithdrawIntakeRequestAnswerHealthcareServiceNotFound: {
-            detail: components["schemas"]["HealthcareServiceId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "healthcareServiceNotFound";
-        };
-        WithdrawIntakeRequestAnswerIntakeRequestInWrongState: {
-            detail: components["schemas"]["IntakeRequest"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "intakeRequestInWrongState";
-        };
+        WithdrawIntakeRequestAnswer: components["schemas"]["WithdrawIntakeRequestAnswerTransitioned"] | components["schemas"]["WithdrawIntakeRequestAnswerMovedOn"] | components["schemas"]["WithdrawIntakeRequestAnswerIntakeRequestNotFound"];
         WithdrawIntakeRequestAnswerIntakeRequestNotFound: {
             detail: components["schemas"]["IntakeRequestId"];
             /**
@@ -2961,23 +2088,6 @@ export interface components {
              * @enum {string}
              */
             outcome: "movedOn";
-        };
-        WithdrawIntakeRequestAnswerPatientNotFound: {
-            detail: components["schemas"]["PatientId"];
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "patientNotFound";
-        };
-        WithdrawIntakeRequestAnswerSlotDoesNotMatchIntakeRequest: {
-            /** @enum {unknown|null} */
-            detail: null;
-            /**
-             * @description discriminator enum property added by openapi-typescript
-             * @enum {string}
-             */
-            outcome: "slotDoesNotMatchIntakeRequest";
         };
         WithdrawIntakeRequestAnswerTransitioned: {
             detail: components["schemas"]["WithdrawnIntakeRequest"];

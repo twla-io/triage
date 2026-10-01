@@ -153,6 +153,9 @@ data IntakeRequestLost = IntakeRequestLost
 
 instance Exception IntakeRequestLost
 
+-- Raised by Service when stored data violates the spec (a 500).
+instance Exception DecodeError
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ENUMERATIONS
 -- ═══════════════════════════════════════════════════════════════════════════

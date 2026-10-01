@@ -84,17 +84,17 @@ Every time a Service function takes as "when this happened" is supplied by the h
 |---|---|
 | `400` | the request never reached Service: malformed JSON, a wrong, missing or unknown field, an invalid ID, a sealed value its smart constructor refuses |
 | `404` | the route itself doesn't exist (decided by the router) |
-| `200` | Service ran and answered: success, every outcome, and every `ServiceError` except a decode failure, discriminated in the body |
+| `200` | Service ran and answered: success, every outcome and every error fact, discriminated in the body |
 | `500` | outside the domain's vocabulary: a decode failure, a database failure, anything unexpected |
 
 An id that doesn't exist is a `200` with its not-found answer, never a `404`: Service ran a query to find that out. A `500` body is plain text and exposes no internals. Every `500` is written to stderr with its cause (for a decode failure, the `DecodeError`), in one place every handler passes through; no other path may answer `500`.
 
 ### The response envelope
 - **Every** `200` body, for mutations and reads alike, is `{"outcome": <tag>, "detail": <payload or null>}`, so a client parses every answer the same way.
-- **The tag** is the answer's constructor name in lowerCamelCase: each outcome constructor (e.g. `transitioned`, `movedOn`) and each `ServiceError` constructor. An answer that is a plain value with no constructor of its own (a created entity, a read's result) has the tag `ok`. A `Nothing` from a by-id read of an entity deleted on consumption has the tag `<entity>Consumed`, the same as Service's outcome for that fact, and detail `null`.
+- **The tag** is the answer's constructor name in lowerCamelCase for each outcome constructor (e.g. `transitioned`, `movedOn`), and the fact type's name for each error fact (e.g. `doctorNotFound`), so a fact has the same tag in every answer whichever `<Function>Error` wraps it. An answer lists exactly its use case's outcomes and facts. An answer that is a plain value with no constructor of its own (a created entity, a read's result) has the tag `ok`. A `Nothing` from a by-id read of an entity deleted on consumption has the tag `<entity>Consumed`, the same as Service's outcome for that fact, and detail `null`.
 - **The detail** is the payload rendered by its DTO, or `null` when there is none. A payload that is itself an answer type is rendered as a nested envelope.
 
-The rendering of each Service answer type is written once, as one exhaustive function with no wildcard, and shared by every handler that returns it. Only a decode failure becomes a `500`.
+The rendering of each Service answer type is written once, as one exhaustive function with no wildcard, and shared by every handler that returns it: each fact type is rendered once, and a `<Function>Error` by delegating to its facts. A decode failure arrives as an exception and becomes a `500`.
 
 ## Servant implementation
 - **Framework:** Servant: routes and handlers correspond at compile time.
