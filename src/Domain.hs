@@ -69,6 +69,7 @@ module Domain
   -- ── Protocol ─────────────────────────────────────────────────────────────
   , matches
   , matchIntakeRequestToSlot
+  , sortByPriority
   , matchByPriority
   ) where
 
@@ -514,9 +515,14 @@ matchIntakeRequestToSlot slot triaged
         }
   | otherwise = Nothing
 
+-- Highest priority first; among equal priorities, the earlier triaged, then
+-- the earlier submitted.
+sortByPriority :: [TriagedIntakeRequest] -> [TriagedIntakeRequest]
+sortByPriority = sortOn (\r -> (r.priority, r.triagedAt, r.submitted.createdAt))
+
 matchByPriority
   :: AvailableSlot
   -> [TriagedIntakeRequest]
   -> Maybe AppointedIntakeRequest
 matchByPriority slot =
-  listToMaybe . mapMaybe (matchIntakeRequestToSlot slot) . sortOn priority
+  listToMaybe . mapMaybe (matchIntakeRequestToSlot slot) . sortByPriority

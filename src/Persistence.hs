@@ -55,7 +55,6 @@ module Persistence
   , fetchHealthcareService
   , fetchHealthcareServices
   , fetchAvailableSlot
-  , fetchAvailableSlots
   , fetchIntakeRequest
   , fetchSubmittedIntakeRequests
   , fetchAcceptedIntakeRequests
@@ -230,7 +229,7 @@ fetchDoctor conn (DoctorId uuid) = do
 
 fetchDoctors :: Connection -> IO [Doctor]
 fetchDoctors conn =
-  map toDomainDoctor <$> query_ conn "SELECT id, name FROM doctors"
+  map toDomainDoctor <$> query_ conn "SELECT id, name FROM doctors ORDER BY name"
 
 fetchPatient :: Connection -> PatientId -> IO (Maybe Patient)
 fetchPatient conn (PatientId uuid) = do
@@ -241,7 +240,7 @@ fetchPatient conn (PatientId uuid) = do
 
 fetchPatients :: Connection -> IO [Patient]
 fetchPatients conn =
-  map toDomainPatient <$> query_ conn "SELECT id, name FROM patients"
+  map toDomainPatient <$> query_ conn "SELECT id, name FROM patients ORDER BY name"
 
 insertDoctor :: Connection -> Doctor -> IO ()
 insertDoctor conn doctor = do
@@ -293,7 +292,7 @@ fetchHealthcareService conn (HealthcareServiceId uuid) = do
 fetchHealthcareServices :: Connection -> IO (Either DecodeError [HealthcareService])
 fetchHealthcareServices conn =
   traverse toDomainHealthcareService
-    <$> query_ conn "SELECT id, name, duration FROM healthcare_services"
+    <$> query_ conn "SELECT id, name, duration FROM healthcare_services ORDER BY name, duration"
 
 insertHealthcareService :: Connection -> HealthcareService -> IO ()
 insertHealthcareService conn service = do
@@ -352,11 +351,6 @@ fetchAvailableSlot conn (SlotId uuid) = do
   pure $ case rows of
     [row] -> Just <$> toDomainAvailableSlot row
     _     -> Right Nothing
-
-fetchAvailableSlots :: Connection -> IO (Either DecodeError [AvailableSlot])
-fetchAvailableSlots conn =
-  traverse toDomainAvailableSlot
-    <$> query_ conn ("SELECT " <> slotColumns <> " FROM available_slots")
 
 -- A new element of the doctor calendar: an overlap is an outcome.
 insertAvailableSlot :: Connection -> AvailableSlot -> IO SlotInsertOutcome
@@ -734,17 +728,20 @@ fetchIntakeRequest conn (IntakeRequestId uuid) = do
 fetchSubmittedIntakeRequests :: Connection -> IO (Either DecodeError [SubmittedIntakeRequest])
 fetchSubmittedIntakeRequests conn =
   traverse toDomainSubmittedIntakeRequest <$> query_ conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE state = 'submitted'")
+    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE state = 'submitted' \
+     \ORDER BY created_at")
 
 fetchAcceptedIntakeRequests :: Connection -> IO (Either DecodeError [TriagedIntakeRequest])
 fetchAcceptedIntakeRequests conn =
   traverse toDomainTriagedIntakeRequest <$> query_ conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE state = 'accepted'")
+    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE state = 'accepted' \
+     \ORDER BY triaged_at")
 
 fetchAppointedIntakeRequests :: Connection -> IO (Either DecodeError [AppointedIntakeRequest])
 fetchAppointedIntakeRequests conn =
   traverse toDomainAppointedIntakeRequest <$> query_ conn
-    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE state = 'appointed'")
+    ("SELECT " <> intakeRequestColumns <> " FROM intake_requests WHERE state = 'appointed' \
+     \ORDER BY start")
 
 -- Terminal cases: by a timestamp over [from, to).
 

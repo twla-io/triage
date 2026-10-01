@@ -44,6 +44,9 @@ Names follow `Domain.hs`:
 - **a creation** is `create<Entity>`; the entry case of a sum type takes its constructor as a verb (e.g. submit); growing a sealed collection is `create<Element>`.
 - **a use case 3 function** takes the `Domain.hs` function's name with the stored input the caller names by id inserted after the verb (e.g. `matchAvailableSlotByPriority`).
 
+### `reads-apply-domain-order`
+If `Domain.hs` has a sorting function over a read's element type (`sortBy<Key> :: [a] -> [a]`), the read's Service function applies it to the result. The order shown and the order the Domain decides by are then one implementation. Persistence's `ORDER BY` stays underneath.
+
 ## Answers
 
 ### `error-vs-outcome-types`

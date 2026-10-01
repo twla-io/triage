@@ -131,6 +131,14 @@ Read names, shared with `triage-service-codegen` (plurals are English plurals): 
 
 A narrower read (one owner, one service) exists only when a Service use case needs it, and is added then, through `triage-service-codegen`. It is named after the case it returns plus its filter, takes one parameter per value it narrows by, and decodes through the same case decoder.
 
+### `reads-have-a-defined-order`
+Every read that returns a list has an `ORDER BY`, ascending; Postgres guarantees no order without one.
+- **A range read** sorts by its range's timestamp.
+- **Otherwise, a read by case** sorts by the timestamp its case's stage adds; with none, by the nearest embedded stage's.
+- **Otherwise** it sorts by the entity's non-ID fields, in declaration order.
+
+A sorting function in `Domain.hs` may reorder the result on top of this, in Service (`triage-service-codegen`).
+
 ### `one-snapshot-per-read`
 A read built from several queries runs them in one `REPEATABLE READ` transaction.
 

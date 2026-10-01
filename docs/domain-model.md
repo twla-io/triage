@@ -246,10 +246,10 @@ windows compare by `routineNotAfter` first; on equal upper bounds the
 narrower window (later `routineNotBefore`) ranks first, so `compare`
 returns `EQ` only for equal windows.
 
-The only unresolved case is two requests with a genuinely identical priority
-value (same tier, same due value) — `sortOn` is stable, so that's settled by
-input-list order, not by a designed rule. Not currently a problem worth
-solving.
+Two requests with an identical priority value (same tier, same due value —
+common: every `RoutineAnytime` ranks equal) are ordered by `sortByPriority`:
+the earlier triaged first, then the earlier submitted. Only after all three
+keys tie does input-list order decide.
 
 `RoutineWindow` is sealed — export its constructor and any caller could
 build a window with `routineNotBefore > routineNotAfter`, a range that can
@@ -347,17 +347,21 @@ request's priority-carried deadline (or window, for `Routine`).
 matchIntakeRequestToSlot
   :: AvailableSlot -> TriagedIntakeRequest -> Maybe AppointedIntakeRequest
 
+sortByPriority :: [TriagedIntakeRequest] -> [TriagedIntakeRequest]
+sortByPriority = sortOn (\r -> (r.priority, r.triagedAt, r.submitted.createdAt))
+
 matchByPriority
   :: AvailableSlot -> [TriagedIntakeRequest] -> Maybe AppointedIntakeRequest
 matchByPriority slot =
-  listToMaybe . mapMaybe (matchIntakeRequestToSlot slot) . sortOn priority
+  listToMaybe . mapMaybe (matchIntakeRequestToSlot slot) . sortByPriority
 ```
 
 `matchIntakeRequestToSlot` is the direct one-to-one check: does this
 specific triaged request fit this specific slot, and if so, produce the
 `AppointedIntakeRequest` that results. `matchByPriority` is the
-automatic path a newly available slot takes: sort the requests by priority
-(using `IntakeRequestPriority`'s own `Ord` instance), try to satisfy each in
+automatic path a newly available slot takes: sort the requests with
+`sortByPriority` (`IntakeRequestPriority`'s own `Ord` instance, then the
+triage and submission times), try to satisfy each in
 order via `matchIntakeRequestToSlot`, take the first success. The pipeline
 shape *is* the spec — no separate prose description should be needed to
 understand what this does.

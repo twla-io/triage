@@ -425,7 +425,8 @@ fetchSubmittedIntakeRequests
 fetchSubmittedIntakeRequests pool = run pool $ decoded . Persistence.fetchSubmittedIntakeRequests
 
 fetchAcceptedIntakeRequests :: ConnectionPool -> IO (Either ServiceError [TriagedIntakeRequest])
-fetchAcceptedIntakeRequests pool = run pool $ decoded . Persistence.fetchAcceptedIntakeRequests
+fetchAcceptedIntakeRequests pool =
+  run pool $ fmap sortByPriority . decoded . Persistence.fetchAcceptedIntakeRequests
 
 fetchAppointedIntakeRequests
   :: ConnectionPool -> IO (Either ServiceError [AppointedIntakeRequest])

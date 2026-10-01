@@ -390,6 +390,28 @@ main = hspec $ do
           .&&. appt.triaged.priority === Routine narrowDue
         Nothing -> property False
 
+    prop "on equal priorities, chooses the earlier triaged, then the earlier submitted, in any input order" $ do
+      sid         <- arbitrary
+      did         <- arbitrary
+      slot        <- genAvailableSlotFor sid did
+      now         <- genMoment
+      first       <- genSubmittedIntakeRequest
+      second      <- genSubmittedIntakeRequest
+      sameTriage  <- arbitrary
+      let submittedAt = addUTCTime (-120) now
+          mkReq s askedAt acceptedAt =
+            acceptIntakeRequest s { createdAt = askedAt } sid (Routine RoutineAnytime) AnyDoctor acceptedAt
+          -- Equal triage: the earlier submitted wins. Different triage: the
+          -- earlier triaged wins, though it was submitted later.
+          (winner, loser)
+            | sameTriage = ( mkReq first  submittedAt                  now
+                           , mkReq second (addUTCTime 60 submittedAt)  now )
+            | otherwise  = ( mkReq first  (addUTCTime 60 submittedAt)  now
+                           , mkReq second submittedAt                  (addUTCTime 60 now) )
+      reversed <- arbitrary
+      let input = if reversed then [loser, winner] else [winner, loser]
+      pure $ fmap (.triaged) (matchByPriority slot input) === Just winner
+
   describe "mkDoctorCalendar" $
     prop "succeeds exactly when no two entries of the same doctor overlap" $ do
       entries <- genDoctorCalendarEntries

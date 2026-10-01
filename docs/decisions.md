@@ -247,6 +247,18 @@ After a lost write, Service reads the request once more, and that read always fi
 
 **Cost:** every layer changes (Persistence, Service, Transport, Api, frontend types), regenerated through their skills by clean-room runs, merged in `529dc21`. The frontend is still pending.
 
+## Among equal priorities, the earlier triaged request goes first (2026-10-01)
+
+**Found:** `matchByPriority` sorted only by priority, and `sortOn` keeps input order among equal values. Equal priorities are common (every `RoutineAnytime` ranks equal), and the input was a read with no `ORDER BY`, so Postgres's return order decided which patient got a freed slot.
+
+**Decided:** `sortByPriority :: [TriagedIntakeRequest] -> [TriagedIntakeRequest]` in `Domain.hs` orders by priority, then `triagedAt`, then the submitted request's `createdAt`. `matchByPriority` uses it, and so does any read that lists requests in waitlist order, so the order shown and the order matched are one implementation. Only when all three keys tie does input order decide; the id is not used, since UUID order means nothing.
+
+**Why:** time on the waitlist starts at triage, where the priority itself is set. `createdAt` breaks ties that only become realistic if times are ever entered rather than recorded (see the open question on recorded vs event time).
+
+**Rejected:** `createdAt` as the first tie-breaker (it counts time before triage, when no priority existed); leaving ties to the read's order.
+
+**Source:** decided by the project owner, not confirmed with the domain expert.
+
 ---
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
