@@ -379,8 +379,8 @@ intake, not a patient's whole care history, and `patientId` already groups a
 patient's requests. Context goes into the new request's narrative; whether
 the patient should rank higher is the doctor's triage decision when
 accepting it, taking the previous priority into account. This keeps every
-lifecycle path one-way (see `docs/decisions.md`, "Reclaim removed;
-displacing a patient is Closed + a new IntakeRequest").
+lifecycle path one-way (see `docs/decisions.md`, "Every lifecycle path is
+one-way; displacing a patient is Closed plus a new request").
 
 Whether the vacated original time becomes bookable again is not automatic —
 that's a separate, explicit `createAvailableSlot` call by the caller.

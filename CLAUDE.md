@@ -180,8 +180,9 @@ point out the conflict. Don't silently follow either one.
 ## Before touching code, read the relevant doc
 
 - `src/Domain.hs`: `docs/domain-model.md` and `docs/modeling-principles.md`.
-- Persistence or architecture changes: `docs/decisions.md` — check whether
-  the idea was already explored and rejected. Some entries are marked
-  superseded; follow the superseding entry.
+- Persistence or architecture changes: `docs/decisions.md` holds the
+  current decisions and what each one rejected. To check whether an idea
+  was tried and dropped earlier, also search `docs/decisions-history.md`.
+  It's never a description of the current code.
 - Open questions live at the bottom of `docs/decisions.md`. Don't resolve
   them in code without the domain expert.
