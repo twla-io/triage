@@ -1,24 +1,16 @@
 import type { FormEvent, ReactNode } from 'react'
-import { Button, Group, Loader, Modal, Stack, Title } from '@mantine/core'
+import { Button, Group, Modal, Stack } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
-import type { UseMutationResult, UseQueryResult } from '@tanstack/react-query'
-import type { AnyAnswer } from '../api/answers'
-import { AnswerBanner, ErrorBanner } from './outcome'
+import type { UseMutationResult } from '@tanstack/react-query'
+import { ErrorBanner, Notice } from './feedback'
+import type { Outcome } from './outcomes'
 
-/** An action: a button that opens its form, titled with the same word. */
-export function ActionButton({
-  label,
-  variant = 'light',
-  children,
-}: {
-  label: string
-  variant?: 'light' | 'filled'
-  children: (close: () => void) => ReactNode
-}) {
+// An action is a button that opens its form, titled with the same word.
+export function ActionButton({ label, children }: { label: string; children: (close: () => void) => ReactNode }) {
   const [opened, { open, close }] = useDisclosure(false)
   return (
     <>
-      <Button size="xs" variant={variant} onClick={open}>
+      <Button size="xs" variant="default" onClick={open}>
         {label}
       </Button>
       <Modal opened={opened} onClose={close} title={label} size="lg">
@@ -28,81 +20,47 @@ export function ActionButton({
   )
 }
 
-/**
- * A form's body: its controls, then the answer. The success tag closes the
- * form; any other answer stays shown inline; a failure is a red banner.
- * Submitting is possible only once every required value is given.
- */
-export function ActionForm<V, A extends AnyAnswer>({
+// Submits `variables` (null while the form is incomplete). The success tag closes
+// the form; every other tag is shown inline, and a failure is an error banner.
+export function AnswerForm<V, A>({
   label,
-  entity,
   mutation,
   variables,
-  isSuccess,
+  describe,
   onDone,
   children,
 }: {
   label: string
-  entity: string
   mutation: UseMutationResult<A, Error, V>
   variables: V | null
-  isSuccess: (answer: A) => boolean
+  describe: (answer: A) => Outcome
   onDone: () => void
   children?: ReactNode
 }) {
-  const submit = (event: FormEvent) => {
+  const outcome = mutation.data === undefined ? null : describe(mutation.data)
+
+  function submit(event: FormEvent) {
     event.preventDefault()
     if (variables === null) return
     mutation.mutate(variables, {
       onSuccess: (answer) => {
-        if (isSuccess(answer)) onDone()
+        if (describe(answer).kind === 'success') onDone()
       },
     })
   }
-  const answer = mutation.data
+
   return (
     <form onSubmit={submit}>
       <Stack>
         {children}
-        {answer !== undefined && !isSuccess(answer) && <AnswerBanner answer={answer} entity={entity} />}
+        {outcome?.kind === 'notice' && <Notice>{outcome.text}</Notice>}
         {mutation.error && <ErrorBanner error={mutation.error} />}
         <Group justify="flex-end">
-          <Button type="submit" disabled={variables === null} loading={mutation.isPending}>
+          <Button type="submit" variant="default" disabled={variables === null} loading={mutation.isPending}>
             {label}
           </Button>
         </Group>
       </Stack>
     </form>
-  )
-}
-
-/** A read's state: loading, a failure banner, or its answer. */
-export function QueryView<A extends AnyAnswer>({
-  query,
-  children,
-}: {
-  query: UseQueryResult<A, Error>
-  children: (answer: A) => ReactNode
-}) {
-  if (query.status === 'pending') return <Loader size="sm" />
-  if (query.status === 'error') return <ErrorBanner error={query.error} />
-  return <>{children(query.data)}</>
-}
-
-export function PageHeader({ title, action }: { title: string; action?: ReactNode }) {
-  return (
-    <Group justify="space-between" mb="md">
-      <Title order={2}>{title}</Title>
-      {action}
-    </Group>
-  )
-}
-
-export function SectionHeader({ title, extra }: { title: string; extra?: ReactNode }) {
-  return (
-    <Group justify="space-between" mb="xs">
-      <Title order={3}>{title}</Title>
-      {extra}
-    </Group>
   )
 }

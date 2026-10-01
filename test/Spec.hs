@@ -274,9 +274,9 @@ genCancellationRequest = T.CancellationRequest <$> (T.fromDomainAppointmentParty
 
 genCloseReasonRequest :: Gen T.CloseReasonRequest
 genCloseReasonRequest = oneof
-  [ pure T.CompletedRequest
-  , T.CancelledRequest <$> genCancellationRequest
-  , T.NoShowRequest . T.fromDomainAbsence . Absence <$> genParty
+  [ pure T.CloseReasonRequestCompleted
+  , T.CloseReasonRequestCancelled <$> genCancellationRequest
+  , T.CloseReasonRequestNoShow . T.fromDomainAbsence . Absence <$> genParty
   ]
 
 -- Answers: every Service value each use case can return, rendered by the
@@ -670,8 +670,6 @@ main = hspec $ do
         (T.fromDomainHealthcareServiceId slot.healthcareServiceId) slot.start)
 
   describe "wire format: every answer's ToJSON matches its OpenAPI 3 schema" $ do
-    prop "MatchIntakeRequestToSlotOutcome (nested envelope)" $
-      forAll genMatchIntakeRequestToSlotOutcome (matchesSchema . T.MatchIntakeRequestToSlotOutcomeDTO . A.renderMatchIntakeRequestToSlotOutcome)
     prop "CreateDoctorAnswer" $ forAll genDoctor (matchesSchema . A.renderCreateDoctorAnswer)
     prop "CreatePatientAnswer" $ forAll genPatient (matchesSchema . A.renderCreatePatientAnswer)
     prop "CreateHealthcareServiceAnswer" $

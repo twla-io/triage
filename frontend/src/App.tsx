@@ -1,6 +1,6 @@
-import { AppShell, NavLink } from '@mantine/core'
-import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import '@mantine/dates/styles.css'
+import { AppShell, NavLink, Stack } from '@mantine/core'
+import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { humanize } from './components/humanize'
 import { DoctorCalendarPage } from './pages/DoctorCalendarPage'
 import { DoctorPage } from './pages/DoctorPage'
@@ -8,7 +8,7 @@ import { HealthcareServicePage } from './pages/HealthcareServicePage'
 import { IntakeRequestPage } from './pages/IntakeRequestPage'
 import { PatientPage } from './pages/PatientPage'
 
-/** One page per entity, in the order Domain.hs declares them. */
+// Pages in the order Domain.hs declares their entities; the app opens on the first.
 const pages = [
   { path: '/doctor', entity: 'Doctor', element: <DoctorPage /> },
   { path: '/patient', entity: 'Patient', element: <PatientPage /> },
@@ -22,20 +22,23 @@ export default function App() {
   return (
     <AppShell navbar={{ width: 220, breakpoint: 'sm' }} padding="md">
       <AppShell.Navbar p="xs">
-        {pages.map((p) => (
-          <NavLink
-            key={p.path}
-            component={Link}
-            to={p.path}
-            label={humanize(p.entity)}
-            active={location.pathname === p.path}
-          />
-        ))}
+        <Stack gap={2}>
+          {pages.map((page) => (
+            <NavLink
+              key={page.path}
+              component={Link}
+              to={page.path}
+              label={humanize(page.entity)}
+              active={location.pathname === page.path}
+              color="gray"
+            />
+          ))}
+        </Stack>
       </AppShell.Navbar>
       <AppShell.Main>
         <Routes>
-          {pages.map((p) => (
-            <Route key={p.path} path={p.path} element={p.element} />
+          {pages.map((page) => (
+            <Route key={page.path} path={page.path} element={page.element} />
           ))}
           <Route path="*" element={<Navigate to={pages[0].path} replace />} />
         </Routes>

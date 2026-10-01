@@ -1,46 +1,33 @@
-import { useState } from 'react'
-import { useCreateDoctor, useDoctors } from '../api/queries/doctors'
-import { ActionButton, ActionForm, PageHeader, QueryView } from '../components/actions'
-import { TextControl } from '../components/controls'
-import { humanize } from '../components/humanize'
-import { RecordList } from '../components/RecordList'
-import { doctorFields } from '../components/recordFields'
-import { RecordCard } from '../components/values'
+import { useDoctors } from '../api/queries/doctors'
+import { ActionButton } from '../components/actions'
+import { CreateDoctorForm } from '../components/entityForms'
+import { QueryView } from '../components/feedback'
+import { actionLabel, humanize } from '../components/humanize'
+import { Page, RecordCard, RecordList } from '../components/layout'
+import { doctorRows, Fields } from '../components/values'
+
+const create = actionLabel('CreateDoctor', 'Doctor')
 
 export function DoctorPage() {
   const doctors = useDoctors()
   return (
-    <>
-      <PageHeader
-        title={humanize('Doctor')}
-        action={
-          <ActionButton label={humanize('create')} variant="filled">
-            {(close) => <CreateDoctorForm onDone={close} />}
-          </ActionButton>
-        }
-      />
+    <Page
+      title={humanize('Doctor')}
+      actions={
+        <ActionButton label={create}>{(done) => <CreateDoctorForm label={create} onDone={done} />}</ActionButton>
+      }
+    >
       <QueryView query={doctors}>
         {(answer) => (
-          <RecordList items={answer.detail} keyOf={(d) => d.id} render={(d) => <RecordCard fields={doctorFields(d)} />} />
+          <RecordList>
+            {answer.detail.map((doctor) => (
+              <RecordCard key={doctor.id}>
+                <Fields rows={doctorRows(doctor)} />
+              </RecordCard>
+            ))}
+          </RecordList>
         )}
       </QueryView>
-    </>
-  )
-}
-
-function CreateDoctorForm({ onDone }: { onDone: () => void }) {
-  const mutation = useCreateDoctor()
-  const [name, setName] = useState('')
-  return (
-    <ActionForm
-      label={humanize('create')}
-      entity="doctor"
-      mutation={mutation}
-      variables={{ name }}
-      isSuccess={(a) => a.outcome === 'ok'}
-      onDone={onDone}
-    >
-      <TextControl label={humanize('name')} value={name} onChange={setName} />
-    </ActionForm>
+    </Page>
   )
 }

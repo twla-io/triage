@@ -1,37 +1,29 @@
+import type { ReactNode } from 'react'
 import type { Schemas } from '../api/client'
-import { useMatchAvailableSlotByPriority } from '../api/queries/availableSlots'
-import { ActionButton, ActionForm } from './actions'
-import { humanize } from './humanize'
-import { IntakeRequestActions } from './intakeRequestActions'
+import { ActionButton } from './actions'
+import { MatchAvailableSlotByPriorityForm } from './entityForms'
+import { actionLabel } from './humanize'
+import { intakeRequestActions } from './intakeRequestActions'
 
-/**
- * A calendar entry's actions, by case. A Slot's is matching it by priority;
- * an Appointment is an appointed intake request, so it gets the intake
- * request's own mapping.
- */
-export function DoctorCalendarEntryActions({ entry }: { entry: Schemas['DoctorCalendarEntry'] }) {
-  switch (entry.type) {
-    case 'slot':
-      return (
-        <ActionButton label={humanize('matchByPriority')}>
-          {(close) => <MatchByPriorityForm slotId={entry.id} onDone={close} />}
-        </ActionButton>
-      )
-    case 'appointment':
-      return <IntakeRequestActions request={{ ...entry, type: 'appointed' }} />
-  }
+const matchByPriority = actionLabel('MatchAvailableSlotByPriority', 'AvailableSlot')
+
+// The appointment case is an intake request in its Appointed case: its actions are
+// the intake request's own mapping.
+export function asAppointedIntakeRequest(
+  entry: Schemas['DoctorCalendarEntryAppointment'],
+): Schemas['IntakeRequestAppointed'] {
+  return { ...entry, type: 'appointed' }
 }
 
-function MatchByPriorityForm({ slotId, onDone }: { slotId: Schemas['SlotId']; onDone: () => void }) {
-  const mutation = useMatchAvailableSlotByPriority()
-  return (
-    <ActionForm
-      label={humanize('matchByPriority')}
-      entity="availableSlot"
-      mutation={mutation}
-      variables={slotId}
-      isSuccess={(a) => a.outcome === 'matchIntakeRequestToSlotOutcome' && a.detail.outcome === 'intakeRequestMatchedToSlot'}
-      onDone={onDone}
-    />
-  )
+export function doctorCalendarEntryActions(entry: Schemas['DoctorCalendarEntry']): ReactNode[] {
+  switch (entry.type) {
+    case 'slot':
+      return [
+        <ActionButton key={matchByPriority} label={matchByPriority}>
+          {(done) => <MatchAvailableSlotByPriorityForm slotId={entry.id} label={matchByPriority} onDone={done} />}
+        </ActionButton>,
+      ]
+    case 'appointment':
+      return intakeRequestActions(asAppointedIntakeRequest(entry))
+  }
 }

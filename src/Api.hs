@@ -1,41 +1,31 @@
 {-# LANGUAGE DataKinds             #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleContexts      #-}
+{-# LANGUAGE LambdaCase            #-}
+{-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeOperators         #-}
 
--- Derived from src/Domain.hs and src/Service.hs by the triage-api-codegen
--- skill: one endpoint per public Service function, grouped per resource.
--- Handlers only parse, supply the current time, and render answers.
+-- Derived from src/Domain.hs and src/Service.hs (triage-api-codegen).
+-- One endpoint per public Service function; every 200 body is an
+-- {"outcome", "detail"} envelope rendered by render<Function>Answer.
 module Api
-  ( main
-  , app
-  , API
+  ( -- ── API ──────────────────────────────────────────────────────────────
+    DomainApi
+  , Api
+  , AppM
   , openApi
+  , app
+  , main
 
-    -- ── Rendering: one function per Service answer type ──────────────────
-  , renderDoctorNotFound
-  , renderPatientNotFound
-  , renderHealthcareServiceNotFound
-  , renderIntakeRequestNotFound
-  , renderIntakeRequestInWrongState
-  , renderSlotDoesNotMatchIntakeRequest
-  , renderAcceptSubmittedIntakeRequestError
-  , renderMatchAcceptedIntakeRequestToSlotError
-  , renderMarkAcceptedIntakeRequestStaleError
-  , renderCloseAppointedIntakeRequestError
-  , renderCreateAvailableSlotError
-  , renderTransitionOutcome
-  , renderMatchIntakeRequestToSlotOutcome
-  , renderMatchByPriorityOutcome
-  , renderAddAvailableSlotOutcome
-
-    -- ── Each Service function's answer ───────────────────────────────────
+    -- ── Answers ──────────────────────────────────────────────────────────
   , renderCreateDoctorAnswer
   , renderCreatePatientAnswer
   , renderCreateHealthcareServiceAnswer
   , renderSubmitIntakeRequestAnswer
+  , renderCreateAvailableSlotAnswer
   , renderAcceptSubmittedIntakeRequestAnswer
   , renderRejectSubmittedIntakeRequestAnswer
   , renderMatchAcceptedIntakeRequestToSlotAnswer
@@ -43,7 +33,6 @@ module Api
   , renderMarkAcceptedIntakeRequestStaleAnswer
   , renderCloseAppointedIntakeRequestAnswer
   , renderMatchAvailableSlotByPriorityAnswer
-  , renderCreateAvailableSlotAnswer
   , renderFetchDoctorAnswer
   , renderFetchDoctorsAnswer
   , renderFetchPatientAnswer
@@ -62,21 +51,18 @@ module Api
   , renderFetchDoctorCalendarEntriesOverlappingAnswer
   ) where
 
-import Control.Exception          (SomeAsyncException, SomeException, displayException,
-                                   fromException, throwIO, try)
+import Control.Exception          (SomeException, displayException, try)
 import Control.Lens               ((&), (.~))
 import Control.Monad.IO.Class     (liftIO)
-import Control.Monad.Trans.Except (ExceptT (..))
 import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
-import Data.Aeson                 (ToJSON)
-import Data.Maybe                 (fromMaybe)
-import Data.OpenApi               (OpenApi, info, title, version)
+import Data.Aeson                 (ToJSON (..), Value (..))
+import Data.OpenApi               (OpenApi)
 import Data.Pool                  (defaultPoolConfig, newPool)
 import Data.Time                  (UTCTime, getCurrentTime)
 import Database.PostgreSQL.Simple (close, connectPostgreSQL)
 import Network.Wai.Handler.Warp   (run)
 import Network.Wai.Middleware.Cors
-  (CorsResourcePolicy (..), cors, simpleCorsResourcePolicy)
+  ( CorsResourcePolicy (..), cors, simpleCorsResourcePolicy )
 import Servant
 import Servant.OpenApi            (toOpenApi)
 import Servant.Swagger.UI         (SwaggerSchemaUI, swaggerSchemaUIServer)
@@ -85,387 +71,384 @@ import System.Exit                (die)
 import System.IO                  (hPutStrLn, stderr)
 import Text.Read                  (readMaybe)
 
-import qualified Data.Text          as Text
-import qualified Data.Text.Encoding as Text
+import qualified Data.OpenApi       as O
+import qualified Data.Text          as T
+import qualified Data.Text.Encoding as TE
 
 import Domain
-  ( AppointedIntakeRequest, AvailableSlot, ClosedIntakeRequest, Doctor, DoctorCalendarEntry
-  , HealthcareService, IntakeRequest, Patient, RejectedIntakeRequest, SlotId, StaleIntakeRequest
-  , SubmittedIntakeRequest, TriagedIntakeRequest, WithdrawnIntakeRequest )
 import Persistence (ConnectionPool)
 import Service
-  ( AcceptSubmittedIntakeRequestError (..), CloseAppointedIntakeRequestError (..)
-  , CreateAvailableSlotError (..), DoctorNotFound (..), HealthcareServiceNotFound (..)
+  ( AcceptSubmittedIntakeRequestError (..), AddAvailableSlotOutcome (..)
+  , CloseAppointedIntakeRequestError (..), CreateAvailableSlotError (..), DoctorNotFound (..)
+  , HealthcareServiceNotFound (..), IntakeRequestDoesNotMatchSlot (..)
   , IntakeRequestInWrongState (..), IntakeRequestNotFound (..)
   , MarkAcceptedIntakeRequestStaleError (..), MatchAcceptedIntakeRequestToSlotError (..)
-  , MatchIntakeRequestToSlotOutcome (..), PatientNotFound (..), MatchByPriorityOutcome (..)
-  , AddAvailableSlotOutcome (..), IntakeRequestDoesNotMatchSlot (..), TransitionOutcome (..) )
+  , MatchByPriorityOutcome (..), MatchIntakeRequestToSlotOutcome (..), PatientNotFound (..)
+  , TransitionOutcome (..) )
+import qualified Service
 import Transport
 
-import qualified Service as S
-
 -- ═══════════════════════════════════════════════════════════════════════════
--- HANDLER MONAD
+-- APP MONAD — the one place every handler passes through
 -- ═══════════════════════════════════════════════════════════════════════════
 
 type AppM = ReaderT ConnectionPool Handler
 
-withPool :: (ConnectionPool -> IO a) -> AppM a
-withPool f = ask >>= liftIO . f
+-- Runs a Service call. Anything it raises (a DecodeError, a database
+-- failure, anything unexpected) is logged to stderr with its cause and
+-- answered 500 with a plain-text body that exposes nothing.
+service :: (ConnectionPool -> IO a) -> AppM a
+service call = do
+  pool <- ask
+  liftIO (try (call pool)) >>= \case
+    Right a -> pure a
+    Left (e :: SomeException) -> do
+      liftIO (hPutStrLn stderr ("500: " ++ displayException e))
+      throwError err500
+        { errBody = "Internal server error"
+        , errHeaders = [("Content-Type", "text/plain; charset=utf-8")]
+        }
 
--- When the action is recorded.
-now :: AppM UTCTime
-now = liftIO getCurrentTime
-
--- The one place a 500 is answered: every synchronous exception (a
--- DecodeError raised by Service, a database failure, anything else) is
--- written to stderr with its cause and answered with a plain body.
-toHandler :: ConnectionPool -> AppM a -> Handler a
-toHandler pool action = Handler . ExceptT $ do
-  result <- try (runHandler (runReaderT action pool))
-  case result of
-    Right answered -> pure answered
-    Left (e :: SomeException)
-      | Just (_ :: SomeAsyncException) <- fromException e -> throwIO e
-      | otherwise -> do
-          hPutStrLn stderr ("500 Internal Server Error: " <> displayException e)
-          pure . Left $ err500
-            { errBody    = "Internal Server Error"
-            , errHeaders = [("Content-Type", "text/plain; charset=utf-8")]
-            }
+type Range a =
+     QueryParam' '[Required, Strict] "from" UTCTime
+  :> QueryParam' '[Required, Strict] "to" UTCTime
+  :> Get '[JSON] a
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- RENDERING
--- Each Service answer type rendered once; a <Function>Error delegates to
--- its facts. A plain value is "ok".
+-- ANSWER RENDERING — each Service answer type rendered once
 -- ═══════════════════════════════════════════════════════════════════════════
+
+ok :: ToJSON a => a -> Envelope
+ok = Envelope "ok" . toJSON
+
+-- ── Facts ───────────────────────────────────────────────────────────────────
 
 renderDoctorNotFound :: DoctorNotFound -> Envelope
-renderDoctorNotFound (DoctorNotFound doctorId) = answer doctorNotFound (fromDomainDoctorId doctorId)
+renderDoctorNotFound (DoctorNotFound i) =
+  Envelope "doctorNotFound" (toJSON (fromDomainDoctorId i))
 
 renderPatientNotFound :: PatientNotFound -> Envelope
-renderPatientNotFound (PatientNotFound patientId) =
-  answer patientNotFound (fromDomainPatientId patientId)
+renderPatientNotFound (PatientNotFound i) =
+  Envelope "patientNotFound" (toJSON (fromDomainPatientId i))
 
 renderHealthcareServiceNotFound :: HealthcareServiceNotFound -> Envelope
-renderHealthcareServiceNotFound (HealthcareServiceNotFound serviceId) =
-  answer healthcareServiceNotFound (fromDomainHealthcareServiceId serviceId)
+renderHealthcareServiceNotFound (HealthcareServiceNotFound i) =
+  Envelope "healthcareServiceNotFound" (toJSON (fromDomainHealthcareServiceId i))
 
 renderIntakeRequestNotFound :: IntakeRequestNotFound -> Envelope
-renderIntakeRequestNotFound (IntakeRequestNotFound requestId) =
-  answer intakeRequestNotFound (fromDomainIntakeRequestId requestId)
+renderIntakeRequestNotFound (IntakeRequestNotFound i) =
+  Envelope "intakeRequestNotFound" (toJSON (fromDomainIntakeRequestId i))
 
 renderIntakeRequestInWrongState :: IntakeRequestInWrongState -> Envelope
-renderIntakeRequestInWrongState (IntakeRequestInWrongState request) =
-  answer intakeRequestInWrongState (fromDomainIntakeRequest request)
+renderIntakeRequestInWrongState (IntakeRequestInWrongState r) =
+  Envelope "intakeRequestInWrongState" (toJSON (fromDomainIntakeRequest r))
 
-renderSlotDoesNotMatchIntakeRequest :: IntakeRequestDoesNotMatchSlot -> Envelope
-renderSlotDoesNotMatchIntakeRequest IntakeRequestDoesNotMatchSlot =
-  answer intakeRequestDoesNotMatchSlot NoDetail
+renderIntakeRequestDoesNotMatchSlot :: IntakeRequestDoesNotMatchSlot -> Envelope
+renderIntakeRequestDoesNotMatchSlot IntakeRequestDoesNotMatchSlot =
+  Envelope "intakeRequestDoesNotMatchSlot" Null
+
+-- ── Errors: delegate to their facts ─────────────────────────────────────────
 
 renderAcceptSubmittedIntakeRequestError :: AcceptSubmittedIntakeRequestError -> Envelope
-renderAcceptSubmittedIntakeRequestError e = case e of
-  AcceptSubmittedIntakeRequestIntakeRequestNotFound fact     -> renderIntakeRequestNotFound fact
-  AcceptSubmittedIntakeRequestHealthcareServiceNotFound fact -> renderHealthcareServiceNotFound fact
-  AcceptSubmittedIntakeRequestDoctorNotFound fact            -> renderDoctorNotFound fact
+renderAcceptSubmittedIntakeRequestError = \case
+  AcceptSubmittedIntakeRequestIntakeRequestNotFound f     -> renderIntakeRequestNotFound f
+  AcceptSubmittedIntakeRequestHealthcareServiceNotFound f -> renderHealthcareServiceNotFound f
+  AcceptSubmittedIntakeRequestDoctorNotFound f            -> renderDoctorNotFound f
 
 renderMatchAcceptedIntakeRequestToSlotError :: MatchAcceptedIntakeRequestToSlotError -> Envelope
-renderMatchAcceptedIntakeRequestToSlotError e = case e of
-  MatchAcceptedIntakeRequestToSlotIntakeRequestNotFound fact -> renderIntakeRequestNotFound fact
-  MatchAcceptedIntakeRequestToSlotIntakeRequestInWrongState fact -> renderIntakeRequestInWrongState fact
-  MatchAcceptedIntakeRequestToSlotIntakeRequestDoesNotMatchSlot fact ->
-    renderSlotDoesNotMatchIntakeRequest fact
+renderMatchAcceptedIntakeRequestToSlotError = \case
+  MatchAcceptedIntakeRequestToSlotIntakeRequestNotFound f      -> renderIntakeRequestNotFound f
+  MatchAcceptedIntakeRequestToSlotIntakeRequestInWrongState f  -> renderIntakeRequestInWrongState f
+  MatchAcceptedIntakeRequestToSlotIntakeRequestDoesNotMatchSlot f ->
+    renderIntakeRequestDoesNotMatchSlot f
 
 renderMarkAcceptedIntakeRequestStaleError :: MarkAcceptedIntakeRequestStaleError -> Envelope
-renderMarkAcceptedIntakeRequestStaleError e = case e of
-  MarkAcceptedIntakeRequestStaleIntakeRequestNotFound fact     -> renderIntakeRequestNotFound fact
-  MarkAcceptedIntakeRequestStaleIntakeRequestInWrongState fact -> renderIntakeRequestInWrongState fact
+renderMarkAcceptedIntakeRequestStaleError = \case
+  MarkAcceptedIntakeRequestStaleIntakeRequestNotFound f     -> renderIntakeRequestNotFound f
+  MarkAcceptedIntakeRequestStaleIntakeRequestInWrongState f -> renderIntakeRequestInWrongState f
 
 renderCloseAppointedIntakeRequestError :: CloseAppointedIntakeRequestError -> Envelope
-renderCloseAppointedIntakeRequestError e = case e of
-  CloseAppointedIntakeRequestIntakeRequestNotFound fact     -> renderIntakeRequestNotFound fact
-  CloseAppointedIntakeRequestIntakeRequestInWrongState fact -> renderIntakeRequestInWrongState fact
+renderCloseAppointedIntakeRequestError = \case
+  CloseAppointedIntakeRequestIntakeRequestNotFound f     -> renderIntakeRequestNotFound f
+  CloseAppointedIntakeRequestIntakeRequestInWrongState f -> renderIntakeRequestInWrongState f
 
 renderCreateAvailableSlotError :: CreateAvailableSlotError -> Envelope
-renderCreateAvailableSlotError e = case e of
-  CreateAvailableSlotDoctorNotFound fact            -> renderDoctorNotFound fact
-  CreateAvailableSlotHealthcareServiceNotFound fact -> renderHealthcareServiceNotFound fact
+renderCreateAvailableSlotError = \case
+  CreateAvailableSlotDoctorNotFound f            -> renderDoctorNotFound f
+  CreateAvailableSlotHealthcareServiceNotFound f -> renderHealthcareServiceNotFound f
 
-renderTransitionOutcome :: ToJSON d => (a -> d) -> TransitionOutcome a -> Envelope
-renderTransitionOutcome toDTO outcome = case outcome of
-  Transitioned next -> answer transitioned (toDTO next)
-  MovedOn current   -> answer movedOn (fromDomainIntakeRequest current)
+-- ── Outcomes ────────────────────────────────────────────────────────────────
+
+renderTransitionOutcome :: (a -> Value) -> TransitionOutcome a -> Envelope
+renderTransitionOutcome renderTarget = \case
+  Transitioned a -> Envelope "transitioned" (renderTarget a)
+  MovedOn r      -> Envelope "movedOn" (toJSON (fromDomainIntakeRequest r))
 
 renderMatchIntakeRequestToSlotOutcome :: MatchIntakeRequestToSlotOutcome -> Envelope
-renderMatchIntakeRequestToSlotOutcome outcome = case outcome of
-  IntakeRequestMatchedToSlot appointed -> answer intakeRequestMatchedToSlot (fromDomainAppointedIntakeRequest appointed)
-  AvailableSlotConsumed slotId         -> answer availableSlotConsumed (fromDomainSlotId slotId)
-  IntakeRequestMovedOn current         -> answer intakeRequestMovedOn (fromDomainIntakeRequest current)
+renderMatchIntakeRequestToSlotOutcome = \case
+  IntakeRequestMatchedToSlot a ->
+    Envelope "intakeRequestMatchedToSlot" (toJSON (fromDomainAppointedIntakeRequest a))
+  AvailableSlotConsumed s ->
+    Envelope "availableSlotConsumed" (toJSON (fromDomainSlotId s))
+  IntakeRequestMovedOn r ->
+    Envelope "intakeRequestMovedOn" (toJSON (fromDomainIntakeRequest r))
 
 renderMatchByPriorityOutcome :: MatchByPriorityOutcome -> Envelope
-renderMatchByPriorityOutcome outcome = case outcome of
-  NoIntakeRequestMatched -> answer noIntakeRequestMatched NoDetail
-  MatchIntakeRequestToSlotOutcome attempt  -> answer matchIntakeRequestToSlotOutcome (MatchIntakeRequestToSlotOutcomeDTO (renderMatchIntakeRequestToSlotOutcome attempt))
+renderMatchByPriorityOutcome = \case
+  NoIntakeRequestMatched -> Envelope "noIntakeRequestMatched" Null
+  MatchIntakeRequestToSlotOutcome o ->
+    Envelope "matchIntakeRequestToSlotOutcome" (toJSON (renderMatchIntakeRequestToSlotOutcome o))
 
 renderAddAvailableSlotOutcome :: AddAvailableSlotOutcome -> Envelope
-renderAddAvailableSlotOutcome outcome = case outcome of
-  AvailableSlotAdded slot           -> answer availableSlotAdded (fromDomainAvailableSlot slot)
-  AvailableSlotOverlapsDoctorCalendar -> answer availableSlotOverlapsDoctorCalendar NoDetail
+renderAddAvailableSlotOutcome = \case
+  AvailableSlotAdded s -> Envelope "availableSlotAdded" (toJSON (fromDomainAvailableSlot s))
+  AvailableSlotOverlapsDoctorCalendar -> Envelope "availableSlotOverlapsDoctorCalendar" Null
 
-renderOk :: ToJSON d => d -> Envelope
-renderOk = answer ok
-
--- ── Each Service function's answer ─────────────────────────────────────────
+-- ── One per use case ────────────────────────────────────────────────────────
 
 renderCreateDoctorAnswer :: Doctor -> CreateDoctorAnswer
-renderCreateDoctorAnswer = CreateDoctorAnswer . renderOk . fromDomainDoctor
+renderCreateDoctorAnswer = CreateDoctorAnswer . ok . fromDomainDoctor
 
 renderCreatePatientAnswer :: Patient -> CreatePatientAnswer
-renderCreatePatientAnswer = CreatePatientAnswer . renderOk . fromDomainPatient
+renderCreatePatientAnswer = CreatePatientAnswer . ok . fromDomainPatient
 
 renderCreateHealthcareServiceAnswer :: HealthcareService -> CreateHealthcareServiceAnswer
 renderCreateHealthcareServiceAnswer =
-  CreateHealthcareServiceAnswer . renderOk . fromDomainHealthcareService
+  CreateHealthcareServiceAnswer . ok . fromDomainHealthcareService
 
 renderSubmitIntakeRequestAnswer
   :: Either PatientNotFound SubmittedIntakeRequest -> SubmitIntakeRequestAnswer
-renderSubmitIntakeRequestAnswer =
-  SubmitIntakeRequestAnswer
-    . either renderPatientNotFound (renderOk . fromDomainSubmittedIntakeRequest)
+renderSubmitIntakeRequestAnswer = SubmitIntakeRequestAnswer
+  . either renderPatientNotFound (ok . fromDomainSubmittedIntakeRequest)
+
+renderCreateAvailableSlotAnswer
+  :: Either CreateAvailableSlotError AddAvailableSlotOutcome -> CreateAvailableSlotAnswer
+renderCreateAvailableSlotAnswer = CreateAvailableSlotAnswer
+  . either renderCreateAvailableSlotError renderAddAvailableSlotOutcome
 
 renderAcceptSubmittedIntakeRequestAnswer
   :: Either AcceptSubmittedIntakeRequestError (TransitionOutcome TriagedIntakeRequest)
   -> AcceptSubmittedIntakeRequestAnswer
-renderAcceptSubmittedIntakeRequestAnswer =
-  AcceptSubmittedIntakeRequestAnswer
-    . either renderAcceptSubmittedIntakeRequestError
-             (renderTransitionOutcome fromDomainTriagedIntakeRequest)
+renderAcceptSubmittedIntakeRequestAnswer = AcceptSubmittedIntakeRequestAnswer
+  . either renderAcceptSubmittedIntakeRequestError
+      (renderTransitionOutcome (toJSON . fromDomainTriagedIntakeRequest))
 
 renderRejectSubmittedIntakeRequestAnswer
   :: Either IntakeRequestNotFound (TransitionOutcome RejectedIntakeRequest)
   -> RejectSubmittedIntakeRequestAnswer
-renderRejectSubmittedIntakeRequestAnswer =
-  RejectSubmittedIntakeRequestAnswer
-    . either renderIntakeRequestNotFound (renderTransitionOutcome fromDomainRejectedIntakeRequest)
+renderRejectSubmittedIntakeRequestAnswer = RejectSubmittedIntakeRequestAnswer
+  . either renderIntakeRequestNotFound
+      (renderTransitionOutcome (toJSON . fromDomainRejectedIntakeRequest))
 
 renderMatchAcceptedIntakeRequestToSlotAnswer
   :: Either MatchAcceptedIntakeRequestToSlotError MatchIntakeRequestToSlotOutcome
   -> MatchAcceptedIntakeRequestToSlotAnswer
-renderMatchAcceptedIntakeRequestToSlotAnswer =
-  MatchAcceptedIntakeRequestToSlotAnswer
-    . either renderMatchAcceptedIntakeRequestToSlotError renderMatchIntakeRequestToSlotOutcome
+renderMatchAcceptedIntakeRequestToSlotAnswer = MatchAcceptedIntakeRequestToSlotAnswer
+  . either renderMatchAcceptedIntakeRequestToSlotError renderMatchIntakeRequestToSlotOutcome
 
 renderWithdrawIntakeRequestAnswer
   :: Either IntakeRequestNotFound (TransitionOutcome WithdrawnIntakeRequest)
   -> WithdrawIntakeRequestAnswer
-renderWithdrawIntakeRequestAnswer =
-  WithdrawIntakeRequestAnswer
-    . either renderIntakeRequestNotFound (renderTransitionOutcome fromDomainWithdrawnIntakeRequest)
+renderWithdrawIntakeRequestAnswer = WithdrawIntakeRequestAnswer
+  . either renderIntakeRequestNotFound
+      (renderTransitionOutcome (toJSON . fromDomainWithdrawnIntakeRequest))
 
 renderMarkAcceptedIntakeRequestStaleAnswer
   :: Either MarkAcceptedIntakeRequestStaleError (TransitionOutcome StaleIntakeRequest)
   -> MarkAcceptedIntakeRequestStaleAnswer
-renderMarkAcceptedIntakeRequestStaleAnswer =
-  MarkAcceptedIntakeRequestStaleAnswer
-    . either renderMarkAcceptedIntakeRequestStaleError
-             (renderTransitionOutcome fromDomainStaleIntakeRequest)
+renderMarkAcceptedIntakeRequestStaleAnswer = MarkAcceptedIntakeRequestStaleAnswer
+  . either renderMarkAcceptedIntakeRequestStaleError
+      (renderTransitionOutcome (toJSON . fromDomainStaleIntakeRequest))
 
 renderCloseAppointedIntakeRequestAnswer
   :: Either CloseAppointedIntakeRequestError (TransitionOutcome ClosedIntakeRequest)
   -> CloseAppointedIntakeRequestAnswer
-renderCloseAppointedIntakeRequestAnswer =
-  CloseAppointedIntakeRequestAnswer
-    . either renderCloseAppointedIntakeRequestError
-             (renderTransitionOutcome fromDomainClosedIntakeRequest)
+renderCloseAppointedIntakeRequestAnswer = CloseAppointedIntakeRequestAnswer
+  . either renderCloseAppointedIntakeRequestError
+      (renderTransitionOutcome (toJSON . fromDomainClosedIntakeRequest))
 
 renderMatchAvailableSlotByPriorityAnswer
   :: MatchByPriorityOutcome -> MatchAvailableSlotByPriorityAnswer
 renderMatchAvailableSlotByPriorityAnswer =
   MatchAvailableSlotByPriorityAnswer . renderMatchByPriorityOutcome
 
-renderCreateAvailableSlotAnswer
-  :: Either CreateAvailableSlotError AddAvailableSlotOutcome -> CreateAvailableSlotAnswer
-renderCreateAvailableSlotAnswer =
-  CreateAvailableSlotAnswer . either renderCreateAvailableSlotError renderAddAvailableSlotOutcome
-
 renderFetchDoctorAnswer :: Either DoctorNotFound Doctor -> FetchDoctorAnswer
 renderFetchDoctorAnswer =
-  FetchDoctorAnswer . either renderDoctorNotFound (renderOk . fromDomainDoctor)
+  FetchDoctorAnswer . either renderDoctorNotFound (ok . fromDomainDoctor)
 
 renderFetchDoctorsAnswer :: [Doctor] -> FetchDoctorsAnswer
-renderFetchDoctorsAnswer = FetchDoctorsAnswer . renderOk . map fromDomainDoctor
+renderFetchDoctorsAnswer = FetchDoctorsAnswer . ok . map fromDomainDoctor
 
 renderFetchPatientAnswer :: Either PatientNotFound Patient -> FetchPatientAnswer
 renderFetchPatientAnswer =
-  FetchPatientAnswer . either renderPatientNotFound (renderOk . fromDomainPatient)
+  FetchPatientAnswer . either renderPatientNotFound (ok . fromDomainPatient)
 
 renderFetchPatientsAnswer :: [Patient] -> FetchPatientsAnswer
-renderFetchPatientsAnswer = FetchPatientsAnswer . renderOk . map fromDomainPatient
+renderFetchPatientsAnswer = FetchPatientsAnswer . ok . map fromDomainPatient
 
 renderFetchHealthcareServiceAnswer
   :: Either HealthcareServiceNotFound HealthcareService -> FetchHealthcareServiceAnswer
-renderFetchHealthcareServiceAnswer =
-  FetchHealthcareServiceAnswer
-    . either renderHealthcareServiceNotFound (renderOk . fromDomainHealthcareService)
+renderFetchHealthcareServiceAnswer = FetchHealthcareServiceAnswer
+  . either renderHealthcareServiceNotFound (ok . fromDomainHealthcareService)
 
 renderFetchHealthcareServicesAnswer :: [HealthcareService] -> FetchHealthcareServicesAnswer
 renderFetchHealthcareServicesAnswer =
-  FetchHealthcareServicesAnswer . renderOk . map fromDomainHealthcareService
+  FetchHealthcareServicesAnswer . ok . map fromDomainHealthcareService
 
--- A slot is deleted on consumption: Nothing is availableSlotConsumed,
--- carrying the id asked for.
+-- Deleted on consumption: Nothing is availableSlotConsumed.
 renderFetchAvailableSlotAnswer :: SlotId -> Maybe AvailableSlot -> FetchAvailableSlotAnswer
-renderFetchAvailableSlotAnswer slotId found = FetchAvailableSlotAnswer $ case found of
-  Just slot -> renderOk (fromDomainAvailableSlot slot)
-  Nothing   -> answer availableSlotConsumed (fromDomainSlotId slotId)
+renderFetchAvailableSlotAnswer slotId = FetchAvailableSlotAnswer . \case
+  Just s  -> ok (fromDomainAvailableSlot s)
+  Nothing -> Envelope "availableSlotConsumed" (toJSON (fromDomainSlotId slotId))
 
 renderFetchIntakeRequestAnswer
   :: Either IntakeRequestNotFound IntakeRequest -> FetchIntakeRequestAnswer
-renderFetchIntakeRequestAnswer =
-  FetchIntakeRequestAnswer . either renderIntakeRequestNotFound (renderOk . fromDomainIntakeRequest)
+renderFetchIntakeRequestAnswer = FetchIntakeRequestAnswer
+  . either renderIntakeRequestNotFound (ok . fromDomainIntakeRequest)
 
 renderFetchSubmittedIntakeRequestsAnswer
   :: [SubmittedIntakeRequest] -> FetchSubmittedIntakeRequestsAnswer
 renderFetchSubmittedIntakeRequestsAnswer =
-  FetchSubmittedIntakeRequestsAnswer . renderOk . map fromDomainSubmittedIntakeRequest
+  FetchSubmittedIntakeRequestsAnswer . ok . map fromDomainSubmittedIntakeRequest
 
 renderFetchAcceptedIntakeRequestsAnswer
   :: [TriagedIntakeRequest] -> FetchAcceptedIntakeRequestsAnswer
 renderFetchAcceptedIntakeRequestsAnswer =
-  FetchAcceptedIntakeRequestsAnswer . renderOk . map fromDomainTriagedIntakeRequest
+  FetchAcceptedIntakeRequestsAnswer . ok . map fromDomainTriagedIntakeRequest
 
 renderFetchAppointedIntakeRequestsAnswer
   :: [AppointedIntakeRequest] -> FetchAppointedIntakeRequestsAnswer
 renderFetchAppointedIntakeRequestsAnswer =
-  FetchAppointedIntakeRequestsAnswer . renderOk . map fromDomainAppointedIntakeRequest
+  FetchAppointedIntakeRequestsAnswer . ok . map fromDomainAppointedIntakeRequest
 
 renderFetchRejectedIntakeRequestsByRejectedAtAnswer
   :: [RejectedIntakeRequest] -> FetchRejectedIntakeRequestsByRejectedAtAnswer
 renderFetchRejectedIntakeRequestsByRejectedAtAnswer =
-  FetchRejectedIntakeRequestsByRejectedAtAnswer . renderOk . map fromDomainRejectedIntakeRequest
+  FetchRejectedIntakeRequestsByRejectedAtAnswer . ok . map fromDomainRejectedIntakeRequest
 
 renderFetchWithdrawnIntakeRequestsByWithdrawnAtAnswer
   :: [WithdrawnIntakeRequest] -> FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer
 renderFetchWithdrawnIntakeRequestsByWithdrawnAtAnswer =
-  FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer . renderOk . map fromDomainWithdrawnIntakeRequest
+  FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer . ok . map fromDomainWithdrawnIntakeRequest
 
 renderFetchStaleIntakeRequestsByStaleAtAnswer
   :: [StaleIntakeRequest] -> FetchStaleIntakeRequestsByStaleAtAnswer
 renderFetchStaleIntakeRequestsByStaleAtAnswer =
-  FetchStaleIntakeRequestsByStaleAtAnswer . renderOk . map fromDomainStaleIntakeRequest
+  FetchStaleIntakeRequestsByStaleAtAnswer . ok . map fromDomainStaleIntakeRequest
 
 renderFetchClosedIntakeRequestsByStartAnswer
   :: [ClosedIntakeRequest] -> FetchClosedIntakeRequestsByStartAnswer
 renderFetchClosedIntakeRequestsByStartAnswer =
-  FetchClosedIntakeRequestsByStartAnswer . renderOk . map fromDomainClosedIntakeRequest
+  FetchClosedIntakeRequestsByStartAnswer . ok . map fromDomainClosedIntakeRequest
 
 renderFetchDoctorCalendarEntriesOverlappingAnswer
   :: [DoctorCalendarEntry] -> FetchDoctorCalendarEntriesOverlappingAnswer
 renderFetchDoctorCalendarEntriesOverlappingAnswer =
-  FetchDoctorCalendarEntriesOverlappingAnswer . renderOk . map fromDomainDoctorCalendarEntry
+  FetchDoctorCalendarEntriesOverlappingAnswer . ok . map fromDomainDoctorCalendarEntry
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- API
+-- DOCTORS — /doctors
 -- ═══════════════════════════════════════════════════════════════════════════
 
-type API
-  =    DoctorsAPI
-  :<|> PatientsAPI
-  :<|> HealthcareServicesAPI
-  :<|> IntakeRequestsAPI
-  :<|> AvailableSlotsAPI
-  :<|> DoctorCalendarAPI
-
-server :: ServerT API AppM
-server =
-       doctorsServer
-  :<|> patientsServer
-  :<|> healthcareServicesServer
-  :<|> intakeRequestsServer
-  :<|> availableSlotsServer
-  :<|> doctorCalendarServer
-
--- A half-open range [from, to).
-type From = QueryParam' '[Required, Strict] "from" UTCTime
-type To   = QueryParam' '[Required, Strict] "to" UTCTime
-
--- ═══════════════════════════════════════════════════════════════════════════
--- /doctors
--- ═══════════════════════════════════════════════════════════════════════════
-
-type DoctorsAPI = "doctors" :>
+type DoctorsApi = "doctors" :>
   (    ReqBody '[JSON] CreateDoctorRequest :> Post '[JSON] CreateDoctorAnswer
   :<|> Get '[JSON] FetchDoctorsAnswer
   :<|> Capture "doctorId" DoctorIdDTO :> Get '[JSON] FetchDoctorAnswer
   )
 
-doctorsServer :: ServerT DoctorsAPI AppM
+doctorsServer :: ServerT DoctorsApi AppM
 doctorsServer = createDoctorH :<|> fetchDoctorsH :<|> fetchDoctorH
   where
-    createDoctorH (CreateDoctorRequest name) =
-      renderCreateDoctorAnswer <$> withPool (\pool -> S.createDoctor pool name)
-    fetchDoctorsH =
-      renderFetchDoctorsAnswer <$> withPool S.fetchDoctors
-    fetchDoctorH doctorId =
-      renderFetchDoctorAnswer <$> withPool (\pool -> S.fetchDoctor pool (toDomainDoctorId doctorId))
+    createDoctorH req = service $ \pool ->
+      renderCreateDoctorAnswer <$> Service.createDoctor pool req.name
+    fetchDoctorsH = service $ \pool ->
+      renderFetchDoctorsAnswer <$> Service.fetchDoctors pool
+    fetchDoctorH doctor = service $ \pool ->
+      renderFetchDoctorAnswer <$> Service.fetchDoctor pool (toDomainDoctorId doctor)
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- /patients
+-- PATIENTS — /patients
 -- ═══════════════════════════════════════════════════════════════════════════
 
-type PatientsAPI = "patients" :>
+type PatientsApi = "patients" :>
   (    ReqBody '[JSON] CreatePatientRequest :> Post '[JSON] CreatePatientAnswer
   :<|> Get '[JSON] FetchPatientsAnswer
   :<|> Capture "patientId" PatientIdDTO :> Get '[JSON] FetchPatientAnswer
   )
 
-patientsServer :: ServerT PatientsAPI AppM
+patientsServer :: ServerT PatientsApi AppM
 patientsServer = createPatientH :<|> fetchPatientsH :<|> fetchPatientH
   where
-    createPatientH (CreatePatientRequest name) =
-      renderCreatePatientAnswer <$> withPool (\pool -> S.createPatient pool name)
-    fetchPatientsH =
-      renderFetchPatientsAnswer <$> withPool S.fetchPatients
-    fetchPatientH patientId =
-      renderFetchPatientAnswer <$> withPool (\pool -> S.fetchPatient pool (toDomainPatientId patientId))
+    createPatientH req = service $ \pool ->
+      renderCreatePatientAnswer <$> Service.createPatient pool req.name
+    fetchPatientsH = service $ \pool ->
+      renderFetchPatientsAnswer <$> Service.fetchPatients pool
+    fetchPatientH patient = service $ \pool ->
+      renderFetchPatientAnswer <$> Service.fetchPatient pool (toDomainPatientId patient)
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- /healthcare-services
+-- HEALTHCARE SERVICES — /healthcare-services
 -- ═══════════════════════════════════════════════════════════════════════════
 
-type HealthcareServicesAPI = "healthcare-services" :>
+type HealthcareServicesApi = "healthcare-services" :>
   (    ReqBody '[JSON] CreateHealthcareServiceRequest :> Post '[JSON] CreateHealthcareServiceAnswer
   :<|> Get '[JSON] FetchHealthcareServicesAnswer
   :<|> Capture "healthcareServiceId" HealthcareServiceIdDTO :> Get '[JSON] FetchHealthcareServiceAnswer
   )
 
-healthcareServicesServer :: ServerT HealthcareServicesAPI AppM
-healthcareServicesServer = createHealthcareServiceH :<|> fetchHealthcareServicesH :<|> fetchHealthcareServiceH
+healthcareServicesServer :: ServerT HealthcareServicesApi AppM
+healthcareServicesServer =
+  createHealthcareServiceH :<|> fetchHealthcareServicesH :<|> fetchHealthcareServiceH
   where
-    createHealthcareServiceH (CreateHealthcareServiceRequest name duration) =
+    createHealthcareServiceH req = service $ \pool ->
       renderCreateHealthcareServiceAnswer
-        <$> withPool (\pool -> S.createHealthcareService pool name (toDomainDuration duration))
-    fetchHealthcareServicesH =
-      renderFetchHealthcareServicesAnswer <$> withPool S.fetchHealthcareServices
-    fetchHealthcareServiceH serviceId =
+        <$> Service.createHealthcareService pool req.name (toDomainDuration req.duration)
+    fetchHealthcareServicesH = service $ \pool ->
+      renderFetchHealthcareServicesAnswer <$> Service.fetchHealthcareServices pool
+    fetchHealthcareServiceH serviceId = service $ \pool ->
       renderFetchHealthcareServiceAnswer
-        <$> withPool (\pool -> S.fetchHealthcareService pool (toDomainHealthcareServiceId serviceId))
+        <$> Service.fetchHealthcareService pool (toDomainHealthcareServiceId serviceId)
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- /intake-requests
--- Reads by case come before the by-id read, so a case name is never parsed
--- as an id.
+-- AVAILABLE SLOTS — /available-slots
 -- ═══════════════════════════════════════════════════════════════════════════
 
-type IntakeRequestsAPI = "intake-requests" :>
+type AvailableSlotsApi = "available-slots" :>
+  (    ReqBody '[JSON] CreateAvailableSlotRequest :> Post '[JSON] CreateAvailableSlotAnswer
+  :<|> Capture "slotId" SlotIdDTO :> Get '[JSON] FetchAvailableSlotAnswer
+  :<|> Capture "slotId" SlotIdDTO :> "match-by-priority"
+         :> Post '[JSON] MatchAvailableSlotByPriorityAnswer
+  )
+
+availableSlotsServer :: ServerT AvailableSlotsApi AppM
+availableSlotsServer =
+  createAvailableSlotH :<|> fetchAvailableSlotH :<|> matchAvailableSlotByPriorityH
+  where
+    createAvailableSlotH req = service $ \pool ->
+      renderCreateAvailableSlotAnswer
+        <$> Service.createAvailableSlot pool
+              (toDomainDoctorId req.doctorId)
+              (toDomainHealthcareServiceId req.healthcareServiceId)
+              req.start
+    fetchAvailableSlotH slotId = service $ \pool ->
+      renderFetchAvailableSlotAnswer (toDomainSlotId slotId) <$> Service.fetchAvailableSlot pool (toDomainSlotId slotId)
+    matchAvailableSlotByPriorityH slotId = service $ \pool ->
+      renderMatchAvailableSlotByPriorityAnswer
+        <$> Service.matchAvailableSlotByPriority pool (toDomainSlotId slotId)
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- INTAKE REQUESTS — /intake-requests
+-- ═══════════════════════════════════════════════════════════════════════════
+
+type IntakeRequestsApi = "intake-requests" :>
   (    ReqBody '[JSON] SubmitIntakeRequestRequest :> Post '[JSON] SubmitIntakeRequestAnswer
   :<|> "submitted" :> Get '[JSON] FetchSubmittedIntakeRequestsAnswer
-  :<|> "accepted"  :> Get '[JSON] FetchAcceptedIntakeRequestsAnswer
+  :<|> "accepted" :> Get '[JSON] FetchAcceptedIntakeRequestsAnswer
   :<|> "appointed" :> Get '[JSON] FetchAppointedIntakeRequestsAnswer
-  :<|> "rejected"  :> From :> To :> Get '[JSON] FetchRejectedIntakeRequestsByRejectedAtAnswer
-  :<|> "withdrawn" :> From :> To :> Get '[JSON] FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer
-  :<|> "stale"     :> From :> To :> Get '[JSON] FetchStaleIntakeRequestsByStaleAtAnswer
-  :<|> "closed"    :> From :> To :> Get '[JSON] FetchClosedIntakeRequestsByStartAnswer
+  :<|> "rejected" :> Range FetchRejectedIntakeRequestsByRejectedAtAnswer
+  :<|> "withdrawn" :> Range FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer
+  :<|> "stale" :> Range FetchStaleIntakeRequestsByStaleAtAnswer
+  :<|> "closed" :> Range FetchClosedIntakeRequestsByStartAnswer
   :<|> Capture "intakeRequestId" IntakeRequestIdDTO :> Get '[JSON] FetchIntakeRequestAnswer
   :<|> Capture "intakeRequestId" IntakeRequestIdDTO :> "accept"
          :> ReqBody '[JSON] AcceptSubmittedIntakeRequestRequest
@@ -486,9 +469,9 @@ type IntakeRequestsAPI = "intake-requests" :>
          :> Post '[JSON] CloseAppointedIntakeRequestAnswer
   )
 
-intakeRequestsServer :: ServerT IntakeRequestsAPI AppM
+intakeRequestsServer :: ServerT IntakeRequestsApi AppM
 intakeRequestsServer =
-       submitH
+       submitIntakeRequestH
   :<|> fetchSubmittedH
   :<|> fetchAcceptedH
   :<|> fetchAppointedH
@@ -504,112 +487,113 @@ intakeRequestsServer =
   :<|> markStaleH
   :<|> closeH
   where
-    submitH (SubmitIntakeRequestRequest patientId narrative) = do
-      createdAt <- now
-      renderSubmitIntakeRequestAnswer <$> withPool (\pool ->
-        S.submitIntakeRequest pool (toDomainPatientId patientId) narrative createdAt)
-    fetchSubmittedH =
-      renderFetchSubmittedIntakeRequestsAnswer <$> withPool S.fetchSubmittedIntakeRequests
-    fetchAcceptedH =
-      renderFetchAcceptedIntakeRequestsAnswer <$> withPool S.fetchAcceptedIntakeRequests
-    fetchAppointedH =
-      renderFetchAppointedIntakeRequestsAnswer <$> withPool S.fetchAppointedIntakeRequests
-    fetchRejectedH from to =
+    submitIntakeRequestH req = service $ \pool -> do
+      now <- getCurrentTime
+      renderSubmitIntakeRequestAnswer
+        <$> Service.submitIntakeRequest pool (toDomainPatientId req.patientId) req.narrative now
+    fetchSubmittedH = service $ \pool ->
+      renderFetchSubmittedIntakeRequestsAnswer <$> Service.fetchSubmittedIntakeRequests pool
+    fetchAcceptedH = service $ \pool ->
+      renderFetchAcceptedIntakeRequestsAnswer <$> Service.fetchAcceptedIntakeRequests pool
+    fetchAppointedH = service $ \pool ->
+      renderFetchAppointedIntakeRequestsAnswer <$> Service.fetchAppointedIntakeRequests pool
+    fetchRejectedH from to = service $ \pool ->
       renderFetchRejectedIntakeRequestsByRejectedAtAnswer
-        <$> withPool (\pool -> S.fetchRejectedIntakeRequestsByRejectedAt pool from to)
-    fetchWithdrawnH from to =
+        <$> Service.fetchRejectedIntakeRequestsByRejectedAt pool from to
+    fetchWithdrawnH from to = service $ \pool ->
       renderFetchWithdrawnIntakeRequestsByWithdrawnAtAnswer
-        <$> withPool (\pool -> S.fetchWithdrawnIntakeRequestsByWithdrawnAt pool from to)
-    fetchStaleH from to =
+        <$> Service.fetchWithdrawnIntakeRequestsByWithdrawnAt pool from to
+    fetchStaleH from to = service $ \pool ->
       renderFetchStaleIntakeRequestsByStaleAtAnswer
-        <$> withPool (\pool -> S.fetchStaleIntakeRequestsByStaleAt pool from to)
-    fetchClosedH from to =
+        <$> Service.fetchStaleIntakeRequestsByStaleAt pool from to
+    fetchClosedH from to = service $ \pool ->
       renderFetchClosedIntakeRequestsByStartAnswer
-        <$> withPool (\pool -> S.fetchClosedIntakeRequestsByStart pool from to)
-    fetchIntakeRequestH requestId =
+        <$> Service.fetchClosedIntakeRequestsByStart pool from to
+    fetchIntakeRequestH requestId = service $ \pool ->
       renderFetchIntakeRequestAnswer
-        <$> withPool (\pool -> S.fetchIntakeRequest pool (toDomainIntakeRequestId requestId))
-    acceptH requestId (AcceptSubmittedIntakeRequestRequest serviceId priority doctorRequirement) = do
-      triagedAt <- now
-      renderAcceptSubmittedIntakeRequestAnswer <$> withPool (\pool ->
-        S.acceptSubmittedIntakeRequest pool (toDomainIntakeRequestId requestId)
-          (toDomainHealthcareServiceId serviceId)
-          (toDomainIntakeRequestPriority priority)
-          (toDomainDoctorRequirement doctorRequirement)
-          triagedAt)
-    rejectH requestId (RejectSubmittedIntakeRequestRequest rejectionReason) = do
-      rejectedAt <- now
-      renderRejectSubmittedIntakeRequestAnswer <$> withPool (\pool ->
-        S.rejectSubmittedIntakeRequest pool (toDomainIntakeRequestId requestId)
-          rejectedAt rejectionReason)
-    matchToSlotH requestId (MatchAcceptedIntakeRequestToSlotRequest slotId) =
-      renderMatchAcceptedIntakeRequestToSlotAnswer <$> withPool (\pool ->
-        S.matchAcceptedIntakeRequestToSlot pool (toDomainIntakeRequestId requestId)
-          (toDomainSlotId slotId))
-    withdrawH requestId (WithdrawIntakeRequestRequest withdrawalNote) = do
-      withdrawnAt <- now
-      renderWithdrawIntakeRequestAnswer <$> withPool (\pool ->
-        S.withdrawIntakeRequest pool (toDomainIntakeRequestId requestId)
-          withdrawnAt withdrawalNote)
-    markStaleH requestId = do
-      staleAt <- now
-      renderMarkAcceptedIntakeRequestStaleAnswer <$> withPool (\pool ->
-        S.markAcceptedIntakeRequestStale pool (toDomainIntakeRequestId requestId) staleAt)
-    closeH requestId (CloseAppointedIntakeRequestRequest closeReason) = do
-      cancelledAt <- now
-      renderCloseAppointedIntakeRequestAnswer <$> withPool (\pool ->
-        S.closeAppointedIntakeRequest pool (toDomainIntakeRequestId requestId)
-          (toDomainCloseReasonRequest cancelledAt closeReason))
+        <$> Service.fetchIntakeRequest pool (toDomainIntakeRequestId requestId)
+    acceptH requestId req = service $ \pool -> do
+      now <- getCurrentTime
+      renderAcceptSubmittedIntakeRequestAnswer
+        <$> Service.acceptSubmittedIntakeRequest pool
+              (toDomainIntakeRequestId requestId)
+              (toDomainHealthcareServiceId req.healthcareServiceId)
+              (toDomainIntakeRequestPriority req.priority)
+              (toDomainDoctorRequirement req.doctorRequirement)
+              now
+    rejectH requestId req = service $ \pool -> do
+      now <- getCurrentTime
+      renderRejectSubmittedIntakeRequestAnswer
+        <$> Service.rejectSubmittedIntakeRequest pool
+              (toDomainIntakeRequestId requestId) now req.rejectionReason
+    matchToSlotH requestId req = service $ \pool ->
+      renderMatchAcceptedIntakeRequestToSlotAnswer
+        <$> Service.matchAcceptedIntakeRequestToSlot pool
+              (toDomainIntakeRequestId requestId) (toDomainSlotId req.slotId)
+    withdrawH requestId req = service $ \pool -> do
+      now <- getCurrentTime
+      renderWithdrawIntakeRequestAnswer
+        <$> Service.withdrawIntakeRequest pool
+              (toDomainIntakeRequestId requestId) now req.withdrawalNote
+    markStaleH requestId = service $ \pool -> do
+      now <- getCurrentTime
+      renderMarkAcceptedIntakeRequestStaleAnswer
+        <$> Service.markAcceptedIntakeRequestStale pool (toDomainIntakeRequestId requestId) now
+    closeH requestId req = service $ \pool -> do
+      now <- getCurrentTime
+      renderCloseAppointedIntakeRequestAnswer
+        <$> Service.closeAppointedIntakeRequest pool
+              (toDomainIntakeRequestId requestId)
+              (toDomainCloseReasonRequest now req.closeReason)
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- /available-slots
+-- DOCTOR CALENDAR — /doctor-calendar
 -- ═══════════════════════════════════════════════════════════════════════════
 
-type AvailableSlotsAPI = "available-slots" :>
-  (    ReqBody '[JSON] CreateAvailableSlotRequest :> Post '[JSON] CreateAvailableSlotAnswer
-  :<|> Capture "slotId" SlotIdDTO :> Get '[JSON] FetchAvailableSlotAnswer
-  :<|> Capture "slotId" SlotIdDTO :> "match-by-priority"
-         :> Post '[JSON] MatchAvailableSlotByPriorityAnswer
-  )
+type DoctorCalendarApi = "doctor-calendar" :>
+  Range FetchDoctorCalendarEntriesOverlappingAnswer
 
-availableSlotsServer :: ServerT AvailableSlotsAPI AppM
-availableSlotsServer = createAvailableSlotH :<|> fetchAvailableSlotH :<|> matchByPriorityH
+doctorCalendarServer :: ServerT DoctorCalendarApi AppM
+doctorCalendarServer = fetchDoctorCalendarEntriesOverlappingH
   where
-    createAvailableSlotH (CreateAvailableSlotRequest doctorId serviceId start) =
-      renderCreateAvailableSlotAnswer <$> withPool (\pool ->
-        S.createAvailableSlot pool (toDomainDoctorId doctorId)
-          (toDomainHealthcareServiceId serviceId) start)
-    fetchAvailableSlotH slotId =
-      renderFetchAvailableSlotAnswer (toDomainSlotId slotId) <$> withPool (\pool -> S.fetchAvailableSlot pool (toDomainSlotId slotId))
-    matchByPriorityH slotId =
-      renderMatchAvailableSlotByPriorityAnswer
-        <$> withPool (\pool -> S.matchAvailableSlotByPriority pool (toDomainSlotId slotId))
+    fetchDoctorCalendarEntriesOverlappingH from to = service $ \pool ->
+      renderFetchDoctorCalendarEntriesOverlappingAnswer
+        <$> Service.fetchDoctorCalendarEntriesOverlapping pool from to
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- /doctor-calendar
+-- API
 -- ═══════════════════════════════════════════════════════════════════════════
 
-type DoctorCalendarAPI = "doctor-calendar" :>
-  From :> To :> Get '[JSON] FetchDoctorCalendarEntriesOverlappingAnswer
+type DomainApi =
+       DoctorsApi
+  :<|> PatientsApi
+  :<|> HealthcareServicesApi
+  :<|> AvailableSlotsApi
+  :<|> IntakeRequestsApi
+  :<|> DoctorCalendarApi
 
-doctorCalendarServer :: ServerT DoctorCalendarAPI AppM
-doctorCalendarServer from to =
-  renderFetchDoctorCalendarEntriesOverlappingAnswer
-    <$> withPool (\pool -> S.fetchDoctorCalendarEntriesOverlapping pool from to)
+type Api = DomainApi :<|> SwaggerSchemaUI "swagger-ui" "openapi.json"
 
--- ═══════════════════════════════════════════════════════════════════════════
--- SPEC, APPLICATION, CONFIGURATION
--- ═══════════════════════════════════════════════════════════════════════════
+domainServer :: ServerT DomainApi AppM
+domainServer =
+       doctorsServer
+  :<|> patientsServer
+  :<|> healthcareServicesServer
+  :<|> availableSlotsServer
+  :<|> intakeRequestsServer
+  :<|> doctorCalendarServer
 
 openApi :: OpenApi
-openApi = toOpenApi (Proxy @API)
-  & info . title   .~ "triage"
-  & info . version .~ "0.1.0.0"
+openApi = toOpenApi (Proxy @DomainApi)
+  & O.info . O.title   .~ "triage"
+  & O.info . O.version .~ "0.1.0.0"
 
--- The API, plus Swagger UI at /swagger-ui and the spec at /openapi.json.
-type App = API :<|> SwaggerSchemaUI "swagger-ui" "openapi.json"
+app :: ConnectionPool -> Application
+app pool = cors (const (Just corsPolicy)) $ serve (Proxy @Api) $
+       hoistServer (Proxy @DomainApi) (`runReaderT` pool) domainServer
+  :<|> swaggerSchemaUIServer openApi
 
--- The frontend's origin (Vite's dev server).
+-- The frontend's origin (its dev server).
 corsPolicy :: CorsResourcePolicy
 corsPolicy = simpleCorsResourcePolicy
   { corsOrigins        = Just (["http://localhost:5173"], False)
@@ -617,22 +601,16 @@ corsPolicy = simpleCorsResourcePolicy
   , corsRequestHeaders = ["Content-Type"]
   }
 
-app :: ConnectionPool -> Application
-app pool =
-  cors (const (Just corsPolicy)) $
-    serve (Proxy @App) $
-      hoistServer (Proxy @API) (toHandler pool) server
-        :<|> swaggerSchemaUIServer openApi
+-- ═══════════════════════════════════════════════════════════════════════════
+-- MAIN — only serves; migrations are a separate, manual step
+-- ═══════════════════════════════════════════════════════════════════════════
 
--- Only serves; migrations are a separate, manual step.
 main :: IO ()
 main = do
-  dbUrl   <- fromMaybe "postgresql://localhost/triage" <$> lookupEnv "TRIAGE_DB_URL"
-  portVar <- lookupEnv "TRIAGE_PORT"
-  port    <- case portVar of
-    Nothing -> pure 8080
-    Just s  -> case readMaybe s of
-      Just p | p > 0 && p < 65536 -> pure p
-      _                           -> die ("TRIAGE_PORT is not a port number: " <> show s)
-  pool <- newPool (defaultPoolConfig (connectPostgreSQL (Text.encodeUtf8 (Text.pack dbUrl))) close 60 10)
+  dbUrl <- maybe "postgresql://localhost/triage" T.pack <$> lookupEnv "TRIAGE_DB_URL"
+  port  <- lookupEnv "TRIAGE_PORT" >>= \case
+    Nothing  -> pure 8080
+    Just raw -> maybe (die ("TRIAGE_PORT is not a port number: " ++ raw)) pure (readMaybe raw)
+  pool <- newPool (defaultPoolConfig (connectPostgreSQL (TE.encodeUtf8 dbUrl)) close 60 10)
+  hPutStrLn stderr ("triage-server listening on port " ++ show (port :: Int))
   run port (app pool)

@@ -1,13 +1,16 @@
 import { useQuery } from '@tanstack/react-query'
-import { call, type Schemas } from '../client'
+import { get, post, type Schemas } from '../client'
 import { useAnswerMutation } from '../mutation'
 
 export function useHealthcareServices() {
-  return useQuery({ queryKey: ['healthcareServices'], queryFn: () => call('get', '/healthcare-services', {}) })
+  return useQuery({
+    queryKey: ['healthcare-services'],
+    queryFn: () => get('/healthcare-services', undefined, undefined),
+  })
 }
 
 export function useCreateHealthcareService() {
   return useAnswerMutation((body: Schemas['CreateHealthcareServiceRequest']) =>
-    call('post', '/healthcare-services', { body }),
+    post('/healthcare-services', undefined, body),
   )
 }

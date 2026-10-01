@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
-import { call } from '../client'
-import type { Range } from '../range'
+import { get } from '../client'
+import { rangeQuery, type Week } from '../range'
 
-export function useDoctorCalendarEntries(range: Range) {
+export function useDoctorCalendar(week: Week) {
+  const query = rangeQuery(week)
   return useQuery({
-    queryKey: ['doctorCalendar', range.from, range.to],
-    queryFn: () => call('get', '/doctor-calendar', { query: { from: range.from, to: range.to } }),
+    queryKey: ['doctor-calendar', query.from, query.to],
+    queryFn: () => get('/doctor-calendar', undefined, query),
   })
 }

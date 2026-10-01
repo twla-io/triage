@@ -1,11 +1,11 @@
 import { useQuery } from '@tanstack/react-query'
-import { call, type Schemas } from '../client'
+import { get, post, type Schemas } from '../client'
 import { useAnswerMutation } from '../mutation'
 
 export function useDoctors() {
-  return useQuery({ queryKey: ['doctors'], queryFn: () => call('get', '/doctors', {}) })
+  return useQuery({ queryKey: ['doctors'], queryFn: () => get('/doctors', undefined, undefined) })
 }
 
 export function useCreateDoctor() {
-  return useAnswerMutation((body: Schemas['CreateDoctorRequest']) => call('post', '/doctors', { body }))
+  return useAnswerMutation((body: Schemas['CreateDoctorRequest']) => post('/doctors', undefined, body))
 }

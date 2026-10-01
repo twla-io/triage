@@ -1,104 +1,99 @@
 import { useQuery } from '@tanstack/react-query'
-import { call, type Schemas } from '../client'
+import { get, post, type Schemas } from '../client'
 import { useAnswerMutation } from '../mutation'
-import type { Range } from '../range'
+import { rangeQuery, type Week } from '../range'
 
-// ── Reads, one per case ─────────────────────────────────────────────────────
+type Id = Schemas['IntakeRequestId']
 
 export function useSubmittedIntakeRequests() {
   return useQuery({
-    queryKey: ['intakeRequests', 'submitted'],
-    queryFn: () => call('get', '/intake-requests/submitted', {}),
+    queryKey: ['intake-requests', 'submitted'],
+    queryFn: () => get('/intake-requests/submitted', undefined, undefined),
   })
 }
 
-export function useRejectedIntakeRequests(range: Range) {
+export function useRejectedIntakeRequests(week: Week) {
+  const query = rangeQuery(week)
   return useQuery({
-    queryKey: ['intakeRequests', 'rejected', range.from, range.to],
-    queryFn: () => call('get', '/intake-requests/rejected', { query: { from: range.from, to: range.to } }),
+    queryKey: ['intake-requests', 'rejected', query.from, query.to],
+    queryFn: () => get('/intake-requests/rejected', undefined, query),
   })
 }
 
 export function useAcceptedIntakeRequests() {
   return useQuery({
-    queryKey: ['intakeRequests', 'accepted'],
-    queryFn: () => call('get', '/intake-requests/accepted', {}),
+    queryKey: ['intake-requests', 'accepted'],
+    queryFn: () => get('/intake-requests/accepted', undefined, undefined),
   })
 }
 
 export function useAppointedIntakeRequests() {
   return useQuery({
-    queryKey: ['intakeRequests', 'appointed'],
-    queryFn: () => call('get', '/intake-requests/appointed', {}),
+    queryKey: ['intake-requests', 'appointed'],
+    queryFn: () => get('/intake-requests/appointed', undefined, undefined),
   })
 }
 
-export function useWithdrawnIntakeRequests(range: Range) {
+export function useWithdrawnIntakeRequests(week: Week) {
+  const query = rangeQuery(week)
   return useQuery({
-    queryKey: ['intakeRequests', 'withdrawn', range.from, range.to],
-    queryFn: () => call('get', '/intake-requests/withdrawn', { query: { from: range.from, to: range.to } }),
+    queryKey: ['intake-requests', 'withdrawn', query.from, query.to],
+    queryFn: () => get('/intake-requests/withdrawn', undefined, query),
   })
 }
 
-export function useStaleIntakeRequests(range: Range) {
+export function useStaleIntakeRequests(week: Week) {
+  const query = rangeQuery(week)
   return useQuery({
-    queryKey: ['intakeRequests', 'stale', range.from, range.to],
-    queryFn: () => call('get', '/intake-requests/stale', { query: { from: range.from, to: range.to } }),
+    queryKey: ['intake-requests', 'stale', query.from, query.to],
+    queryFn: () => get('/intake-requests/stale', undefined, query),
   })
 }
 
-export function useClosedIntakeRequests(range: Range) {
+export function useClosedIntakeRequests(week: Week) {
+  const query = rangeQuery(week)
   return useQuery({
-    queryKey: ['intakeRequests', 'closed', range.from, range.to],
-    queryFn: () => call('get', '/intake-requests/closed', { query: { from: range.from, to: range.to } }),
+    queryKey: ['intake-requests', 'closed', query.from, query.to],
+    queryFn: () => get('/intake-requests/closed', undefined, query),
   })
 }
-
-// ── Mutations ───────────────────────────────────────────────────────────────
-
-type IntakeRequestId = Schemas['IntakeRequestId']
 
 export function useSubmitIntakeRequest() {
-  return useAnswerMutation((body: Schemas['SubmitIntakeRequestRequest']) => call('post', '/intake-requests', { body }))
+  return useAnswerMutation((body: Schemas['SubmitIntakeRequestRequest']) => post('/intake-requests', undefined, body))
 }
 
 export function useAcceptSubmittedIntakeRequest() {
-  return useAnswerMutation(
-    ({ intakeRequestId, body }: { intakeRequestId: IntakeRequestId; body: Schemas['AcceptSubmittedIntakeRequestRequest'] }) =>
-      call('post', '/intake-requests/{intakeRequestId}/accept', { path: { intakeRequestId }, body }),
+  return useAnswerMutation((v: { id: Id; body: Schemas['AcceptSubmittedIntakeRequestRequest'] }) =>
+    post('/intake-requests/{intakeRequestId}/accept', { intakeRequestId: v.id }, v.body),
   )
 }
 
 export function useRejectSubmittedIntakeRequest() {
-  return useAnswerMutation(
-    ({ intakeRequestId, body }: { intakeRequestId: IntakeRequestId; body: Schemas['RejectSubmittedIntakeRequestRequest'] }) =>
-      call('post', '/intake-requests/{intakeRequestId}/reject', { path: { intakeRequestId }, body }),
+  return useAnswerMutation((v: { id: Id; body: Schemas['RejectSubmittedIntakeRequestRequest'] }) =>
+    post('/intake-requests/{intakeRequestId}/reject', { intakeRequestId: v.id }, v.body),
   )
 }
 
 export function useWithdrawIntakeRequest() {
-  return useAnswerMutation(
-    ({ intakeRequestId, body }: { intakeRequestId: IntakeRequestId; body: Schemas['WithdrawIntakeRequestRequest'] }) =>
-      call('post', '/intake-requests/{intakeRequestId}/withdraw', { path: { intakeRequestId }, body }),
+  return useAnswerMutation((v: { id: Id; body: Schemas['WithdrawIntakeRequestRequest'] }) =>
+    post('/intake-requests/{intakeRequestId}/withdraw', { intakeRequestId: v.id }, v.body),
   )
 }
 
 export function useMatchAcceptedIntakeRequestToSlot() {
-  return useAnswerMutation(
-    ({ intakeRequestId, body }: { intakeRequestId: IntakeRequestId; body: Schemas['MatchAcceptedIntakeRequestToSlotRequest'] }) =>
-      call('post', '/intake-requests/{intakeRequestId}/match-to-slot', { path: { intakeRequestId }, body }),
+  return useAnswerMutation((v: { id: Id; body: Schemas['MatchAcceptedIntakeRequestToSlotRequest'] }) =>
+    post('/intake-requests/{intakeRequestId}/match-to-slot', { intakeRequestId: v.id }, v.body),
   )
 }
 
 export function useMarkAcceptedIntakeRequestStale() {
-  return useAnswerMutation((intakeRequestId: IntakeRequestId) =>
-    call('post', '/intake-requests/{intakeRequestId}/mark-stale', { path: { intakeRequestId } }),
+  return useAnswerMutation((id: Id) =>
+    post('/intake-requests/{intakeRequestId}/mark-stale', { intakeRequestId: id }, undefined),
   )
 }
 
 export function useCloseAppointedIntakeRequest() {
-  return useAnswerMutation(
-    ({ intakeRequestId, body }: { intakeRequestId: IntakeRequestId; body: Schemas['CloseAppointedIntakeRequestRequest'] }) =>
-      call('post', '/intake-requests/{intakeRequestId}/close', { path: { intakeRequestId }, body }),
+  return useAnswerMutation((v: { id: Id; body: Schemas['CloseAppointedIntakeRequestRequest'] }) =>
+    post('/intake-requests/{intakeRequestId}/close', { intakeRequestId: v.id }, v.body),
   )
 }

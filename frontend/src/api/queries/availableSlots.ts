@@ -1,12 +1,12 @@
-import { call, type Schemas } from '../client'
+import { post, type Schemas } from '../client'
 import { useAnswerMutation } from '../mutation'
 
 export function useCreateAvailableSlot() {
-  return useAnswerMutation((body: Schemas['CreateAvailableSlotRequest']) => call('post', '/available-slots', { body }))
+  return useAnswerMutation((body: Schemas['CreateAvailableSlotRequest']) => post('/available-slots', undefined, body))
 }
 
 export function useMatchAvailableSlotByPriority() {
   return useAnswerMutation((slotId: Schemas['SlotId']) =>
-    call('post', '/available-slots/{slotId}/match-by-priority', { path: { slotId } }),
+    post('/available-slots/{slotId}/match-by-priority', { slotId }, undefined),
   )
 }

@@ -1,16 +1,11 @@
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# LANGUAGE NamedFieldPuns        #-}
+{-# LANGUAGE LambdaCase            #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 
--- Derived from src/Domain.hs and src/Persistence.hs by
--- triage-service-codegen. One public function per use case, each taking a
--- ConnectionPool and using one Connection. Ids are minted here; timestamps
--- and other caller-observed facts are parameters.
+-- Derived from src/Domain.hs and src/Persistence.hs (triage-service-codegen).
 module Service
-  ( ConnectionPool
-
-    -- * Error facts
-  , DoctorNotFound (..)
+  ( -- ── Facts (errors) ───────────────────────────────────────────────────
+    DoctorNotFound (..)
   , PatientNotFound (..)
   , HealthcareServiceNotFound (..)
   , IntakeRequestNotFound (..)
@@ -22,20 +17,20 @@ module Service
   , CloseAppointedIntakeRequestError (..)
   , CreateAvailableSlotError (..)
 
-    -- * Outcomes
+    -- ── Outcomes ─────────────────────────────────────────────────────────
   , TransitionOutcome (..)
   , MatchIntakeRequestToSlotOutcome (..)
   , MatchByPriorityOutcome (..)
   , AddAvailableSlotOutcome (..)
 
-    -- * Creation
+    -- ── Creation ─────────────────────────────────────────────────────────
   , createDoctor
   , createPatient
   , createHealthcareService
   , submitIntakeRequest
   , createAvailableSlot
 
-    -- * Transitions
+    -- ── Transitions ──────────────────────────────────────────────────────
   , acceptSubmittedIntakeRequest
   , rejectSubmittedIntakeRequest
   , matchAcceptedIntakeRequestToSlot
@@ -43,18 +38,18 @@ module Service
   , markAcceptedIntakeRequestStale
   , closeAppointedIntakeRequest
 
-    -- * Domain functions over stored values
+    -- ── Domain functions over stored values ──────────────────────────────
   , matchAvailableSlotByPriority
 
-    -- * Reads
+    -- ── Reads ────────────────────────────────────────────────────────────
   , fetchDoctor
-  , fetchPatient
-  , fetchHealthcareService
-  , fetchIntakeRequest
-  , fetchAvailableSlot
   , fetchDoctors
+  , fetchPatient
   , fetchPatients
+  , fetchHealthcareService
   , fetchHealthcareServices
+  , fetchAvailableSlot
+  , fetchIntakeRequest
   , fetchSubmittedIntakeRequests
   , fetchAcceptedIntakeRequests
   , fetchAppointedIntakeRequests
@@ -65,12 +60,11 @@ module Service
   , fetchDoctorCalendarEntriesOverlapping
   ) where
 
-import Control.Exception (throwIO)
-import Data.Pool         (withResource)
-import Data.Text         (Text)
-import Data.Time         (UTCTime, addUTCTime)
-import Data.UUID.V4      (nextRandom)
-
+import Control.Exception          (Exception, throwIO)
+import Data.Pool                  (withResource)
+import Data.Text                  (Text)
+import Data.Time                  (UTCTime)
+import Data.UUID.V4               (nextRandom)
 import Database.PostgreSQL.Simple (Connection)
 
 import Domain
@@ -78,8 +72,7 @@ import Persistence (ConnectionPool)
 import qualified Persistence
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- ERROR FACTS — facts about the caller's request no concurrent operation
--- can change.
+-- FACTS — errors: true of the caller's request whatever runs concurrently
 -- ═══════════════════════════════════════════════════════════════════════════
 
 newtype DoctorNotFound = DoctorNotFound DoctorId
@@ -94,43 +87,47 @@ newtype HealthcareServiceNotFound = HealthcareServiceNotFound HealthcareServiceI
 newtype IntakeRequestNotFound = IntakeRequestNotFound IntakeRequestId
   deriving (Show, Eq)
 
--- The request as it is: in a case the caller could never have acted from.
+-- Raised (not returned) only when a request vanishes between a write's lost
+-- race and its re-read; intake requests are never deleted.
+instance Exception IntakeRequestNotFound
+
+-- The request is in a case its use case's source case can never lead to.
 newtype IntakeRequestInWrongState = IntakeRequestInWrongState IntakeRequest
   deriving (Show, Eq)
 
--- matchIntakeRequestToSlot declined the slot and request the caller chose.
+-- matchIntakeRequestToSlot declined the pair.
 data IntakeRequestDoesNotMatchSlot = IntakeRequestDoesNotMatchSlot
   deriving (Show, Eq)
 
 data AcceptSubmittedIntakeRequestError
-  = AcceptSubmittedIntakeRequestIntakeRequestNotFound     IntakeRequestNotFound
+  = AcceptSubmittedIntakeRequestIntakeRequestNotFound IntakeRequestNotFound
   | AcceptSubmittedIntakeRequestHealthcareServiceNotFound HealthcareServiceNotFound
-  | AcceptSubmittedIntakeRequestDoctorNotFound            DoctorNotFound
+  | AcceptSubmittedIntakeRequestDoctorNotFound DoctorNotFound
   deriving (Show, Eq)
 
 data MatchAcceptedIntakeRequestToSlotError
-  = MatchAcceptedIntakeRequestToSlotIntakeRequestNotFound         IntakeRequestNotFound
-  | MatchAcceptedIntakeRequestToSlotIntakeRequestInWrongState     IntakeRequestInWrongState
+  = MatchAcceptedIntakeRequestToSlotIntakeRequestNotFound IntakeRequestNotFound
+  | MatchAcceptedIntakeRequestToSlotIntakeRequestInWrongState IntakeRequestInWrongState
   | MatchAcceptedIntakeRequestToSlotIntakeRequestDoesNotMatchSlot IntakeRequestDoesNotMatchSlot
   deriving (Show, Eq)
 
 data MarkAcceptedIntakeRequestStaleError
-  = MarkAcceptedIntakeRequestStaleIntakeRequestNotFound     IntakeRequestNotFound
+  = MarkAcceptedIntakeRequestStaleIntakeRequestNotFound IntakeRequestNotFound
   | MarkAcceptedIntakeRequestStaleIntakeRequestInWrongState IntakeRequestInWrongState
   deriving (Show, Eq)
 
 data CloseAppointedIntakeRequestError
-  = CloseAppointedIntakeRequestIntakeRequestNotFound     IntakeRequestNotFound
+  = CloseAppointedIntakeRequestIntakeRequestNotFound IntakeRequestNotFound
   | CloseAppointedIntakeRequestIntakeRequestInWrongState IntakeRequestInWrongState
   deriving (Show, Eq)
 
 data CreateAvailableSlotError
-  = CreateAvailableSlotDoctorNotFound            DoctorNotFound
+  = CreateAvailableSlotDoctorNotFound DoctorNotFound
   | CreateAvailableSlotHealthcareServiceNotFound HealthcareServiceNotFound
   deriving (Show, Eq)
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- OUTCOMES — reality moved between two valid operations.
+-- OUTCOMES — reality moved between two valid operations
 -- ═══════════════════════════════════════════════════════════════════════════
 
 -- A transition with a single guard.
@@ -139,21 +136,19 @@ data TransitionOutcome a
   | MovedOn IntakeRequest
   deriving (Show, Eq)
 
--- Matching (Persistence.AppointedClaimOutcome, one-to-one).
+-- Persistence.AppointedClaimOutcome, for the caller.
 data MatchIntakeRequestToSlotOutcome
   = IntakeRequestMatchedToSlot AppointedIntakeRequest
   | AvailableSlotConsumed SlotId
   | IntakeRequestMovedOn IntakeRequest
   deriving (Show, Eq)
 
--- matchByPriority over the stored waitlist.
 data MatchByPriorityOutcome
   = NoIntakeRequestMatched
   | MatchIntakeRequestToSlotOutcome MatchIntakeRequestToSlotOutcome
   deriving (Show, Eq)
 
--- Growing DoctorCalendar. addAvailableSlot's decline and the EXCLUDE
--- violation are the same fact.
+-- addAvailableSlot's decline and doctor_calendar's EXCLUDE are one fact.
 data AddAvailableSlotOutcome
   = AvailableSlotAdded AvailableSlot
   | AvailableSlotOverlapsDoctorCalendar
@@ -163,60 +158,39 @@ data AddAvailableSlotOutcome
 -- HELPERS
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- A decode failure is stored data violating the spec: raised, not returned.
+-- Stored data violating the spec is not the caller's fault: raise it.
 decoded :: IO (Either Persistence.DecodeError a) -> IO a
 decoded action = action >>= either throwIO pure
 
--- Re-reads a request after its guarded write lost a race. Requests are
--- never deleted, so it is always found.
+-- After a write lost its race: the request as it is now.
 reread :: Connection -> IntakeRequestId -> IO IntakeRequest
-reread conn requestId = do
-  found <- decoded (Persistence.fetchIntakeRequest conn requestId)
-  maybe (ioError (userError ("intake request vanished: " <> show requestId))) pure found
-
--- A guarded single-row transition: Transitioned on success, MovedOn with
--- the request as it is now if the guard lost.
-transition
-  :: Connection -> IntakeRequestId -> a -> IO Persistence.ClaimOutcome
-  -> IO (TransitionOutcome a)
-transition conn requestId next write = do
-  outcome <- write
-  case outcome of
-    Persistence.Claimed        -> pure (Transitioned next)
-    Persistence.AlreadyClaimed -> MovedOn <$> reread conn requestId
-
-lookupIntakeRequest :: Connection -> IntakeRequestId -> IO (Maybe IntakeRequest)
-lookupIntakeRequest conn requestId = decoded (Persistence.fetchIntakeRequest conn requestId)
-
--- Checks a DoctorRequirement's doctor id exists.
-doctorRequirementExists :: Connection -> DoctorRequirement -> IO (Maybe DoctorNotFound)
-doctorRequirementExists _    AnyDoctor               = pure Nothing
-doctorRequirementExists conn (SpecificDoctor doctorId) =
-  maybe (Just (DoctorNotFound doctorId)) (const Nothing)
-    <$> Persistence.fetchDoctor conn doctorId
+reread conn requestId =
+  decoded (Persistence.fetchIntakeRequest conn requestId)
+    >>= maybe (throwIO (IntakeRequestNotFound requestId)) pure
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- CREATION
 -- ═══════════════════════════════════════════════════════════════════════════
 
 createDoctor :: ConnectionPool -> Text -> IO Doctor
-createDoctor pool name = withResource pool $ \conn -> do
-  doctorId <- DoctorId <$> nextRandom
-  let doctor = Doctor { id = doctorId, name }
+createDoctor pool doctorName = withResource pool $ \conn -> do
+  uuid <- nextRandom
+  let doctor = Doctor { id = DoctorId uuid, name = doctorName }
   Persistence.insertDoctor conn doctor
   pure doctor
 
 createPatient :: ConnectionPool -> Text -> IO Patient
-createPatient pool name = withResource pool $ \conn -> do
-  patientId <- PatientId <$> nextRandom
-  let patient = Patient { id = patientId, name }
+createPatient pool patientName = withResource pool $ \conn -> do
+  uuid <- nextRandom
+  let patient = Patient { id = PatientId uuid, name = patientName }
   Persistence.insertPatient conn patient
   pure patient
 
 createHealthcareService :: ConnectionPool -> Text -> Duration -> IO HealthcareService
-createHealthcareService pool name duration = withResource pool $ \conn -> do
-  serviceId <- HealthcareServiceId <$> nextRandom
-  let service = HealthcareService { id = serviceId, name, duration }
+createHealthcareService pool serviceName serviceDuration = withResource pool $ \conn -> do
+  uuid <- nextRandom
+  let service = HealthcareService
+        { id = HealthcareServiceId uuid, name = serviceName, duration = serviceDuration }
   Persistence.insertHealthcareService conn service
   pure service
 
@@ -224,259 +198,255 @@ createHealthcareService pool name duration = withResource pool $ \conn -> do
 submitIntakeRequest
   :: ConnectionPool -> PatientId -> Text -> UTCTime
   -> IO (Either PatientNotFound SubmittedIntakeRequest)
-submitIntakeRequest pool patientId narrative createdAt = withResource pool $ \conn -> do
-  patient <- Persistence.fetchPatient conn patientId
-  case patient of
-    Nothing -> pure (Left (PatientNotFound patientId))
+submitIntakeRequest pool patient requestNarrative requestCreatedAt = withResource pool $ \conn ->
+  Persistence.fetchPatient conn patient >>= \case
+    Nothing -> pure (Left (PatientNotFound patient))
     Just _  -> do
-      requestId <- IntakeRequestId <$> nextRandom
-      let submitted = SubmittedIntakeRequest { id = requestId, patientId, narrative, createdAt }
-      Persistence.insertSubmittedIntakeRequest conn submitted
-      pure (Right submitted)
+      uuid <- nextRandom
+      let request = SubmittedIntakeRequest
+            { id = IntakeRequestId uuid
+            , patientId = patient
+            , narrative = requestNarrative
+            , createdAt = requestCreatedAt
+            }
+      Persistence.insertSubmittedIntakeRequest conn request
+      pure (Right request)
 
--- Grows DoctorCalendar. In the gap between the overlap read and the insert,
--- another slot or a match can occupy the time; the EXCLUDE constraint
--- catches it and the answer is the same AvailableSlotOverlapsDoctorCalendar.
+-- Grows the sealed DoctorCalendar. Gap: another slot or appointment for the
+-- doctor can be stored between the calendar read and the insert; the
+-- EXCLUDE on doctor_calendar catches it, as the same outcome.
 createAvailableSlot
   :: ConnectionPool -> DoctorId -> HealthcareServiceId -> UTCTime
   -> IO (Either CreateAvailableSlotError AddAvailableSlotOutcome)
-createAvailableSlot pool doctorId serviceId start = withResource pool $ \conn -> do
-  doctor  <- Persistence.fetchDoctor conn doctorId
-  service <- decoded (Persistence.fetchHealthcareService conn serviceId)
-  case (doctor, service) of
-    (Nothing, _) -> pure (Left (CreateAvailableSlotDoctorNotFound (DoctorNotFound doctorId)))
+createAvailableSlot pool doctor serviceId slotStart = withResource pool $ \conn -> do
+  doctorFound  <- Persistence.fetchDoctor conn doctor
+  serviceFound <- decoded (Persistence.fetchHealthcareService conn serviceId)
+  case (doctorFound, serviceFound) of
+    (Nothing, _) -> pure (Left (CreateAvailableSlotDoctorNotFound (DoctorNotFound doctor)))
     (_, Nothing) ->
       pure (Left (CreateAvailableSlotHealthcareServiceNotFound (HealthcareServiceNotFound serviceId)))
-    (Just _, Just healthcareService) -> do
-      let end = addUTCTime (durationToNominalDiffTime healthcareService.duration) start
-      calendar <- decoded (Persistence.fetchDoctorCalendarOverlapping conn doctorId start end)
-      slotId   <- SlotId <$> nextRandom
-      case addAvailableSlot calendar slotId doctorId healthcareService start of
-        Nothing        -> pure (Right AvailableSlotOverlapsDoctorCalendar)
-        Just (slot, _) -> do
-          inserted <- Persistence.insertAvailableSlot conn slot
-          pure . Right $ case inserted of
-            Persistence.AvailableSlotInserted -> AvailableSlotAdded slot
-            Persistence.AvailableSlotOverlapsDoctorCalendar -> AvailableSlotOverlapsDoctorCalendar
+    (Just _, Just service) -> do
+      calendar <- decoded (Persistence.fetchDoctorCalendarOverlapping conn doctor slotStart service.duration)
+      uuid <- nextRandom
+      case addAvailableSlot calendar (SlotId uuid) doctor service slotStart of
+        Nothing -> pure (Right AvailableSlotOverlapsDoctorCalendar)
+        Just (slot, _) ->
+          Persistence.insertAvailableSlot conn slot >>= \case
+            Persistence.AvailableSlotInserted -> pure (Right (AvailableSlotAdded slot))
+            Persistence.AvailableSlotOverlapsDoctorCalendar -> pure (Right AvailableSlotOverlapsDoctorCalendar)
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- TRANSITIONS
--- Lifecycle graph (Domain.hs):
---   Submitted -> Rejected | Accepted | Withdrawn (FromSubmitted)
---   Accepted  -> Appointed | Withdrawn (FromAccepted) | Stale
---   Appointed -> Closed
--- A case found other than the expected one: reachable from it -> MovedOn
--- (outcome); not reachable -> IntakeRequestInWrongState (error).
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- Submitted -> Accepted. In the gap: another accept, a reject or a
--- withdrawal can move the request on; the write's guard answers MovedOn.
+-- Submitted → Accepted. Gap: the request can be rejected, withdrawn or
+-- accepted by someone else; the write's state guard catches it.
 acceptSubmittedIntakeRequest
   :: ConnectionPool -> IntakeRequestId -> HealthcareServiceId -> IntakeRequestPriority
   -> DoctorRequirement -> UTCTime
   -> IO (Either AcceptSubmittedIntakeRequestError (TransitionOutcome TriagedIntakeRequest))
-acceptSubmittedIntakeRequest pool requestId serviceId priority doctorRequirement triagedAt =
+acceptSubmittedIntakeRequest pool requestId serviceId tier requirement acceptedAt =
   withResource pool $ \conn -> do
-    found   <- lookupIntakeRequest conn requestId
-    service <- decoded (Persistence.fetchHealthcareService conn serviceId)
-    missingDoctor <- doctorRequirementExists conn doctorRequirement
-    case (found, service, missingDoctor) of
+    requestFound <- decoded (Persistence.fetchIntakeRequest conn requestId)
+    serviceFound <- decoded (Persistence.fetchHealthcareService conn serviceId)
+    doctorMissing <- case requirement of
+      AnyDoctor             -> pure Nothing
+      SpecificDoctor doctor -> maybe (Just doctor) (const Nothing) <$> Persistence.fetchDoctor conn doctor
+    case (requestFound, serviceFound, doctorMissing) of
       (Nothing, _, _) ->
         pure (Left (AcceptSubmittedIntakeRequestIntakeRequestNotFound (IntakeRequestNotFound requestId)))
       (_, Nothing, _) ->
         pure (Left (AcceptSubmittedIntakeRequestHealthcareServiceNotFound (HealthcareServiceNotFound serviceId)))
-      (_, _, Just notFound) ->
-        pure (Left (AcceptSubmittedIntakeRequestDoctorNotFound notFound))
-      (Just request, Just _, Nothing) -> Right <$> case request of
-        Submitted submitted -> do
-          let triaged = acceptIntakeRequest submitted serviceId priority doctorRequirement triagedAt
-          transition conn requestId triaged (Persistence.persistTriagedIntakeRequest conn triaged)
-        Rejected _  -> pure (MovedOn request)
-        Accepted _  -> pure (MovedOn request)
-        Appointed _ -> pure (MovedOn request)
-        Withdrawn _ -> pure (MovedOn request)
-        Stale _     -> pure (MovedOn request)
-        Closed _    -> pure (MovedOn request)
+      (_, _, Just doctor) ->
+        pure (Left (AcceptSubmittedIntakeRequestDoctorNotFound (DoctorNotFound doctor)))
+      (Just current, Just _, Nothing) -> Right <$> case current of
+        Submitted request -> do
+          let accepted = acceptIntakeRequest request serviceId tier requirement acceptedAt
+          Persistence.persistTriagedIntakeRequest conn accepted >>= \case
+            Persistence.Claimed        -> pure (Transitioned accepted)
+            Persistence.AlreadyClaimed -> MovedOn <$> reread conn requestId
+        Rejected _  -> pure (MovedOn current)
+        Accepted _  -> pure (MovedOn current)
+        Appointed _ -> pure (MovedOn current)
+        Withdrawn _ -> pure (MovedOn current)
+        Stale _     -> pure (MovedOn current)
+        Closed _    -> pure (MovedOn current)
 
--- Submitted -> Rejected. In the gap: an accept, another reject or a
--- withdrawal can move the request on; the write's guard answers MovedOn.
+-- Submitted → Rejected. Gap: as for accepting.
 rejectSubmittedIntakeRequest
   :: ConnectionPool -> IntakeRequestId -> UTCTime -> Text
   -> IO (Either IntakeRequestNotFound (TransitionOutcome RejectedIntakeRequest))
-rejectSubmittedIntakeRequest pool requestId rejectedAt rejectionReason =
-  withResource pool $ \conn -> do
-    found <- lookupIntakeRequest conn requestId
-    case found of
-      Nothing -> pure (Left (IntakeRequestNotFound requestId))
-      Just request -> Right <$> case request of
-        Submitted submitted -> do
-          let rejected = RejectedIntakeRequest { submitted, rejectedAt, rejectionReason }
-          transition conn requestId rejected (Persistence.persistRejectedIntakeRequest conn rejected)
-        Rejected _  -> pure (MovedOn request)
-        Accepted _  -> pure (MovedOn request)
-        Appointed _ -> pure (MovedOn request)
-        Withdrawn _ -> pure (MovedOn request)
-        Stale _     -> pure (MovedOn request)
-        Closed _    -> pure (MovedOn request)
+rejectSubmittedIntakeRequest pool requestId at reason = withResource pool $ \conn ->
+  decoded (Persistence.fetchIntakeRequest conn requestId) >>= \case
+    Nothing -> pure (Left (IntakeRequestNotFound requestId))
+    Just current -> Right <$> case current of
+      Submitted request -> do
+        let rejected = RejectedIntakeRequest
+              { submitted = request, rejectedAt = at, rejectionReason = reason }
+        Persistence.persistRejectedIntakeRequest conn rejected >>= \case
+          Persistence.Claimed        -> pure (Transitioned rejected)
+          Persistence.AlreadyClaimed -> MovedOn <$> reread conn requestId
+      Rejected _  -> pure (MovedOn current)
+      Accepted _  -> pure (MovedOn current)
+      Appointed _ -> pure (MovedOn current)
+      Withdrawn _ -> pure (MovedOn current)
+      Stale _     -> pure (MovedOn current)
+      Closed _    -> pure (MovedOn current)
 
--- Accepted -> Appointed, consuming the slot. In the gap: the slot can be
--- matched to another request (AvailableSlotConsumed), and the request can
--- be matched, withdrawn or marked stale (IntakeRequestMovedOn). Both rows
--- are guarded in one transaction.
+-- Accepted → Appointed, consuming the slot. Gap: the slot can be matched to
+-- another request, and the request can be matched, withdrawn or marked stale;
+-- the delete's affected rows and the update's state guard catch each, in one
+-- transaction.
 matchAcceptedIntakeRequestToSlot
   :: ConnectionPool -> IntakeRequestId -> SlotId
   -> IO (Either MatchAcceptedIntakeRequestToSlotError MatchIntakeRequestToSlotOutcome)
-matchAcceptedIntakeRequestToSlot pool requestId slotId = withResource pool $ \conn -> do
-  found <- lookupIntakeRequest conn requestId
-  case found of
+matchAcceptedIntakeRequestToSlot pool requestId slotId = withResource pool $ \conn ->
+  decoded (Persistence.fetchIntakeRequest conn requestId) >>= \case
     Nothing ->
       pure (Left (MatchAcceptedIntakeRequestToSlotIntakeRequestNotFound (IntakeRequestNotFound requestId)))
-    Just request -> case request of
-      Accepted triaged -> do
-        stored <- decoded (Persistence.fetchAvailableSlot conn slotId)
-        case stored of
-          Nothing   -> pure (Right (AvailableSlotConsumed slotId))
-          Just slot -> case matchIntakeRequestToSlot slot triaged of
+    Just current -> do
+     let wrongState = pure (Left (MatchAcceptedIntakeRequestToSlotIntakeRequestInWrongState
+           (IntakeRequestInWrongState current)))
+         movedOn = pure (Right (IntakeRequestMovedOn current))
+     case current of
+      Accepted request ->
+        decoded (Persistence.fetchAvailableSlot conn slotId) >>= \case
+          Nothing -> pure (Right (AvailableSlotConsumed slotId))
+          Just slot -> case matchIntakeRequestToSlot slot request of
             Nothing ->
               pure (Left (MatchAcceptedIntakeRequestToSlotIntakeRequestDoesNotMatchSlot
-                            IntakeRequestDoesNotMatchSlot))
-            Just appointed -> Right <$> persistMatch conn slot appointed
-      Submitted _ -> wrongState request
-      Rejected _  -> wrongState request
-      Appointed _ -> pure (Right (IntakeRequestMovedOn request))
+                IntakeRequestDoesNotMatchSlot))
+            Just matched -> Right <$> persistMatch conn slot matched
+      Submitted _ -> wrongState
+      Rejected _  -> wrongState
+      Appointed _ -> movedOn
       Withdrawn withdrawn -> case withdrawn.withdrawnFrom of
-        FromSubmitted _ -> wrongState request
-        FromAccepted _  -> pure (Right (IntakeRequestMovedOn request))
-      Stale _     -> pure (Right (IntakeRequestMovedOn request))
-      Closed _    -> pure (Right (IntakeRequestMovedOn request))
-  where
-    wrongState request =
-      pure (Left (MatchAcceptedIntakeRequestToSlotIntakeRequestInWrongState
-                    (IntakeRequestInWrongState request)))
+        FromSubmitted _ -> wrongState
+        FromAccepted _  -> movedOn
+      Stale _     -> movedOn
+      Closed _    -> movedOn
 
--- Persists a match; Persistence's outcome translated one-to-one.
-persistMatch :: Connection -> AvailableSlot -> AppointedIntakeRequest -> IO MatchIntakeRequestToSlotOutcome
-persistMatch conn slot appointed = do
-  outcome <- Persistence.persistAppointedIntakeRequest conn slot appointed
-  case outcome of
-    Persistence.AppointedClaimed            -> pure (IntakeRequestMatchedToSlot appointed)
-    Persistence.AvailableSlotAlreadyClaimed -> pure (AvailableSlotConsumed slot.id)
-    Persistence.IntakeRequestAlreadyClaimed ->
-      IntakeRequestMovedOn <$> reread conn appointed.triaged.submitted.id
+-- The matching write, shared by both matching use cases.
+persistMatch
+  :: Connection -> AvailableSlot -> AppointedIntakeRequest -> IO MatchIntakeRequestToSlotOutcome
+persistMatch conn slot matched =
+  Persistence.persistAppointedIntakeRequest conn slot matched >>= \case
+    Persistence.AppointedClaimed -> pure (IntakeRequestMatchedToSlot matched)
+    Persistence.AvailableSlotAlreadyClaimed   -> pure (AvailableSlotConsumed slot.id)
+    Persistence.IntakeRequestAlreadyClaimed   ->
+      IntakeRequestMovedOn <$> reread conn matched.triaged.submitted.id
 
--- Submitted | Accepted -> Withdrawn. In the gap: the request can be
--- accepted (the withdrawal continues once from Accepted), or rejected,
--- matched, marked stale or withdrawn (MovedOn).
+-- Submitted → Withdrawn or Accepted → Withdrawn. Gap: the request can move on
+-- (including Submitted → Accepted, from which withdrawing continues).
 withdrawIntakeRequest
   :: ConnectionPool -> IntakeRequestId -> UTCTime -> Maybe Text
   -> IO (Either IntakeRequestNotFound (TransitionOutcome WithdrawnIntakeRequest))
-withdrawIntakeRequest pool requestId withdrawnAt withdrawalNote = withResource pool $ \conn -> do
-  found <- lookupIntakeRequest conn requestId
-  case found of
+withdrawIntakeRequest pool requestId at note = withResource pool $ \conn ->
+  decoded (Persistence.fetchIntakeRequest conn requestId) >>= \case
     Nothing      -> pure (Left (IntakeRequestNotFound requestId))
-    Just request -> Right <$> go conn request
+    Just current -> Right <$> withdrawFrom conn current
   where
-    go conn request = case request of
-      Submitted submitted -> attempt conn (FromSubmitted submitted)
-      Accepted triaged    -> attempt conn (FromAccepted triaged)
-      Rejected _          -> pure (MovedOn request)
-      Appointed _         -> pure (MovedOn request)
-      Withdrawn _         -> pure (MovedOn request)
-      Stale _             -> pure (MovedOn request)
-      Closed _            -> pure (MovedOn request)
-
-    attempt conn withdrawnFrom = do
-      let withdrawn = WithdrawnIntakeRequest { withdrawnFrom, withdrawnAt, withdrawalNote }
-      outcome <- Persistence.persistWithdrawnIntakeRequest conn withdrawn
-      case outcome of
+    withdrawFrom conn current = case current of
+      Submitted request -> withdraw conn (FromSubmitted request)
+      Accepted request  -> withdraw conn (FromAccepted request)
+      Rejected _        -> pure (MovedOn current)
+      Appointed _       -> pure (MovedOn current)
+      Withdrawn _       -> pure (MovedOn current)
+      Stale _           -> pure (MovedOn current)
+      Closed _          -> pure (MovedOn current)
+    withdraw conn from = do
+      let withdrawn = WithdrawnIntakeRequest
+            { withdrawnFrom = from, withdrawnAt = at, withdrawalNote = note }
+      Persistence.persistWithdrawnIntakeRequest conn withdrawn >>= \case
         Persistence.Claimed        -> pure (Transitioned withdrawn)
-        -- Cases only move forward, so this continues at most once.
-        Persistence.AlreadyClaimed -> reread conn requestId >>= go conn
+        Persistence.AlreadyClaimed -> reread conn requestId >>= withdrawFrom conn
 
--- Accepted -> Stale. In the gap: the request can be matched, withdrawn or
--- marked stale; the write's guard answers MovedOn.
+-- Accepted → Stale. Gap: the request can be matched, withdrawn or marked
+-- stale by someone else.
 markAcceptedIntakeRequestStale
   :: ConnectionPool -> IntakeRequestId -> UTCTime
   -> IO (Either MarkAcceptedIntakeRequestStaleError (TransitionOutcome StaleIntakeRequest))
-markAcceptedIntakeRequestStale pool requestId staleAt = withResource pool $ \conn -> do
-  found <- lookupIntakeRequest conn requestId
-  case found of
+markAcceptedIntakeRequestStale pool requestId at = withResource pool $ \conn ->
+  decoded (Persistence.fetchIntakeRequest conn requestId) >>= \case
     Nothing ->
       pure (Left (MarkAcceptedIntakeRequestStaleIntakeRequestNotFound (IntakeRequestNotFound requestId)))
-    Just request -> case request of
-      Accepted triaged -> do
-        let stale = StaleIntakeRequest { triaged, staleAt }
-        Right <$> transition conn requestId stale (Persistence.persistStaleIntakeRequest conn stale)
-      Submitted _ -> wrongState request
-      Rejected _  -> wrongState request
-      Appointed _ -> pure (Right (MovedOn request))
+    Just current -> do
+     let wrongState = pure (Left (MarkAcceptedIntakeRequestStaleIntakeRequestInWrongState
+           (IntakeRequestInWrongState current)))
+         movedOn = pure (Right (MovedOn current))
+     case current of
+      Accepted request -> do
+        let stale = StaleIntakeRequest { triaged = request, staleAt = at }
+        Persistence.persistStaleIntakeRequest conn stale >>= \case
+          Persistence.Claimed        -> pure (Right (Transitioned stale))
+          Persistence.AlreadyClaimed -> Right . MovedOn <$> reread conn requestId
+      Submitted _ -> wrongState
+      Rejected _  -> wrongState
+      Appointed _ -> movedOn
       Withdrawn withdrawn -> case withdrawn.withdrawnFrom of
-        FromSubmitted _ -> wrongState request
-        FromAccepted _  -> pure (Right (MovedOn request))
-      Stale _     -> pure (Right (MovedOn request))
-      Closed _    -> pure (Right (MovedOn request))
-  where
-    wrongState request =
-      pure (Left (MarkAcceptedIntakeRequestStaleIntakeRequestInWrongState
-                    (IntakeRequestInWrongState request)))
+        FromSubmitted _ -> wrongState
+        FromAccepted _  -> movedOn
+      Stale _     -> movedOn
+      Closed _    -> movedOn
 
--- Appointed -> Closed. In the gap: the request can be closed by someone
--- else; the write's guard answers MovedOn.
+-- Appointed → Closed. Gap: the appointment can be closed by someone else.
 closeAppointedIntakeRequest
   :: ConnectionPool -> IntakeRequestId -> CloseReason
   -> IO (Either CloseAppointedIntakeRequestError (TransitionOutcome ClosedIntakeRequest))
-closeAppointedIntakeRequest pool requestId closeReason = withResource pool $ \conn -> do
-  found <- lookupIntakeRequest conn requestId
-  case found of
+closeAppointedIntakeRequest pool requestId reason = withResource pool $ \conn ->
+  decoded (Persistence.fetchIntakeRequest conn requestId) >>= \case
     Nothing ->
       pure (Left (CloseAppointedIntakeRequestIntakeRequestNotFound (IntakeRequestNotFound requestId)))
-    Just request -> case request of
-      Appointed appointed -> do
-        let closed = ClosedIntakeRequest { appointed, closeReason }
-        Right <$> transition conn requestId closed (Persistence.persistClosedIntakeRequest conn closed)
-      Submitted _ -> wrongState request
-      Rejected _  -> wrongState request
-      Accepted _  -> wrongState request
-      Withdrawn withdrawn -> case withdrawn.withdrawnFrom of
-        FromSubmitted _ -> wrongState request
-        FromAccepted _  -> wrongState request
-      Stale _     -> wrongState request
-      Closed _    -> pure (Right (MovedOn request))
-  where
-    wrongState request =
-      pure (Left (CloseAppointedIntakeRequestIntakeRequestInWrongState
-                    (IntakeRequestInWrongState request)))
+    Just current -> do
+     let wrongState = pure (Left (CloseAppointedIntakeRequestIntakeRequestInWrongState
+           (IntakeRequestInWrongState current)))
+     case current of
+      Appointed request -> do
+        let closed = ClosedIntakeRequest { appointed = request, closeReason = reason }
+        Persistence.persistClosedIntakeRequest conn closed >>= \case
+          Persistence.Claimed        -> pure (Right (Transitioned closed))
+          Persistence.AlreadyClaimed -> Right . MovedOn <$> reread conn requestId
+      Submitted _ -> wrongState
+      Rejected _  -> wrongState
+      Accepted _  -> wrongState
+      Withdrawn _ -> wrongState
+      Stale _     -> wrongState
+      Closed _    -> pure (Right (MovedOn current))
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DOMAIN FUNCTIONS OVER STORED VALUES
 -- ═══════════════════════════════════════════════════════════════════════════
 
--- matchByPriority over the Accepted requests. In the gap: the slot can be
--- matched elsewhere (AvailableSlotConsumed) and the chosen request can move
--- on (IntakeRequestMovedOn). The candidates are a snapshot: a request
--- accepted after the read is served by the next decision.
+-- matchByPriority over every Accepted request. Gap: the slot can be consumed
+-- and the chosen request can move on (both caught by the matching write);
+-- a request accepted after the read is served by the next decision.
 matchAvailableSlotByPriority :: ConnectionPool -> SlotId -> IO MatchByPriorityOutcome
-matchAvailableSlotByPriority pool slotId = withResource pool $ \conn -> do
-  stored <- decoded (Persistence.fetchAvailableSlot conn slotId)
-  case stored of
+matchAvailableSlotByPriority pool slotId = withResource pool $ \conn ->
+  decoded (Persistence.fetchAvailableSlot conn slotId) >>= \case
     Nothing   -> pure (MatchIntakeRequestToSlotOutcome (AvailableSlotConsumed slotId))
     Just slot -> do
-      waiting <- decoded (Persistence.fetchAcceptedIntakeRequests conn)
-      case matchByPriority slot waiting of
+      candidates <- decoded (Persistence.fetchAcceptedIntakeRequests conn)
+      case matchByPriority slot candidates of
         Nothing        -> pure NoIntakeRequestMatched
-        Just appointed -> MatchIntakeRequestToSlotOutcome <$> persistMatch conn slot appointed
+        Just matched   -> MatchIntakeRequestToSlotOutcome <$> persistMatch conn slot matched
 
 -- ═══════════════════════════════════════════════════════════════════════════
--- READS — pass-throughs of Persistence's reads, under the same names.
+-- READS
 -- ═══════════════════════════════════════════════════════════════════════════
 
 fetchDoctor :: ConnectionPool -> DoctorId -> IO (Either DoctorNotFound Doctor)
-fetchDoctor pool doctorId = withResource pool $ \conn ->
-  maybe (Left (DoctorNotFound doctorId)) Right <$> Persistence.fetchDoctor conn doctorId
+fetchDoctor pool doctor = withResource pool $ \conn ->
+  maybe (Left (DoctorNotFound doctor)) Right <$> Persistence.fetchDoctor conn doctor
+
+fetchDoctors :: ConnectionPool -> IO [Doctor]
+fetchDoctors pool = withResource pool Persistence.fetchDoctors
 
 fetchPatient :: ConnectionPool -> PatientId -> IO (Either PatientNotFound Patient)
-fetchPatient pool patientId = withResource pool $ \conn ->
-  maybe (Left (PatientNotFound patientId)) Right <$> Persistence.fetchPatient conn patientId
+fetchPatient pool patient = withResource pool $ \conn ->
+  maybe (Left (PatientNotFound patient)) Right <$> Persistence.fetchPatient conn patient
+
+fetchPatients :: ConnectionPool -> IO [Patient]
+fetchPatients pool = withResource pool Persistence.fetchPatients
 
 fetchHealthcareService
   :: ConnectionPool -> HealthcareServiceId -> IO (Either HealthcareServiceNotFound HealthcareService)
@@ -484,38 +454,29 @@ fetchHealthcareService pool serviceId = withResource pool $ \conn ->
   maybe (Left (HealthcareServiceNotFound serviceId)) Right
     <$> decoded (Persistence.fetchHealthcareService conn serviceId)
 
-fetchIntakeRequest
-  :: ConnectionPool -> IntakeRequestId -> IO (Either IntakeRequestNotFound IntakeRequest)
-fetchIntakeRequest pool requestId = withResource pool $ \conn ->
-  maybe (Left (IntakeRequestNotFound requestId)) Right <$> lookupIntakeRequest conn requestId
+fetchHealthcareServices :: ConnectionPool -> IO [HealthcareService]
+fetchHealthcareServices pool = withResource pool (decoded . Persistence.fetchHealthcareServices)
 
--- Slots are deleted on consumption: Nothing means no longer available.
+-- Deleted on consumption: Nothing means no longer available.
 fetchAvailableSlot :: ConnectionPool -> SlotId -> IO (Maybe AvailableSlot)
 fetchAvailableSlot pool slotId = withResource pool $ \conn ->
   decoded (Persistence.fetchAvailableSlot conn slotId)
 
-fetchDoctors :: ConnectionPool -> IO [Doctor]
-fetchDoctors pool = withResource pool Persistence.fetchDoctors
-
-fetchPatients :: ConnectionPool -> IO [Patient]
-fetchPatients pool = withResource pool Persistence.fetchPatients
-
-fetchHealthcareServices :: ConnectionPool -> IO [HealthcareService]
-fetchHealthcareServices pool = withResource pool $ \conn ->
-  decoded (Persistence.fetchHealthcareServices conn)
+fetchIntakeRequest :: ConnectionPool -> IntakeRequestId -> IO (Either IntakeRequestNotFound IntakeRequest)
+fetchIntakeRequest pool requestId = withResource pool $ \conn ->
+  maybe (Left (IntakeRequestNotFound requestId)) Right
+    <$> decoded (Persistence.fetchIntakeRequest conn requestId)
 
 fetchSubmittedIntakeRequests :: ConnectionPool -> IO [SubmittedIntakeRequest]
-fetchSubmittedIntakeRequests pool = withResource pool $ \conn ->
-  decoded (Persistence.fetchSubmittedIntakeRequests conn)
+fetchSubmittedIntakeRequests pool = withResource pool (decoded . Persistence.fetchSubmittedIntakeRequests)
 
--- In waitlist order: Domain's sortByPriority.
+-- In Domain's priority order (sortByPriority).
 fetchAcceptedIntakeRequests :: ConnectionPool -> IO [TriagedIntakeRequest]
-fetchAcceptedIntakeRequests pool = withResource pool $ \conn ->
-  sortByPriority <$> decoded (Persistence.fetchAcceptedIntakeRequests conn)
+fetchAcceptedIntakeRequests pool =
+  sortByPriority <$> withResource pool (decoded . Persistence.fetchAcceptedIntakeRequests)
 
 fetchAppointedIntakeRequests :: ConnectionPool -> IO [AppointedIntakeRequest]
-fetchAppointedIntakeRequests pool = withResource pool $ \conn ->
-  decoded (Persistence.fetchAppointedIntakeRequests conn)
+fetchAppointedIntakeRequests pool = withResource pool (decoded . Persistence.fetchAppointedIntakeRequests)
 
 fetchRejectedIntakeRequestsByRejectedAt
   :: ConnectionPool -> UTCTime -> UTCTime -> IO [RejectedIntakeRequest]

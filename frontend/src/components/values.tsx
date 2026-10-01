@@ -1,113 +1,32 @@
 import type { ReactNode } from 'react'
-import { Badge, Group, Paper, Stack, Text } from '@mantine/core'
+import { Badge, Group, Stack, Text } from '@mantine/core'
 import type { Schemas } from '../api/client'
 import { useDoctors } from '../api/queries/doctors'
 import { useHealthcareServices } from '../api/queries/healthcareServices'
 import { usePatients } from '../api/queries/patients'
 import { humanize } from './humanize'
-import { shownTime } from './time'
 
-// ── Fields ──────────────────────────────────────────────────────────────────
-
-export interface Field {
-  label: string
-  value: ReactNode
+export function formatTime(value: string): string {
+  return new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-/** A field of `record`, labelled by its name humanized. */
-export function field<T>(_record: T, name: Extract<keyof T, string>, value: ReactNode): Field {
-  return { label: humanize(name), value }
+export function Time({ value }: { value: string }) {
+  return <>{formatTime(value)}</>
 }
 
-export function FieldList({ fields }: { fields: Field[] }) {
+export function CaseBadge({ type }: { type: string }) {
   return (
-    <Group gap="lg" align="flex-start">
-      {fields.map((f) => (
-        <Stack key={f.label} gap={2}>
-          <Text size="xs" c="dimmed">
-            {f.label}
-          </Text>
-          <div>{f.value}</div>
-        </Stack>
-      ))}
-    </Group>
-  )
-}
-
-/** One element of a list: an optional case heading, its fields, its actions. */
-export function RecordCard({ heading, fields, actions }: { heading?: ReactNode; fields: Field[]; actions?: ReactNode }) {
-  return (
-    <Paper withBorder p="sm">
-      <Group justify="space-between" align="flex-start" wrap="nowrap">
-        <Stack gap="xs">
-          {heading}
-          <FieldList fields={fields} />
-        </Stack>
-        {actions}
-      </Group>
-    </Paper>
-  )
-}
-
-// ── Plain values ────────────────────────────────────────────────────────────
-
-export function TextValue({ value }: { value: string | null }) {
-  return <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{value ?? ''}</Text>
-}
-
-export function TimeValue({ value }: { value: string }) {
-  return <Text size="sm">{shownTime(value)}</Text>
-}
-
-// ── IDs by name ────────────────────────────────────────────────────────────
-
-/** Name lookups from the collection reads; an id not (yet) listed shows its own value. */
-export function useNames() {
-  const doctors = useDoctors().data
-  const patients = usePatients().data
-  const services = useHealthcareServices().data
-  const doctorList = doctors?.outcome === 'ok' ? doctors.detail : []
-  const patientList = patients?.outcome === 'ok' ? patients.detail : []
-  const serviceList = services?.outcome === 'ok' ? services.detail : []
-  return {
-    doctor: (id: Schemas['DoctorId']) => doctorList.find((d) => d.id === id)?.name ?? id,
-    patient: (id: Schemas['PatientId']) => patientList.find((p) => p.id === id)?.name ?? id,
-    healthcareService: (id: Schemas['HealthcareServiceId']) => serviceList.find((s) => s.id === id)?.name ?? id,
-    healthcareServiceRecord: (id: Schemas['HealthcareServiceId']) => serviceList.find((s) => s.id === id),
-  }
-}
-
-export function DoctorName({ id }: { id: Schemas['DoctorId'] }) {
-  return <Text size="sm">{useNames().doctor(id)}</Text>
-}
-
-export function PatientName({ id }: { id: Schemas['PatientId'] }) {
-  return <Text size="sm">{useNames().patient(id)}</Text>
-}
-
-export function HealthcareServiceName({ id }: { id: Schemas['HealthcareServiceId'] }) {
-  return <Text size="sm">{useNames().healthcareService(id)}</Text>
-}
-
-// ── Sum types ───────────────────────────────────────────────────────────────
-
-/** A case of an unranked sum type: its constructor humanized, neutral. */
-export function CaseBadge({ tag }: { tag: string }) {
-  return (
-    <Badge color="gray" variant="light" tt="none">
-      {humanize(tag)}
+    <Badge variant="light" color="gray" tt="none">
+      {humanize(type)}
     </Badge>
   )
 }
 
+// IntakeRequestPriority is ranked: it is the first key of Domain's sortByPriority.
 type Priority = Schemas['IntakeRequestPriority']
 
-/**
- * IntakeRequestPriority is ranked: it is the first key of sortByPriority.
- * First-ranked strongest (red), last calmest (green).
- */
-function priorityRankColor(tag: Priority['type']): string {
-  switch (tag) {
+function rankColor(type: Priority['type']): string {
+  switch (type) {
     case 'emergency':
       return 'red'
     case 'urgent':
@@ -117,133 +36,242 @@ function priorityRankColor(tag: Priority['type']): string {
   }
 }
 
-function SubField({ name, children }: { name: string; children: ReactNode }) {
+export function PriorityBadge({ type }: { type: Priority['type'] }) {
   return (
-    <Group gap={6} wrap="nowrap">
-      <Text size="xs" c="dimmed">
-        {humanize(name)}
-      </Text>
-      {children}
-    </Group>
-  )
-}
-
-export function PriorityValue({ value }: { value: Priority }) {
-  const badge = (
-    <Badge color={priorityRankColor(value.type)} variant="light" tt="none">
-      {humanize(value.type)}
+    <Badge variant="light" color={rankColor(type)} tt="none">
+      {humanize(type)}
     </Badge>
   )
-  switch (value.type) {
-    case 'emergency':
-    case 'urgent':
-      return (
-        <Stack gap={4}>
-          {badge}
-          <SubField name="mustBeSeenBy">
-            <TimeValue value={value.mustBeSeenBy} />
-          </SubField>
-        </Stack>
-      )
-    case 'routine':
-      return (
-        <Stack gap={4}>
-          {badge}
-          <RoutineDueValue value={value.routine} />
-        </Stack>
-      )
-  }
 }
 
-export function RoutineDueValue({ value }: { value: Schemas['RoutineDue'] }) {
-  const badge = <CaseBadge tag={value.type} />
+export function DoctorName({ id }: { id: Schemas['DoctorId'] }) {
+  const doctors = useDoctors()
+  return <>{doctors.data?.detail.find((d) => d.id === id)?.name ?? id}</>
+}
+
+export function PatientName({ id }: { id: Schemas['PatientId'] }) {
+  const patients = usePatients()
+  return <>{patients.data?.detail.find((p) => p.id === id)?.name ?? id}</>
+}
+
+export function HealthcareServiceName({ id }: { id: Schemas['HealthcareServiceId'] }) {
+  const services = useHealthcareServices()
+  return <>{services.data?.detail.find((s) => s.id === id)?.name ?? id}</>
+}
+
+// A field shows under its humanized name; rows are listed in Domain.hs field order.
+export type Row = { key: string; label: string; node: ReactNode }
+
+export function field<T, K extends keyof T & string>(value: T, key: K, render: (value: T[K]) => ReactNode): Row {
+  return { key, label: humanize(key), node: render(value[key]) }
+}
+
+export function Fields({ rows }: { rows: Row[] }) {
+  return (
+    <Stack gap={4}>
+      {rows.map((row) => (
+        <Group key={row.key} gap="xs" align="flex-start" wrap="nowrap">
+          <Text size="sm" c="dimmed" style={{ minWidth: 140 }}>
+            {row.label}
+          </Text>
+          <Text size="sm" component="div">
+            {row.node}
+          </Text>
+        </Group>
+      ))}
+    </Stack>
+  )
+}
+
+const text = (value: string) => value
+const optionalText = (value: string | null) => value
+const time = (value: string) => <Time value={value} />
+const ownId = (value: string) => value
+const doctor = (id: Schemas['DoctorId']) => <DoctorName id={id} />
+const patient = (id: Schemas['PatientId']) => <PatientName id={id} />
+const healthcareService = (id: Schemas['HealthcareServiceId']) => <HealthcareServiceName id={id} />
+const enumeration = (value: { type: string }) => <CaseBadge type={value.type} />
+
+function routineDueRows(value: Schemas['RoutineDue']): Row[] {
   switch (value.type) {
     case 'routineAnytime':
-      return badge
+      return []
     case 'routineNotBefore':
-      return (
-        <Stack gap={4}>
-          {badge}
-          <SubField name="routineNotBefore">
-            <TimeValue value={value.routineNotBefore} />
-          </SubField>
-        </Stack>
-      )
+      return [field(value, 'routineNotBefore', time)]
     case 'routineNotAfter':
-      return (
-        <Stack gap={4}>
-          {badge}
-          <SubField name="routineNotAfter">
-            <TimeValue value={value.routineNotAfter} />
-          </SubField>
-        </Stack>
-      )
+      return [field(value, 'routineNotAfter', time)]
     case 'routineWithin':
-      return (
-        <Stack gap={4}>
-          {badge}
-          <SubField name="routineNotBefore">
-            <TimeValue value={value.routineNotBefore} />
-          </SubField>
-          <SubField name="routineNotAfter">
-            <TimeValue value={value.routineNotAfter} />
-          </SubField>
-        </Stack>
-      )
+      return [field(value, 'routineNotBefore', time), field(value, 'routineNotAfter', time)]
   }
 }
 
-export function DoctorRequirementValue({ value }: { value: Schemas['DoctorRequirement'] }) {
+function routineDue(value: Schemas['RoutineDue']): ReactNode {
+  return (
+    <Stack gap={4}>
+      <Group>
+        <CaseBadge type={value.type} />
+      </Group>
+      <Fields rows={routineDueRows(value)} />
+    </Stack>
+  )
+}
+
+function priorityRows(value: Priority): Row[] {
+  switch (value.type) {
+    case 'emergency':
+      return [field(value, 'mustBeSeenBy', time)]
+    case 'urgent':
+      return [field(value, 'mustBeSeenBy', time)]
+    case 'routine':
+      return [field(value, 'routine', routineDue)]
+  }
+}
+
+function priority(value: Priority): ReactNode {
+  return (
+    <Stack gap={4}>
+      <Group>
+        <PriorityBadge type={value.type} />
+      </Group>
+      <Fields rows={priorityRows(value)} />
+    </Stack>
+  )
+}
+
+function doctorRequirementRows(value: Schemas['DoctorRequirement']): Row[] {
   switch (value.type) {
     case 'anyDoctor':
-      return <CaseBadge tag={value.type} />
+      return []
     case 'specificDoctor':
-      return (
-        <Stack gap={4}>
-          <CaseBadge tag={value.type} />
-          <SubField name="specificDoctor">
-            <DoctorName id={value.specificDoctor} />
-          </SubField>
-        </Stack>
-      )
+      return [field(value, 'specificDoctor', doctor)]
   }
 }
 
-export function DurationValue({ value }: { value: Schemas['Duration'] }) {
-  return <CaseBadge tag={value.type} />
+function doctorRequirement(value: Schemas['DoctorRequirement']): ReactNode {
+  return (
+    <Stack gap={4}>
+      <Group>
+        <CaseBadge type={value.type} />
+      </Group>
+      <Fields rows={doctorRequirementRows(value)} />
+    </Stack>
+  )
 }
 
-export function AppointmentPartyValue({ value }: { value: Schemas['AppointmentParty'] }) {
-  return <CaseBadge tag={value.type} />
-}
-
-export function CloseReasonValue({ value }: { value: Schemas['CloseReason'] }) {
+function closeReasonRows(value: Schemas['CloseReason']): Row[] {
   switch (value.type) {
     case 'completed':
-      return <CaseBadge tag={value.type} />
+      return []
     case 'cancelled':
-      return (
-        <Stack gap={4}>
-          <CaseBadge tag={value.type} />
-          <SubField name="cancelledBy">
-            <AppointmentPartyValue value={value.cancelledBy} />
-          </SubField>
-          <SubField name="cancelledAt">
-            <TimeValue value={value.cancelledAt} />
-          </SubField>
-          <SubField name="cancellationNote">
-            <TextValue value={value.cancellationNote} />
-          </SubField>
-        </Stack>
-      )
+      return [
+        field(value, 'cancelledBy', enumeration),
+        field(value, 'cancelledAt', time),
+        field(value, 'cancellationNote', optionalText),
+      ]
     case 'noShow':
-      return (
-        <Stack gap={4}>
-          <CaseBadge tag={value.type} />
-          <SubField name="absentParty">
-            <AppointmentPartyValue value={value.absentParty} />
-          </SubField>
-        </Stack>
-      )
+      return [field(value, 'absentParty', enumeration)]
+  }
+}
+
+function closeReason(value: Schemas['CloseReason']): ReactNode {
+  return (
+    <Stack gap={4}>
+      <Group>
+        <CaseBadge type={value.type} />
+      </Group>
+      <Fields rows={closeReasonRows(value)} />
+    </Stack>
+  )
+}
+
+export function doctorRows(value: Schemas['Doctor']): Row[] {
+  return [field(value, 'id', ownId), field(value, 'name', text)]
+}
+
+export function patientRows(value: Schemas['Patient']): Row[] {
+  return [field(value, 'id', ownId), field(value, 'name', text)]
+}
+
+export function healthcareServiceRows(value: Schemas['HealthcareService']): Row[] {
+  return [field(value, 'id', ownId), field(value, 'name', text), field(value, 'duration', enumeration)]
+}
+
+export function availableSlotRows(value: Schemas['AvailableSlot']): Row[] {
+  return [
+    field(value, 'id', ownId),
+    field(value, 'doctorId', doctor),
+    field(value, 'healthcareServiceId', healthcareService),
+    field(value, 'start', time),
+    field(value, 'duration', enumeration),
+  ]
+}
+
+function submittedRows(value: Schemas['SubmittedIntakeRequest']): Row[] {
+  return [
+    field(value, 'id', ownId),
+    field(value, 'patientId', patient),
+    field(value, 'narrative', text),
+    field(value, 'createdAt', time),
+  ]
+}
+
+function rejectedRows(value: Schemas['RejectedIntakeRequest']): Row[] {
+  return [...submittedRows(value), field(value, 'rejectedAt', time), field(value, 'rejectionReason', text)]
+}
+
+function triagedRows(value: Schemas['TriagedIntakeRequest']): Row[] {
+  return [
+    ...submittedRows(value),
+    field(value, 'healthcareServiceId', healthcareService),
+    field(value, 'priority', priority),
+    field(value, 'doctorRequirement', doctorRequirement),
+    field(value, 'triagedAt', time),
+  ]
+}
+
+export function appointedRows(value: Schemas['AppointedIntakeRequest']): Row[] {
+  return [
+    ...triagedRows(value),
+    field(value, 'doctorId', doctor),
+    field(value, 'start', time),
+    field(value, 'duration', enumeration),
+  ]
+}
+
+function withdrawnRows(value: Schemas['WithdrawnIntakeRequest']): Row[] {
+  const withdrawal = [
+    field(value, 'withdrawnFrom', enumeration),
+    field(value, 'withdrawnAt', time),
+    field(value, 'withdrawalNote', optionalText),
+  ]
+  // TypeScript can't narrow a union by a nested tag (withdrawnFrom.type); the
+  // fromAccepted case is the one member that carries the triaged fields.
+  return 'triagedAt' in value ? [...triagedRows(value), ...withdrawal] : [...submittedRows(value), ...withdrawal]
+}
+
+function staleRows(value: Schemas['StaleIntakeRequest']): Row[] {
+  return [...triagedRows(value), field(value, 'staleAt', time)]
+}
+
+function closedRows(value: Schemas['ClosedIntakeRequest']): Row[] {
+  return [...appointedRows(value), field(value, 'closeReason', closeReason)]
+}
+
+export function intakeRequestRows(request: Schemas['IntakeRequest']): Row[] {
+  switch (request.type) {
+    case 'submitted':
+      return submittedRows(request)
+    case 'rejected':
+      return rejectedRows(request)
+    case 'accepted':
+      return triagedRows(request)
+    case 'appointed':
+      return appointedRows(request)
+    case 'withdrawn':
+      return withdrawnRows(request)
+    case 'stale':
+      return staleRows(request)
+    case 'closed':
+      return closedRows(request)
   }
 }

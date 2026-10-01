@@ -1227,7 +1227,8 @@ export interface components {
             priority: components["schemas"]["IntakeRequestPriority"];
         };
         AppointedIntakeRequest: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorId: components["schemas"]["DoctorId"];
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             duration: components["schemas"]["Duration"];
@@ -1236,8 +1237,10 @@ export interface components {
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            start: components["schemas"]["UTCTime"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            triagedAt: string;
         };
         AppointmentParty: {
             /** @enum {string} */
@@ -1248,7 +1251,8 @@ export interface components {
             duration: components["schemas"]["Duration"];
             healthcareServiceId: components["schemas"]["HealthcareServiceId"];
             id: components["schemas"]["SlotId"];
-            start: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            start: string;
         };
         CloseAppointedIntakeRequestAnswer: components["schemas"]["CloseAppointedIntakeRequestAnswerTransitioned"] | components["schemas"]["CloseAppointedIntakeRequestAnswerMovedOn"] | components["schemas"]["CloseAppointedIntakeRequestAnswerIntakeRequestNotFound"] | components["schemas"]["CloseAppointedIntakeRequestAnswerIntakeRequestInWrongState"];
         CloseAppointedIntakeRequestAnswerIntakeRequestInWrongState: {
@@ -1289,7 +1293,8 @@ export interface components {
         CloseReason: components["schemas"]["CloseReasonCompleted"] | components["schemas"]["CloseReasonCancelled"] | components["schemas"]["CloseReasonNoShow"];
         CloseReasonCancelled: {
             cancellationNote: string | null;
-            cancelledAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            cancelledAt: string;
             cancelledBy: components["schemas"]["AppointmentParty"];
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -1339,7 +1344,8 @@ export interface components {
         };
         ClosedIntakeRequest: {
             closeReason: components["schemas"]["CloseReason"];
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorId: components["schemas"]["DoctorId"];
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             duration: components["schemas"]["Duration"];
@@ -1348,8 +1354,10 @@ export interface components {
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            start: components["schemas"]["UTCTime"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            triagedAt: string;
         };
         CreateAvailableSlotAnswer: components["schemas"]["CreateAvailableSlotAnswerAvailableSlotAdded"] | components["schemas"]["CreateAvailableSlotAnswerAvailableSlotOverlapsDoctorCalendar"] | components["schemas"]["CreateAvailableSlotAnswerDoctorNotFound"] | components["schemas"]["CreateAvailableSlotAnswerHealthcareServiceNotFound"];
         CreateAvailableSlotAnswerAvailableSlotAdded: {
@@ -1388,7 +1396,8 @@ export interface components {
         CreateAvailableSlotRequest: {
             doctorId: components["schemas"]["DoctorId"];
             healthcareServiceId: components["schemas"]["HealthcareServiceId"];
-            start: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            start: string;
         };
         CreateDoctorAnswer: components["schemas"]["CreateDoctorAnswerOk"];
         CreateDoctorAnswerOk: {
@@ -1433,7 +1442,8 @@ export interface components {
         };
         DoctorCalendarEntry: components["schemas"]["DoctorCalendarEntrySlot"] | components["schemas"]["DoctorCalendarEntryAppointment"];
         DoctorCalendarEntryAppointment: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorId: components["schemas"]["DoctorId"];
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             duration: components["schemas"]["Duration"];
@@ -1442,8 +1452,10 @@ export interface components {
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            start: components["schemas"]["UTCTime"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            triagedAt: string;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1455,7 +1467,8 @@ export interface components {
             duration: components["schemas"]["Duration"];
             healthcareServiceId: components["schemas"]["HealthcareServiceId"];
             id: components["schemas"]["SlotId"];
-            start: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            start: string;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1677,19 +1690,22 @@ export interface components {
         HealthcareServiceId: string;
         IntakeRequest: components["schemas"]["IntakeRequestSubmitted"] | components["schemas"]["IntakeRequestRejected"] | components["schemas"]["IntakeRequestAccepted"] | components["schemas"]["IntakeRequestAppointed"] | components["schemas"]["IntakeRequestWithdrawn"] | components["schemas"]["IntakeRequestStale"] | components["schemas"]["IntakeRequestClosed"];
         IntakeRequestAccepted: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             healthcareServiceId: components["schemas"]["HealthcareServiceId"];
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            triagedAt: string;
             /** @enum {string} */
             type: "accepted";
         };
         IntakeRequestAppointed: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorId: components["schemas"]["DoctorId"];
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             duration: components["schemas"]["Duration"];
@@ -1698,14 +1714,17 @@ export interface components {
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            start: components["schemas"]["UTCTime"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            triagedAt: string;
             /** @enum {string} */
             type: "appointed";
         };
         IntakeRequestClosed: {
             closeReason: components["schemas"]["CloseReason"];
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorId: components["schemas"]["DoctorId"];
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             duration: components["schemas"]["Duration"];
@@ -1714,8 +1733,10 @@ export interface components {
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            start: components["schemas"]["UTCTime"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            start: string;
+            /** Format: date-time */
+            triagedAt: string;
             /** @enum {string} */
             type: "closed";
         };
@@ -1723,7 +1744,8 @@ export interface components {
         IntakeRequestId: string;
         IntakeRequestPriority: components["schemas"]["IntakeRequestPriorityEmergency"] | components["schemas"]["IntakeRequestPriorityUrgent"] | components["schemas"]["IntakeRequestPriorityRoutine"];
         IntakeRequestPriorityEmergency: {
-            mustBeSeenBy: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            mustBeSeenBy: string;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1739,7 +1761,8 @@ export interface components {
             type: "routine";
         };
         IntakeRequestPriorityUrgent: {
-            mustBeSeenBy: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            mustBeSeenBy: string;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1747,30 +1770,36 @@ export interface components {
             type: "urgent";
         };
         IntakeRequestRejected: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
-            rejectedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            rejectedAt: string;
             rejectionReason: string;
             /** @enum {string} */
             type: "rejected";
         };
         IntakeRequestStale: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             healthcareServiceId: components["schemas"]["HealthcareServiceId"];
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            staleAt: components["schemas"]["UTCTime"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            staleAt: string;
+            /** Format: date-time */
+            triagedAt: string;
             /** @enum {string} */
             type: "stale";
         };
         IntakeRequestSubmitted: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
@@ -1779,32 +1808,37 @@ export interface components {
         };
         IntakeRequestWithdrawn: components["schemas"]["IntakeRequestWithdrawnFromSubmitted"] | components["schemas"]["IntakeRequestWithdrawnFromAccepted"];
         IntakeRequestWithdrawnFromAccepted: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             healthcareServiceId: components["schemas"]["HealthcareServiceId"];
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            triagedAt: string;
             /** @enum {string} */
             type: "withdrawn";
             withdrawalNote: string | null;
-            withdrawnAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            withdrawnAt: string;
             withdrawnFrom: {
                 /** @enum {string} */
                 type: "fromAccepted";
             };
         };
         IntakeRequestWithdrawnFromSubmitted: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             /** @enum {string} */
             type: "withdrawn";
             withdrawalNote: string | null;
-            withdrawnAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            withdrawnAt: string;
             withdrawnFrom: {
                 /** @enum {string} */
                 type: "fromSubmitted";
@@ -1974,11 +2008,13 @@ export interface components {
             rejectionReason: string;
         };
         RejectedIntakeRequest: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
-            rejectedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            rejectedAt: string;
             rejectionReason: string;
         };
         RoutineDue: components["schemas"]["RoutineDueRoutineAnytime"] | components["schemas"]["RoutineDueRoutineNotBefore"] | components["schemas"]["RoutineDueRoutineNotAfter"] | components["schemas"]["RoutineDueRoutineWithin"];
@@ -1990,7 +2026,8 @@ export interface components {
             type: "routineAnytime";
         };
         RoutineDueRoutineNotAfter: {
-            routineNotAfter: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            routineNotAfter: string;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -1998,7 +2035,8 @@ export interface components {
             type: "routineNotAfter";
         };
         RoutineDueRoutineNotBefore: {
-            routineNotBefore: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            routineNotBefore: string;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -2006,8 +2044,10 @@ export interface components {
             type: "routineNotBefore";
         };
         RoutineDueRoutineWithin: {
-            routineNotAfter: components["schemas"]["UTCTime"];
-            routineNotBefore: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            routineNotAfter: string;
+            /** Format: date-time */
+            routineNotBefore: string;
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}
@@ -2017,15 +2057,18 @@ export interface components {
         /** Format: uuid */
         SlotId: string;
         StaleIntakeRequest: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             healthcareServiceId: components["schemas"]["HealthcareServiceId"];
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            staleAt: components["schemas"]["UTCTime"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            staleAt: string;
+            /** Format: date-time */
+            triagedAt: string;
         };
         SubmitIntakeRequestAnswer: components["schemas"]["SubmitIntakeRequestAnswerOk"] | components["schemas"]["SubmitIntakeRequestAnswerPatientNotFound"];
         SubmitIntakeRequestAnswerOk: {
@@ -2049,26 +2092,24 @@ export interface components {
             patientId: components["schemas"]["PatientId"];
         };
         SubmittedIntakeRequest: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
         };
         TriagedIntakeRequest: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             healthcareServiceId: components["schemas"]["HealthcareServiceId"];
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            triagedAt: string;
         };
-        /**
-         * Format: yyyy-mm-ddThh:MM:ssZ
-         * @example 2016-07-22T00:00:00Z
-         */
-        UTCTime: string;
         WithdrawIntakeRequestAnswer: components["schemas"]["WithdrawIntakeRequestAnswerTransitioned"] | components["schemas"]["WithdrawIntakeRequestAnswerMovedOn"] | components["schemas"]["WithdrawIntakeRequestAnswerIntakeRequestNotFound"];
         WithdrawIntakeRequestAnswerIntakeRequestNotFound: {
             detail: components["schemas"]["IntakeRequestId"];
@@ -2099,28 +2140,33 @@ export interface components {
         };
         WithdrawnIntakeRequest: components["schemas"]["WithdrawnIntakeRequestFromSubmitted"] | components["schemas"]["WithdrawnIntakeRequestFromAccepted"];
         WithdrawnIntakeRequestFromAccepted: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             doctorRequirement: components["schemas"]["DoctorRequirement"];
             healthcareServiceId: components["schemas"]["HealthcareServiceId"];
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             priority: components["schemas"]["IntakeRequestPriority"];
-            triagedAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            triagedAt: string;
             withdrawalNote: string | null;
-            withdrawnAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            withdrawnAt: string;
             withdrawnFrom: {
                 /** @enum {string} */
                 type: "fromAccepted";
             };
         };
         WithdrawnIntakeRequestFromSubmitted: {
-            createdAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            createdAt: string;
             id: components["schemas"]["IntakeRequestId"];
             narrative: string;
             patientId: components["schemas"]["PatientId"];
             withdrawalNote: string | null;
-            withdrawnAt: components["schemas"]["UTCTime"];
+            /** Format: date-time */
+            withdrawnAt: string;
             withdrawnFrom: {
                 /** @enum {string} */
                 type: "fromSubmitted";
