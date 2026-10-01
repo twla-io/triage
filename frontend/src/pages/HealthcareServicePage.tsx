@@ -1,57 +1,67 @@
 import { useState } from 'react'
-import { Button, Stack } from '@mantine/core'
+import type { Schemas } from '../api/client'
 import { useCreateHealthcareService, useHealthcareServices } from '../api/queries/healthcareServices'
-import { durationTags, type Duration } from '../api/wire'
-import { TagSelect, TextField } from '../components/controls'
-import { FormModal } from '../components/FormModal'
-import { humanize } from '../components/labels'
-import { ReadAnswer } from '../components/outcome'
-import { PageHeader } from '../components/PageHeader'
-import { RecordTable } from '../components/RecordTable'
-import { GeneratedDurationValue, IdValue, TextValue } from '../components/values'
-
-function CreateHealthcareServiceForm({ onClose }: { onClose: () => void }) {
-  const create = useCreateHealthcareService()
-  const [name, setName] = useState('')
-  const [duration, setDuration] = useState<Duration | null>(null)
-  return (
-    <FormModal
-      useCase="createHealthcareService"
-      onClose={onClose}
-      submit={duration === null ? null : () => create.mutateAsync({ name, duration })}
-    >
-      <TextField name="name" value={name} onChange={setName} />
-      <TagSelect
-        name="duration"
-        tags={durationTags}
-        value={duration?.type ?? null}
-        onChange={(t) => setDuration(t === null ? null : { type: t })}
-      />
-    </FormModal>
-  )
-}
+import { ActionButton, ActionForm, PageHeader, QueryView } from '../components/actions'
+import { TextControl } from '../components/controls'
+import type { DraftRecord } from '../components/draft'
+import { humanize } from '../components/humanize'
+import { AnswerBanner } from '../components/outcome'
+import { RecordList } from '../components/RecordList'
+import { healthcareServiceFields } from '../components/recordFields'
+import { DurationControl } from '../components/sumControls'
+import { RecordCard } from '../components/values'
 
 export function HealthcareServicePage() {
   const services = useHealthcareServices()
-  const [creating, setCreating] = useState(false)
   return (
-    <Stack>
-      <PageHeader entity="healthcareService">
-        <Button onClick={() => setCreating(true)}>{humanize('createHealthcareService')}</Button>
-      </PageHeader>
-      {creating && <CreateHealthcareServiceForm onClose={() => setCreating(false)} />}
-      <ReadAnswer query={services}>
-        {(rows) => (
-          <RecordTable
-            rows={rows}
-            columns={[
-              ['id', (s) => <IdValue id={s.id} />],
-              ['name', (s) => <TextValue text={s.name} />],
-              ['duration', (s) => <GeneratedDurationValue value={s.duration} />],
-            ]}
-          />
-        )}
-      </ReadAnswer>
-    </Stack>
+    <>
+      <PageHeader
+        title={humanize('HealthcareService')}
+        action={
+          <ActionButton label={humanize('create')} variant="filled">
+            {(close) => <CreateHealthcareServiceForm onDone={close} />}
+          </ActionButton>
+        }
+      />
+      <QueryView query={services}>
+        {(answer) =>
+          answer.outcome === 'ok' ? (
+            <RecordList
+              items={answer.detail}
+              keyOf={(s) => s.id}
+              render={(s) => <RecordCard fields={healthcareServiceFields(s)} />}
+            />
+          ) : (
+            <AnswerBanner answer={answer} entity="healthcareService" />
+          )
+        }
+      </QueryView>
+    </>
+  )
+}
+
+function CreateHealthcareServiceForm({ onDone }: { onDone: () => void }) {
+  const mutation = useCreateHealthcareService()
+  const [draft, setDraft] = useState<DraftRecord<Schemas['CreateHealthcareServiceRequest']>>({
+    name: '',
+    duration: null,
+  })
+  const { name, duration } = draft
+  return (
+    <ActionForm
+      label={humanize('create')}
+      entity="healthcareService"
+      mutation={mutation}
+      variables={name !== null && duration !== null ? { name, duration } : null}
+      isSuccess={(a) => a.outcome === 'ok'}
+      onDone={onDone}
+    >
+      <TextControl label={humanize('name')} value={name ?? ''} onChange={(v) => setDraft({ ...draft, name: v })} />
+      <DurationControl
+        label={humanize('duration')}
+        value={duration}
+        onChange={(v) => setDraft({ ...draft, duration: v })}
+      />
+    </ActionForm>
   )
 }

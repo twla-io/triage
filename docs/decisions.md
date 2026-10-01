@@ -179,6 +179,10 @@ bottom.
 
 **Decided:** `TriagedIntakeRequest.doctorRequirement` is the only doctor requirement, and matching uses it. Triage sets it for any priority, defaulting to any doctor. A patient's preference goes into the narrative, and the submit form's narrative prompt invites one. When triage sets a specific doctor on an Emergency or Urgent request, the triage form warns that the request will wait for that doctor even if others are free before its deadline (continuity of care is allowed, but should be deliberate).
 
+**Warning text:** "This request will wait for that doctor, even if other doctors are free before its deadline."
+
+**Narrative prompt:** "A preferred doctor, if any, can be named here."
+
 **Why:** whoever submits often can't name a doctor precisely, and "Dr Smith again, if possible" says more as text than as an id.
 
 **Rejected:** a separate requested-doctor field on the submitted request (it only pre-filled the form, and nothing enforced it; tried and removed); `considerDoctorRequirement :: Bool` (allows `True` with any doctor); a doctor requirement only on `Routine` (it rules out continuity of care for urgent patients).

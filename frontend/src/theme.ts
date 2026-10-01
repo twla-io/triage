@@ -17,6 +17,13 @@ const accent: MantineColorsTuple = [
   '#f1f7fd', '#e6f1fb', '#c9e0f6', '#a4cbef', '#78b1e6',
   '#4f96da', '#2f7ac8', '#1c62ac', '#134b88', '#0c447c',
 ]
+// Not in the mockup: the middle of the rank scale (red > orange > green)
+// needs a hue of its own, distinct from the warning tint that yellow
+// feedback uses. Interpolated between danger and warning.
+const rankMiddle: MantineColorsTuple = [
+  '#fef6f0', '#fde8d7', '#f9cfae', '#f3b27f', '#ea9152',
+  '#dc7230', '#c25a1c', '#9f4614', '#7f370f', '#6b2d0a',
+]
 const warning: MantineColorsTuple = [
   '#fdf8f1', '#faeeda', '#f2dcb0', '#e7c581', '#d9aa54',
   '#c88f34', '#ac7424', '#8c5c1a', '#714910', '#633806',
@@ -52,10 +59,9 @@ const SEMANTIC_TINTS: Record<string, { bg: string; text: string; border?: string
   red: { bg: '#fcebeb', text: '#791f1f', border: '#f09595', hover: danger[2] },
   green: { bg: '#eaf3de', text: '#27500a', hover: success[2] },
   blue: { bg: '#e6f1fb', text: '#0c447c', hover: accent[2] },
-  orange: { bg: '#faeeda', text: '#633806', hover: warning[2] },
-  // The mockup only defines one warning color; "yellow" is used
-  // interchangeably with "orange" for cautionary states in this app, so it
-  // aliases to the same tint rather than inventing an unspecified fifth color.
+  // orange is the rank scale's middle and must not look like feedback;
+  // yellow is the mockup's one warning tint, used for feedback.
+  orange: { bg: '#fde8d7', text: '#6b2d0a', hover: rankMiddle[2] },
   yellow: { bg: '#faeeda', text: '#633806', hover: warning[2] },
 }
 
@@ -63,7 +69,7 @@ const FILLED_BACKGROUND: Record<string, string> = {
   red: danger[6],
   green: success[6],
   blue: accent[6],
-  orange: warning[6],
+  orange: rankMiddle[6],
   yellow: warning[6],
 }
 
@@ -72,7 +78,7 @@ export const theme = createTheme({
   primaryColor: 'blue', // redefined to the accent family below
   primaryShade: 6,
   defaultRadius: '8px',
-  colors: { red: danger, green: success, blue: accent, orange: warning, yellow: warning, gray },
+  colors: { red: danger, green: success, blue: accent, orange: rankMiddle, yellow: warning, gray },
   variantColorResolver: (input) => {
     const tint = typeof input.color === 'string' ? SEMANTIC_TINTS[input.color] : undefined
     if (tint) {

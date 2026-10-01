@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import { Button, Stack } from '@mantine/core'
-import type { UseQueryResult } from '@tanstack/react-query'
+import { useState, type ReactNode } from 'react'
+import { Stack } from '@mantine/core'
+import type { Schemas } from '../api/client'
 import {
   useAcceptedIntakeRequests,
   useAppointedIntakeRequests,
@@ -11,94 +11,193 @@ import {
   useSubmittedIntakeRequests,
   useWithdrawnIntakeRequests,
 } from '../api/queries/intakeRequests'
-import type { IntakeRequest, OkOrErrorAnswer, PatientId } from '../api/wire'
-import { PatientSelect, TextField } from '../components/controls'
-import { FormModal } from '../components/FormModal'
-import { IntakeRequestCard } from '../components/IntakeRequestView'
-import { humanize } from '../components/labels'
-import { okDetail, ReadAnswer } from '../components/outcome'
-import { PageHeader, SectionHeader } from '../components/PageHeader'
-import { useWeekRange, WeekRangePicker, type WeekRange } from '../components/WeekRange'
+import { ActionButton, ActionForm, PageHeader, QueryView, SectionHeader } from '../components/actions'
+import { PatientSelect, TextControl } from '../components/controls'
+import { humanize } from '../components/humanize'
+import { IntakeRequestActions } from '../components/intakeRequestActions'
+import { AnswerBanner } from '../components/outcome'
+import { RecordList } from '../components/RecordList'
+import { intakeRequestFields } from '../components/recordFields'
+import { RecordCard } from '../components/values'
+import { useWeek, WeekRange, type Week } from '../components/WeekRange'
 
-function SubmitIntakeRequestForm({ onClose }: { onClose: () => void }) {
-  const submit = useSubmitIntakeRequest()
-  const [patientId, setPatientId] = useState<PatientId | null>(null)
+type IntakeRequest = Schemas['IntakeRequest']
+
+const ENTITY = 'intakeRequest'
+
+/** One section per case, in constructor order, each fed by that case's read. */
+export function IntakeRequestPage() {
+  return (
+    <>
+      <PageHeader
+        title={humanize('IntakeRequest')}
+        action={
+          <ActionButton label={humanize('submit')} variant="filled">
+            {(close) => <SubmitIntakeRequestForm onDone={close} />}
+          </ActionButton>
+        }
+      />
+      <Stack gap="xl">
+        <SubmittedSection />
+        <RejectedSection />
+        <AcceptedSection />
+        <AppointedSection />
+        <WithdrawnSection />
+        <StaleSection />
+        <ClosedSection />
+      </Stack>
+    </>
+  )
+}
+
+function Section({ tag, week, children }: { tag: IntakeRequest['type']; week?: Week; children: ReactNode }) {
+  return (
+    <section>
+      <SectionHeader title={humanize(tag)} extra={week && <WeekRange week={week} />} />
+      {children}
+    </section>
+  )
+}
+
+function IntakeRequestList({ requests }: { requests: IntakeRequest[] }) {
+  return (
+    <RecordList
+      items={requests}
+      keyOf={(r) => r.id}
+      render={(r) => <RecordCard fields={intakeRequestFields(r)} actions={<IntakeRequestActions request={r} />} />}
+    />
+  )
+}
+
+// Each read returns its case's stage record; the section makes each element
+// that case's member of IntakeRequest.
+
+function SubmittedSection() {
+  const query = useSubmittedIntakeRequests()
+  const toCase = (r: Schemas['SubmittedIntakeRequest']): Schemas['IntakeRequestSubmitted'] => ({ ...r, type: 'submitted' })
+  return (
+    <Section tag="submitted">
+      <QueryView query={query}>
+        {(a) =>
+          a.outcome === 'ok' ? <IntakeRequestList requests={a.detail.map(toCase)} /> : <AnswerBanner answer={a} entity={ENTITY} />
+        }
+      </QueryView>
+    </Section>
+  )
+}
+
+function RejectedSection() {
+  const week = useWeek()
+  const query = useRejectedIntakeRequests(week.range)
+  const toCase = (r: Schemas['RejectedIntakeRequest']): Schemas['IntakeRequestRejected'] => ({ ...r, type: 'rejected' })
+  return (
+    <Section tag="rejected" week={week}>
+      <QueryView query={query}>
+        {(a) =>
+          a.outcome === 'ok' ? <IntakeRequestList requests={a.detail.map(toCase)} /> : <AnswerBanner answer={a} entity={ENTITY} />
+        }
+      </QueryView>
+    </Section>
+  )
+}
+
+function AcceptedSection() {
+  const query = useAcceptedIntakeRequests()
+  const toCase = (r: Schemas['TriagedIntakeRequest']): Schemas['IntakeRequestAccepted'] => ({ ...r, type: 'accepted' })
+  return (
+    <Section tag="accepted">
+      <QueryView query={query}>
+        {(a) =>
+          a.outcome === 'ok' ? <IntakeRequestList requests={a.detail.map(toCase)} /> : <AnswerBanner answer={a} entity={ENTITY} />
+        }
+      </QueryView>
+    </Section>
+  )
+}
+
+function AppointedSection() {
+  const query = useAppointedIntakeRequests()
+  const toCase = (r: Schemas['AppointedIntakeRequest']): Schemas['IntakeRequestAppointed'] => ({ ...r, type: 'appointed' })
+  return (
+    <Section tag="appointed">
+      <QueryView query={query}>
+        {(a) =>
+          a.outcome === 'ok' ? <IntakeRequestList requests={a.detail.map(toCase)} /> : <AnswerBanner answer={a} entity={ENTITY} />
+        }
+      </QueryView>
+    </Section>
+  )
+}
+
+function WithdrawnSection() {
+  const week = useWeek()
+  const query = useWithdrawnIntakeRequests(week.range)
+  const toCase = (r: Schemas['WithdrawnIntakeRequest']): Schemas['IntakeRequestWithdrawn'] => ({ ...r, type: 'withdrawn' })
+  return (
+    <Section tag="withdrawn" week={week}>
+      <QueryView query={query}>
+        {(a) =>
+          a.outcome === 'ok' ? <IntakeRequestList requests={a.detail.map(toCase)} /> : <AnswerBanner answer={a} entity={ENTITY} />
+        }
+      </QueryView>
+    </Section>
+  )
+}
+
+function StaleSection() {
+  const week = useWeek()
+  const query = useStaleIntakeRequests(week.range)
+  const toCase = (r: Schemas['StaleIntakeRequest']): Schemas['IntakeRequestStale'] => ({ ...r, type: 'stale' })
+  return (
+    <Section tag="stale" week={week}>
+      <QueryView query={query}>
+        {(a) =>
+          a.outcome === 'ok' ? <IntakeRequestList requests={a.detail.map(toCase)} /> : <AnswerBanner answer={a} entity={ENTITY} />
+        }
+      </QueryView>
+    </Section>
+  )
+}
+
+function ClosedSection() {
+  const week = useWeek()
+  const query = useClosedIntakeRequests(week.range)
+  const toCase = (r: Schemas['ClosedIntakeRequest']): Schemas['IntakeRequestClosed'] => ({ ...r, type: 'closed' })
+  return (
+    <Section tag="closed" week={week}>
+      <QueryView query={query}>
+        {(a) =>
+          a.outcome === 'ok' ? <IntakeRequestList requests={a.detail.map(toCase)} /> : <AnswerBanner answer={a} entity={ENTITY} />
+        }
+      </QueryView>
+    </Section>
+  )
+}
+
+// docs/decisions.md, "The doctor requirement is decided at triage": the
+// submit form's narrative prompt invites a preferred doctor.
+const NARRATIVE_PROMPT = 'A preferred doctor, if any, can be named here.'
+
+function SubmitIntakeRequestForm({ onDone }: { onDone: () => void }) {
+  const mutation = useSubmitIntakeRequest()
+  const [patientId, setPatientId] = useState<Schemas['PatientId'] | null>(null)
   const [narrative, setNarrative] = useState('')
   return (
-    <FormModal
-      useCase="submitIntakeRequest"
-      onClose={onClose}
-      submit={patientId === null ? null : () => submit.mutateAsync({ patientId, narrative })}
+    <ActionForm
+      label={humanize('submit')}
+      entity={ENTITY}
+      mutation={mutation}
+      variables={patientId === null ? null : { patientId, narrative }}
+      isSuccess={(a) => a.outcome === 'ok'}
+      onDone={onDone}
     >
-      <PatientSelect name="patientId" value={patientId} onChange={setPatientId} />
-      {/* docs/decisions.md: a patient's preference of doctor goes into the
-          narrative, and the narrative prompt invites one. */}
-      <TextField
-        name="narrative"
+      <PatientSelect label={humanize('patientId')} value={patientId} onChange={setPatientId} />
+      <TextControl
+        label={humanize('narrative')}
+        description={NARRATIVE_PROMPT}
         value={narrative}
         onChange={setNarrative}
-        description="A preferred doctor, if any, can be named here."
       />
-    </FormModal>
-  )
-}
-
-// One section per IntakeRequest case, fed by that case's read, in server order.
-function CaseSection<R extends IntakeRequest>({
-  name,
-  query,
-  week,
-}: {
-  name: IntakeRequest['type']
-  query: UseQueryResult<OkOrErrorAnswer<R[]>>
-  week?: WeekRange
-}) {
-  return (
-    <Stack gap="xs">
-      <SectionHeader name={name} count={okDetail(query.data)?.length}>
-        {week && <WeekRangePicker week={week} />}
-      </SectionHeader>
-      <ReadAnswer query={query}>
-        {(requests) => (
-          <Stack gap="xs">
-            {requests.map((r) => (
-              <IntakeRequestCard key={r.id} request={r} />
-            ))}
-          </Stack>
-        )}
-      </ReadAnswer>
-    </Stack>
-  )
-}
-
-export function IntakeRequestPage() {
-  const [submitting, setSubmitting] = useState(false)
-  const rejectedWeek = useWeekRange()
-  const withdrawnWeek = useWeekRange()
-  const staleWeek = useWeekRange()
-  const closedWeek = useWeekRange()
-
-  const submitted = useSubmittedIntakeRequests()
-  const rejected = useRejectedIntakeRequests(rejectedWeek.range)
-  const accepted = useAcceptedIntakeRequests()
-  const appointed = useAppointedIntakeRequests()
-  const withdrawn = useWithdrawnIntakeRequests(withdrawnWeek.range)
-  const stale = useStaleIntakeRequests(staleWeek.range)
-  const closed = useClosedIntakeRequests(closedWeek.range)
-
-  return (
-    <Stack gap="xl">
-      <PageHeader entity="intakeRequest">
-        <Button onClick={() => setSubmitting(true)}>{humanize('submitIntakeRequest')}</Button>
-      </PageHeader>
-      {submitting && <SubmitIntakeRequestForm onClose={() => setSubmitting(false)} />}
-      <CaseSection name="submitted" query={submitted} />
-      <CaseSection name="rejected" query={rejected} week={rejectedWeek} />
-      <CaseSection name="accepted" query={accepted} />
-      <CaseSection name="appointed" query={appointed} />
-      <CaseSection name="withdrawn" query={withdrawn} week={withdrawnWeek} />
-      <CaseSection name="stale" query={stale} week={staleWeek} />
-      <CaseSection name="closed" query={closed} week={closedWeek} />
-    </Stack>
+    </ActionForm>
   )
 }

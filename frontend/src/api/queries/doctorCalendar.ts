@@ -1,10 +1,10 @@
 import { useQuery } from '@tanstack/react-query'
-import { apiGet } from '../client'
-import { decodeFetchDoctorCalendarEntriesAnswer } from '../wire'
-import type { TimeRange } from './mutation'
+import { call } from '../client'
+import type { Range } from '../range'
 
-export const useDoctorCalendar = (range: TimeRange) =>
-  useQuery({
-    queryKey: ['doctor-calendar', range.from, range.to],
-    queryFn: async () => decodeFetchDoctorCalendarEntriesAnswer(await apiGet('/doctor-calendar', { ...range })),
+export function useDoctorCalendarEntries(range: Range) {
+  return useQuery({
+    queryKey: ['doctorCalendar', range.from, range.to],
+    queryFn: () => call('get', '/doctor-calendar', { query: { from: range.from, to: range.to } }),
   })
+}

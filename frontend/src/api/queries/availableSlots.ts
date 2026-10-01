@@ -1,20 +1,12 @@
-import { apiPost } from '../client'
-import {
-  decodeCreateAvailableSlotAnswer,
-  decodeMatchAvailableSlotByPriorityAnswer,
-  type CreateAvailableSlotRequest,
-  type SlotId,
-} from '../wire'
-import { useAnswerMutation } from './mutation'
+import { call, type Schemas } from '../client'
+import { useAnswerMutation } from '../mutation'
 
-export const useCreateAvailableSlot = () =>
-  useAnswerMutation(async (body: CreateAvailableSlotRequest) =>
-    decodeCreateAvailableSlotAnswer(await apiPost('/available-slots', body)),
-  )
+export function useCreateAvailableSlot() {
+  return useAnswerMutation((body: Schemas['CreateAvailableSlotRequest']) => call('post', '/available-slots', { body }))
+}
 
-export const useMatchAvailableSlotByPriority = () =>
-  useAnswerMutation(async (slotId: SlotId) =>
-    decodeMatchAvailableSlotByPriorityAnswer(
-      await apiPost(`/available-slots/${encodeURIComponent(slotId)}/match-by-priority`),
-    ),
+export function useMatchAvailableSlotByPriority() {
+  return useAnswerMutation((slotId: Schemas['SlotId']) =>
+    call('post', '/available-slots/{slotId}/match-by-priority', { path: { slotId } }),
   )
+}

@@ -1,44 +1,46 @@
 import { useState } from 'react'
-import { Button, Stack } from '@mantine/core'
 import { useCreatePatient, usePatients } from '../api/queries/patients'
-import { TextField } from '../components/controls'
-import { FormModal } from '../components/FormModal'
-import { humanize } from '../components/labels'
-import { ReadAnswer } from '../components/outcome'
-import { PageHeader } from '../components/PageHeader'
-import { RecordTable } from '../components/RecordTable'
-import { IdValue, TextValue } from '../components/values'
-
-function CreatePatientForm({ onClose }: { onClose: () => void }) {
-  const create = useCreatePatient()
-  const [name, setName] = useState('')
-  return (
-    <FormModal useCase="createPatient" onClose={onClose} submit={() => create.mutateAsync({ name })}>
-      <TextField name="name" value={name} onChange={setName} />
-    </FormModal>
-  )
-}
+import { ActionButton, ActionForm, PageHeader, QueryView } from '../components/actions'
+import { TextControl } from '../components/controls'
+import { humanize } from '../components/humanize'
+import { RecordList } from '../components/RecordList'
+import { patientFields } from '../components/recordFields'
+import { RecordCard } from '../components/values'
 
 export function PatientPage() {
   const patients = usePatients()
-  const [creating, setCreating] = useState(false)
   return (
-    <Stack>
-      <PageHeader entity="patient">
-        <Button onClick={() => setCreating(true)}>{humanize('createPatient')}</Button>
-      </PageHeader>
-      {creating && <CreatePatientForm onClose={() => setCreating(false)} />}
-      <ReadAnswer query={patients}>
-        {(rows) => (
-          <RecordTable
-            rows={rows}
-            columns={[
-              ['id', (p) => <IdValue id={p.id} />],
-              ['name', (p) => <TextValue text={p.name} />],
-            ]}
-          />
+    <>
+      <PageHeader
+        title={humanize('Patient')}
+        action={
+          <ActionButton label={humanize('create')} variant="filled">
+            {(close) => <CreatePatientForm onDone={close} />}
+          </ActionButton>
+        }
+      />
+      <QueryView query={patients}>
+        {(answer) => (
+          <RecordList items={answer.detail} keyOf={(d) => d.id} render={(d) => <RecordCard fields={patientFields(d)} />} />
         )}
-      </ReadAnswer>
-    </Stack>
+      </QueryView>
+    </>
+  )
+}
+
+function CreatePatientForm({ onDone }: { onDone: () => void }) {
+  const mutation = useCreatePatient()
+  const [name, setName] = useState('')
+  return (
+    <ActionForm
+      label={humanize('create')}
+      entity="patient"
+      mutation={mutation}
+      variables={{ name }}
+      isSuccess={(a) => a.outcome === 'ok'}
+      onDone={onDone}
+    >
+      <TextControl label={humanize('name')} value={name} onChange={setName} />
+    </ActionForm>
   )
 }

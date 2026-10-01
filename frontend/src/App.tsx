@@ -1,37 +1,39 @@
-import { AppShell, NavLink, Title } from '@mantine/core'
+import { AppShell, NavLink } from '@mantine/core'
+import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import '@mantine/dates/styles.css'
-import { Navigate, NavLink as RouterNavLink, Route, Routes } from 'react-router-dom'
-import { humanize } from './components/labels'
+import { humanize } from './components/humanize'
 import { DoctorCalendarPage } from './pages/DoctorCalendarPage'
 import { DoctorPage } from './pages/DoctorPage'
 import { HealthcareServicePage } from './pages/HealthcareServicePage'
 import { IntakeRequestPage } from './pages/IntakeRequestPage'
 import { PatientPage } from './pages/PatientPage'
 
-// One page per entity with a collection read, in the order Domain.hs declares
-// the entities; the app opens on the first.
+/** One page per entity, in the order Domain.hs declares them. */
 const pages = [
-  { entity: 'doctor', path: '/doctors', element: <DoctorPage /> },
-  { entity: 'patient', path: '/patients', element: <PatientPage /> },
-  { entity: 'healthcareService', path: '/healthcare-services', element: <HealthcareServicePage /> },
-  { entity: 'intakeRequest', path: '/intake-requests', element: <IntakeRequestPage /> },
-  { entity: 'doctorCalendar', path: '/doctor-calendar', element: <DoctorCalendarPage /> },
+  { path: '/doctor', entity: 'Doctor', element: <DoctorPage /> },
+  { path: '/patient', entity: 'Patient', element: <PatientPage /> },
+  { path: '/healthcare-service', entity: 'HealthcareService', element: <HealthcareServicePage /> },
+  { path: '/intake-request', entity: 'IntakeRequest', element: <IntakeRequestPage /> },
+  { path: '/doctor-calendar', entity: 'DoctorCalendar', element: <DoctorCalendarPage /> },
 ]
 
 export default function App() {
+  const location = useLocation()
   return (
-    <AppShell header={{ height: 52 }} navbar={{ width: 220, breakpoint: 'sm' }} padding="md">
-      <AppShell.Header px="md" style={{ display: 'flex', alignItems: 'center' }}>
-        <Title order={3}>triage</Title>
-      </AppShell.Header>
+    <AppShell navbar={{ width: 220, breakpoint: 'sm' }} padding="md">
       <AppShell.Navbar p="xs">
         {pages.map((p) => (
-          <NavLink key={p.path} component={RouterNavLink} to={p.path} label={humanize(p.entity)} />
+          <NavLink
+            key={p.path}
+            component={Link}
+            to={p.path}
+            label={humanize(p.entity)}
+            active={location.pathname === p.path}
+          />
         ))}
       </AppShell.Navbar>
       <AppShell.Main>
         <Routes>
-          <Route path="/" element={<Navigate to={pages[0].path} replace />} />
           {pages.map((p) => (
             <Route key={p.path} path={p.path} element={p.element} />
           ))}

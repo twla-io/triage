@@ -1,48 +1,43 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { ActionIcon, Group, Text } from '@mantine/core'
 import { IconChevronLeft, IconChevronRight } from '@tabler/icons-react'
 import dayjs, { type Dayjs } from 'dayjs'
-import type { TimeRange } from '../api/queries/mutation'
-import { toUtcTime } from './labels'
+import type { Range } from '../api/range'
+import { wireTime } from './time'
 
-// one-range-rule: every range opens on the current week, Monday to Sunday,
-// and moves by a week.
-function mondayOf(d: Dayjs): Dayjs {
-  return d.subtract((d.day() + 6) % 7, 'day').startOf('day')
+function mondayOf(day: Dayjs): Dayjs {
+  const start = day.startOf('day')
+  return start.subtract((start.day() + 6) % 7, 'day')
 }
 
-export interface WeekRange {
-  monday: Dayjs
-  range: TimeRange
-  previous: () => void
-  next: () => void
-}
-
-export function useWeekRange(): WeekRange {
+/**
+ * A week, Monday to Sunday, opening on the current one; the read gets the
+ * half-open range from Monday 00:00 to next Monday 00:00, local time.
+ */
+export function useWeek() {
   const [monday, setMonday] = useState(() => mondayOf(dayjs()))
-  const range = useMemo(
-    () => ({ from: toUtcTime(monday.toDate()), to: toUtcTime(monday.add(7, 'day').toDate()) }),
-    [monday],
-  )
+  const range: Range = { from: wireTime(monday), to: wireTime(monday.add(1, 'week')) }
   return {
     monday,
     range,
-    previous: () => setMonday((m) => m.subtract(7, 'day')),
-    next: () => setMonday((m) => m.add(7, 'day')),
+    previous: () => setMonday((m) => m.subtract(1, 'week')),
+    next: () => setMonday((m) => m.add(1, 'week')),
   }
 }
 
-export function WeekRangePicker({ week }: { week: WeekRange }) {
+export type Week = ReturnType<typeof useWeek>
+
+export function WeekRange({ week }: { week: Week }) {
   return (
-    <Group gap="xs">
-      <ActionIcon variant="default" aria-label="previous" onClick={week.previous}>
-        <IconChevronLeft size={16} />
+    <Group gap="xs" wrap="nowrap">
+      <ActionIcon variant="subtle" onClick={week.previous}>
+        <IconChevronLeft size={18} />
       </ActionIcon>
       <Text size="sm">
         {week.monday.format('YYYY-MM-DD')} – {week.monday.add(6, 'day').format('YYYY-MM-DD')}
       </Text>
-      <ActionIcon variant="default" aria-label="next" onClick={week.next}>
-        <IconChevronRight size={16} />
+      <ActionIcon variant="subtle" onClick={week.next}>
+        <IconChevronRight size={18} />
       </ActionIcon>
     </Group>
   )

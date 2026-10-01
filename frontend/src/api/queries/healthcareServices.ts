@@ -1,19 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
-import { apiGet, apiPost } from '../client'
-import {
-  decodeCreateHealthcareServiceAnswer,
-  decodeFetchHealthcareServicesAnswer,
-  type CreateHealthcareServiceRequest,
-} from '../wire'
-import { useAnswerMutation } from './mutation'
+import { call, type Schemas } from '../client'
+import { useAnswerMutation } from '../mutation'
 
-export const useHealthcareServices = () =>
-  useQuery({
-    queryKey: ['healthcare-services'],
-    queryFn: async () => decodeFetchHealthcareServicesAnswer(await apiGet('/healthcare-services')),
-  })
+export function useHealthcareServices() {
+  return useQuery({ queryKey: ['healthcareServices'], queryFn: () => call('get', '/healthcare-services', {}) })
+}
 
-export const useCreateHealthcareService = () =>
-  useAnswerMutation(async (body: CreateHealthcareServiceRequest) =>
-    decodeCreateHealthcareServiceAnswer(await apiPost('/healthcare-services', body)),
+export function useCreateHealthcareService() {
+  return useAnswerMutation((body: Schemas['CreateHealthcareServiceRequest']) =>
+    call('post', '/healthcare-services', { body }),
   )
+}

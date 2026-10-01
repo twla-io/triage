@@ -1,91 +1,61 @@
-import type { ReactNode } from 'react'
-import { Alert, Loader, Text } from '@mantine/core'
-import type { UseQueryResult } from '@tanstack/react-query'
+import { Alert, Text } from '@mantine/core'
 import { ApiError } from '../api/client'
-import type { AnyAnswer, OkAnswer, OkOrErrorAnswer } from '../api/wire'
-import { humanize, humanizeLower } from './labels'
+import type { AnyAnswer } from '../api/answers'
+import { humanize, humanizeLower, withArticle } from './humanize'
 
-const notFound = (entity: string) => `That ${humanizeLower(entity)} no longer exists.`
-const inWrongState = (entity: string, state: string) =>
-  `This action doesn't apply to a ${humanizeLower(entity)} that is ${humanizeLower(state)}.`
-const movedOn = (entity: string, state: string) =>
-  `Someone else already acted on this ${humanizeLower(entity)}; it is now ${humanizeLower(state)}.`
-const consumed = (entity: string) => `That ${humanizeLower(entity)} was just taken by someone else.`
+function prefixOf(tag: string, suffix: string): string | null {
+  return tag.endsWith(suffix) && tag.length > suffix.length ? tag.slice(0, -suffix.length) : null
+}
 
-// One sentence per kind of answer (show-every-outcome); null for a success tag.
-export function outcomeSentence(answer: AnyAnswer): string | null {
+function movedOn(entity: string, now: string): string {
+  return `Someone else already acted on this ${humanizeLower(entity)}; it is now ${humanizeLower(now)}.`
+}
+
+/**
+ * One sentence per kind of answer, filled from its tag and `detail`.
+ * `entity` is the entity the action acts on, for a bare `movedOn`.
+ */
+export function outcomeSentence(answer: AnyAnswer, entity: string): string {
   switch (answer.outcome) {
-    case 'ok':
-    case 'transitioned':
-    case 'matched':
-    case 'slotCreated':
-      return null
-    case 'matchAttempted':
-      return outcomeSentence(answer.detail)
-    case 'doctorNotFound':
-      return notFound('doctor')
-    case 'patientNotFound':
-      return notFound('patient')
-    case 'healthcareServiceNotFound':
-      return notFound('healthcareService')
-    case 'intakeRequestNotFound':
-      return notFound('intakeRequest')
     case 'intakeRequestInWrongState':
-      return inWrongState('intakeRequest', answer.detail.type)
+      return `This action doesn't apply to ${withArticle(prefixOf(answer.outcome, 'InWrongState') ?? entity)} that is ${humanizeLower(answer.detail.type)}.`
     case 'movedOn':
-      // `movedOn` carries the request in its current state (detail: IntakeRequest).
-      return movedOn('intakeRequest', answer.detail.type)
+      return movedOn(entity, answer.detail.type)
     case 'intakeRequestMovedOn':
-      return movedOn('intakeRequest', answer.detail.type)
-    case 'availableSlotConsumed':
-      return consumed('availableSlot')
-    case 'slotDoesNotMatchIntakeRequest':
-    case 'slotOverlapsDoctorCalendar':
-    case 'noMatchingIntakeRequest':
+      return movedOn(prefixOf(answer.outcome, 'MovedOn') ?? entity, answer.detail.type)
+    case 'matchAttempted':
+      return outcomeSentence(answer.detail, entity)
+    default: {
+      const missing = prefixOf(answer.outcome, 'NotFound')
+      if (missing !== null) return `That ${humanizeLower(missing)} no longer exists.`
+      const consumed = prefixOf(answer.outcome, 'Consumed')
+      if (consumed !== null) return `That ${humanizeLower(consumed)} was just taken by someone else.`
       return humanize(answer.outcome)
+    }
   }
 }
 
-export function OutcomeText({ sentence }: { sentence: string | null }) {
-  if (sentence === null) return null
+/** A failure (non-200 status or network): red, with its status and body. */
+export function ErrorBanner({ error }: { error: Error }) {
+  if (error instanceof ApiError) {
+    return (
+      <Alert color="red" title={error.status}>
+        <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{error.body}</Text>
+      </Alert>
+    )
+  }
   return (
-    <Alert color="gray" variant="light">
-      <Text size="sm">{sentence}</Text>
+    <Alert color="red">
+      <Text size="sm">{error.message}</Text>
     </Alert>
   )
 }
 
-// A non-200 status (or an answer that doesn't decode): status and body.
-export function ErrorBanner({ error }: { error: unknown }) {
-  if (error === null || error === undefined) return null
-  const title = error instanceof ApiError ? `Error ${error.status}` : 'Error'
-  const body = error instanceof ApiError ? error.body : error instanceof Error ? error.message : String(error)
+/** A non-success answer: yellow, one sentence. */
+export function AnswerBanner({ answer, entity }: { answer: AnyAnswer; entity: string }) {
   return (
-    <Alert color="red" variant="light" title={title}>
-      <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>
-        {body}
-      </Text>
+    <Alert color="yellow">
+      <Text size="sm">{outcomeSentence(answer, entity)}</Text>
     </Alert>
   )
-}
-
-// Renders a read's answer: its `ok` detail through `children`, any other tag
-// by its sentence, a failed request by an error banner.
-export function ReadAnswer<T>({
-  query,
-  children,
-}: {
-  query: UseQueryResult<OkAnswer<T> | OkOrErrorAnswer<T>>
-  children: (detail: T) => ReactNode
-}) {
-  if (query.isPending) return <Loader size="sm" />
-  if (query.isError) return <ErrorBanner error={query.error} />
-  const answer = query.data
-  if (answer.outcome === 'ok') return <>{children(answer.detail)}</>
-  return <OutcomeText sentence={outcomeSentence(answer)} />
-}
-
-// The `ok` detail of a read, if there is one (for selects and name lookups).
-export function okDetail<T>(answer: OkAnswer<T> | OkOrErrorAnswer<T> | undefined): T | undefined {
-  return answer !== undefined && answer.outcome === 'ok' ? answer.detail : undefined
 }
