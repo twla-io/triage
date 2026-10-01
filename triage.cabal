@@ -27,14 +27,16 @@ library
     , aeson
     , bytestring
     , containers
+    , http-api-data
+    , insert-ordered-containers
     , lens
+    , openapi3
     , postgresql-simple
     , resource-pool
     , servant
+    , servant-openapi3
     , servant-server
-    , servant-swagger
     , servant-swagger-ui
-    , swagger2
     , text
     , time
     , transformers
@@ -63,10 +65,10 @@ test-suite triage-test
     , triage
     , aeson
     , hspec
+    , insert-ordered-containers
+    , lens
+    , openapi3
     , QuickCheck
-    , servant
-    , servant-swagger
-    , swagger2
     , text
     , time
     , uuid

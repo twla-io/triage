@@ -1,13 +1,12 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
+{-# LANGUAGE ScopedTypeVariables   #-}
+{-# LANGUAGE TypeApplications      #-}
 -- Arbitrary instances for Domain types are necessarily orphans here:
--- Domain.hs has no QuickCheck dependency by design. Same reasoning
--- extends to Transport.hs's DTOs below (no QuickCheck dependency
--- either). aeson's own Value needed a ToSchema orphan too, but that one
--- lives in Transport.hs, not here -- Api.hs's own toSwagger call needs
--- it at the library level, not just in this test suite (see
--- Transport.hs's SWAGGER SCHEMA HELPERS section).
+-- Domain.hs has no QuickCheck dependency by design. Transport.hs's DTOs
+-- get no Arbitrary instances: their values are built from Domain values
+-- by their fromDomain functions.
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Main (main) where
@@ -18,13 +17,19 @@ import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 import Data.Maybe (isJust)
 
+import Control.Lens ((%~), (&), (.~), (?~), (^.), _Just)
+import Data.Aeson (ToJSON, Value (Null), toJSON)
+import Data.OpenApi
+  ( AdditionalProperties (..), OpenApiItems (..), Referenced (..), Schema, ToSchema, declareSchema
+  , additionalProperties, allOf, anyOf, enum_, items, not_, nullable, oneOf, properties )
+import Data.OpenApi.Declare (runDeclare)
+import Data.OpenApi.Schema.Validation (validateJSON)
+import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import Data.Time (UTCTime (..), fromGregorian, addUTCTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import Domain
-import Data.Aeson (ToJSON)
-import Data.Swagger (ToSchema, validateToJSON)
 import qualified Transport as T
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -175,8 +180,9 @@ overlapsNaive a b =
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- WIRE-FORMAT GENERATORS
--- Every lifecycle case and nested sum, so each DTO is checked on real
--- Domain values converted by its fromDomain function.
+-- Every case of every sum type and every outcome of every answer, so each
+-- DTO and answer is checked on real Domain values converted by its
+-- fromDomain function.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 genAnyPriority :: Gen IntakeRequestPriority
@@ -185,6 +191,14 @@ genAnyPriority = oneof
   , Urgent    . MustBeSeenBy <$> genMoment
   , Routine <$> genRoutineDue
   ]
+
+genRoutineWindow :: Gen RoutineWindow
+genRoutineWindow = do
+  a <- genMoment
+  b <- genMoment
+  case mkRoutineWindow (min a b) (max a b) of
+    Just window -> pure window
+    Nothing     -> error "genRoutineWindow: min > max"
 
 genDoctorRequirement :: Gen DoctorRequirement
 genDoctorRequirement = oneof [pure AnyDoctor, SpecificDoctor <$> arbitrary]
@@ -209,36 +223,140 @@ genParty = elements [minBound .. maxBound]
 genNote :: Gen (Maybe Text)
 genNote = elements [Nothing, Just "a note"]
 
+genCancellation :: Gen Cancellation
+genCancellation = Cancellation <$> genParty <*> genMoment <*> genNote
+
 genCloseReason :: Gen CloseReason
 genCloseReason = oneof
   [ pure Completed
-  , Cancelled <$> (Cancellation <$> genParty <*> genMoment <*> genNote)
+  , Cancelled <$> genCancellation
   , NoShow . Absence <$> genParty
   ]
+
+genRejected :: Gen RejectedIntakeRequest
+genRejected = RejectedIntakeRequest <$> genSubmittedIntakeRequest <*> genMoment <*> pure "no"
+
+genWithdrawnFrom :: Gen WithdrawnFrom
+genWithdrawnFrom = oneof [FromSubmitted <$> genSubmittedIntakeRequest, FromAccepted <$> genAnyTriaged]
+
+genWithdrawn :: Gen WithdrawnIntakeRequest
+genWithdrawn = WithdrawnIntakeRequest <$> genWithdrawnFrom <*> genMoment <*> genNote
+
+genStale :: Gen StaleIntakeRequest
+genStale = StaleIntakeRequest <$> genAnyTriaged <*> genMoment
+
+genClosed :: Gen ClosedIntakeRequest
+genClosed = ClosedIntakeRequest <$> genAppointed <*> genCloseReason
 
 genIntakeRequest :: Gen IntakeRequest
 genIntakeRequest = oneof
   [ Submitted <$> genSubmittedIntakeRequest
-  , Rejected <$> (RejectedIntakeRequest <$> genSubmittedIntakeRequest <*> genMoment <*> pure "no")
-  , Accepted <$> genAnyTriaged
+  , Rejected  <$> genRejected
+  , Accepted  <$> genAnyTriaged
   , Appointed <$> genAppointed
-  , Withdrawn <$> (WithdrawnIntakeRequest
-                    <$> oneof [FromSubmitted <$> genSubmittedIntakeRequest, FromAccepted <$> genAnyTriaged]
-                    <*> genMoment <*> genNote)
-  , Stale <$> (StaleIntakeRequest <$> genAnyTriaged <*> genMoment)
-  , Closed <$> (ClosedIntakeRequest <$> genAppointed <*> genCloseReason)
+  , Withdrawn <$> genWithdrawn
+  , Stale     <$> genStale
+  , Closed    <$> genClosed
   ]
+
+genDoctor :: Gen Doctor
+genDoctor = (\did -> Doctor did "Dr A") <$> arbitrary
+
+genPatient :: Gen Patient
+genPatient = (\pid -> Patient pid "Patient P") <$> arbitrary
+
+-- Request bodies.
+
+genCancellationRequest :: Gen T.CancellationRequest
+genCancellationRequest = T.CancellationRequest <$> (T.fromDomainAppointmentParty <$> genParty) <*> genNote
 
 genCloseReasonRequest :: Gen T.CloseReasonRequest
 genCloseReasonRequest = oneof
   [ pure T.CompletedRequest
-  , T.CancelledRequest <$> (T.CancellationRequest <$> (T.fromDomainAppointmentParty <$> genParty) <*> genNote)
+  , T.CancelledRequest <$> genCancellationRequest
   , T.NoShowRequest . T.fromDomainAbsence . Absence <$> genParty
   ]
 
--- A value's JSON is valid against its own schema.
-matchesSchema :: (ToJSON a, ToSchema a) => a -> Property
-matchesSchema x = validateToJSON x === []
+-- Answers.
+
+genServiceError :: Gen T.ServiceErrorDTO
+genServiceError = oneof
+  [ T.DoctorNotFoundDTO . T.fromDomainDoctorId <$> arbitrary
+  , T.PatientNotFoundDTO . T.fromDomainPatientId <$> arbitrary
+  , T.HealthcareServiceNotFoundDTO . T.fromDomainHealthcareServiceId <$> arbitrary
+  , T.IntakeRequestNotFoundDTO . T.fromDomainIntakeRequestId <$> arbitrary
+  , T.IntakeRequestInWrongStateDTO . T.fromDomainIntakeRequest <$> genIntakeRequest
+  , pure T.SlotDoesNotMatchIntakeRequestDTO
+  ]
+
+orError :: Gen a -> Gen (Either T.ServiceErrorDTO a)
+orError g = oneof [Left <$> genServiceError, Right <$> g]
+
+okOf :: Gen a -> Gen (T.Ok a)
+okOf = fmap T.Ok
+
+genTransition :: Gen a -> Gen (T.TransitionOutcomeDTO a)
+genTransition g = oneof
+  [ T.TransitionedDTO <$> g
+  , T.MovedOnDTO . T.fromDomainIntakeRequest <$> genIntakeRequest
+  ]
+
+genMatchOutcome :: Gen T.MatchOutcomeDTO
+genMatchOutcome = oneof
+  [ T.MatchedDTO . T.fromDomainAppointedIntakeRequest <$> genAppointed
+  , pure T.AvailableSlotConsumedDTO
+  , T.IntakeRequestMovedOnDTO . T.fromDomainIntakeRequest <$> genIntakeRequest
+  ]
+
+genPriorityMatchOutcome :: Gen T.PriorityMatchOutcomeDTO
+genPriorityMatchOutcome = oneof [pure T.NoMatchingIntakeRequestDTO, T.MatchAttemptedDTO <$> genMatchOutcome]
+
+genSlotCreationOutcome :: Gen T.SlotCreationOutcomeDTO
+genSlotCreationOutcome = oneof
+  [ T.SlotCreatedDTO . T.fromDomainAvailableSlot <$> genAnySlot
+  , pure T.SlotOverlapsDoctorCalendarDTO
+  ]
+
+-- Short lists, possibly empty.
+shortListOf :: Gen a -> Gen [a]
+shortListOf g = choose (0, 3) >>= \n -> vectorOf n g
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- SCHEMA CHECK
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- openapi3's validator ignores nullable, so for the check only, every
+-- nullable schema becomes oneOf itself or null. The published schema is
+-- unchanged.
+admitNull :: Schema -> Schema
+admitNull s = case (s ^. nullable, s ^. enum_) of
+  (Just True, Nothing) ->
+    mempty & oneOf ?~ [Inline (inner & nullable .~ Nothing), Inline (mempty & enum_ ?~ [Null])]
+  _ -> inner
+  where
+    inner = s
+      & properties %~ fmap onRef
+      & items . _Just %~ onItems
+      & oneOf . _Just %~ map onRef
+      & allOf . _Just %~ map onRef
+      & anyOf . _Just %~ map onRef
+      & not_ . _Just %~ onRef
+      & additionalProperties . _Just %~ onAdditional
+    onRef (Inline x) = Inline (admitNull x)
+    onRef r          = r
+    onItems (OpenApiItemsObject r) = OpenApiItemsObject (onRef r)
+    onItems (OpenApiItemsArray rs) = OpenApiItemsArray (map onRef rs)
+    onAdditional (AdditionalPropertiesSchema r) = AdditionalPropertiesSchema (onRef r)
+    onAdditional a                              = a
+
+-- A value's JSON is valid against its own schema; for a oneOf, against
+-- exactly one case (the validator rejects a value matching several).
+matchesSchema :: forall a. (ToJSON a, ToSchema a) => a -> Property
+matchesSchema x =
+  counterexample (show (toJSON x)) $
+    validateJSON (fmap admitNull defs) (admitNull schema) (toJSON x) === []
+  where
+    (defs, schema) = runDeclare (declareSchema (Proxy @a)) mempty
 
 -- ═══════════════════════════════════════════════════════════════════════════
 
@@ -462,38 +580,142 @@ main = hspec $ do
       service <- genService
       newId   <- arbitrary
       pure $ isJust (mkDoctorCalendar [entry] >>= \c -> addAvailableSlot c newId did2 service (doctorCalendarEntryStart entry))
-  describe "wire format: every DTO's ToJSON matches its ToSchema" $ do
-    prop "IntakeRequest (every case)"   $ forAll genIntakeRequest (matchesSchema . T.fromDomainIntakeRequest)
-    prop "IntakeRequestPriority"        $ forAll genAnyPriority (matchesSchema . T.fromDomainIntakeRequestPriority)
-    prop "DoctorRequirement"            $ forAll genDoctorRequirement (matchesSchema . T.fromDomainDoctorRequirement)
-    prop "CloseReason"                  $ forAll genCloseReason (matchesSchema . T.fromDomainCloseReason)
-    prop "AvailableSlot"                $ forAll genAnySlot
-                                            (matchesSchema . T.fromDomainAvailableSlot)
-    prop "DoctorCalendarEntry"          $ forAll genDoctorCalendarEntries
-                                            (conjoin . map (matchesSchema . T.fromDomainDoctorCalendarEntry))
-    prop "HealthcareService"            $ forAll genService (matchesSchema . T.fromDomainHealthcareService)
-    prop "Doctor and Patient"           $ \did pid ->
-      matchesSchema (T.fromDomainDoctor (Doctor did "Dr A"))
-        .&&. matchesSchema (T.fromDomainPatient (Patient pid "Patient P"))
-    prop "request bodies" $ do
-      tr <- genAnyTriaged
-      slot    <- genAnySlot
-      service <- genService
-      close   <- genCloseReasonRequest
-      note    <- genNote
-      pure $ conjoin
-        [ matchesSchema (T.CreateDoctorRequest "Dr A")
-        , matchesSchema (T.CreatePatientRequest "Patient P")
-        , matchesSchema (T.CreateHealthcareServiceRequest "Consultation" (T.fromDomainDuration service.duration))
-        , matchesSchema (T.SubmitIntakeRequestRequest (T.fromDomainPatientId tr.submitted.patientId) "needs care")
-        , matchesSchema (T.AcceptSubmittedIntakeRequestRequest
-            (T.fromDomainHealthcareServiceId tr.healthcareServiceId)
-            (T.fromDomainIntakeRequestPriority tr.priority)
-            (T.fromDomainDoctorRequirement tr.doctorRequirement))
-        , matchesSchema (T.RejectSubmittedIntakeRequestRequest "no")
-        , matchesSchema (T.MatchAcceptedIntakeRequestToSlotRequest (T.fromDomainSlotId slot.id))
-        , matchesSchema (T.WithdrawIntakeRequestRequest note)
-        , matchesSchema (T.CloseAppointedIntakeRequestRequest close)
-        , matchesSchema (T.CreateAvailableSlotRequest (T.fromDomainDoctorId slot.doctorId)
-            (T.fromDomainHealthcareServiceId slot.healthcareServiceId) slot.start)
-        ]
+  describe "wire format: every DTO's ToJSON matches its OpenAPI 3 schema" $ do
+    prop "IDs" $ \did pid sid rid slid ->
+           matchesSchema (T.fromDomainDoctorId did)
+      .&&. matchesSchema (T.fromDomainPatientId pid)
+      .&&. matchesSchema (T.fromDomainHealthcareServiceId sid)
+      .&&. matchesSchema (T.fromDomainIntakeRequestId rid)
+      .&&. matchesSchema (T.fromDomainSlotId slid)
+    prop "Duration"               $ forAll arbitrary (matchesSchema . T.fromDomainDuration)
+    prop "Doctor"                 $ forAll genDoctor (matchesSchema . T.fromDomainDoctor)
+    prop "Patient"                $ forAll genPatient (matchesSchema . T.fromDomainPatient)
+    prop "HealthcareService"      $ forAll genService (matchesSchema . T.fromDomainHealthcareService)
+    prop "DoctorRequirement"      $ forAll genDoctorRequirement (matchesSchema . T.fromDomainDoctorRequirement)
+    prop "MustBeSeenBy"           $ forAll genMoment (matchesSchema . T.fromDomainMustBeSeenBy . MustBeSeenBy)
+    prop "RoutineWindow"          $ forAll genRoutineWindow (matchesSchema . T.fromDomainRoutineWindow)
+    prop "RoutineDue"             $ forAll genRoutineDue (matchesSchema . T.fromDomainRoutineDue)
+    prop "IntakeRequestPriority"  $ forAll genAnyPriority (matchesSchema . T.fromDomainIntakeRequestPriority)
+    prop "SubmittedIntakeRequest" $
+      forAll genSubmittedIntakeRequest (matchesSchema . T.fromDomainSubmittedIntakeRequest)
+    prop "RejectedIntakeRequest"  $ forAll genRejected (matchesSchema . T.fromDomainRejectedIntakeRequest)
+    prop "TriagedIntakeRequest"   $ forAll genAnyTriaged (matchesSchema . T.fromDomainTriagedIntakeRequest)
+    prop "AppointedIntakeRequest" $ forAll genAppointed (matchesSchema . T.fromDomainAppointedIntakeRequest)
+    prop "WithdrawnFrom"          $ forAll genWithdrawnFrom (matchesSchema . T.fromDomainWithdrawnFrom)
+    prop "WithdrawnIntakeRequest" $ forAll genWithdrawn (matchesSchema . T.fromDomainWithdrawnIntakeRequest)
+    prop "StaleIntakeRequest"     $ forAll genStale (matchesSchema . T.fromDomainStaleIntakeRequest)
+    prop "AppointmentParty"       $ forAll genParty (matchesSchema . T.fromDomainAppointmentParty)
+    prop "Cancellation"           $ forAll genCancellation (matchesSchema . T.fromDomainCancellation)
+    prop "Absence"                $ forAll genParty (matchesSchema . T.fromDomainAbsence . Absence)
+    prop "CloseReason"            $ forAll genCloseReason (matchesSchema . T.fromDomainCloseReason)
+    prop "ClosedIntakeRequest"    $ forAll genClosed (matchesSchema . T.fromDomainClosedIntakeRequest)
+    prop "IntakeRequest (every case)" $ forAll genIntakeRequest (matchesSchema . T.fromDomainIntakeRequest)
+    prop "AvailableSlot"          $ forAll genAnySlot (matchesSchema . T.fromDomainAvailableSlot)
+    prop "DoctorCalendarEntry"    $ forAll genDoctorCalendarEntries
+                                      (conjoin . map (matchesSchema . T.fromDomainDoctorCalendarEntry))
+
+  describe "wire format: every request body's ToJSON matches its OpenAPI 3 schema" $ do
+    prop "CreateDoctorRequest"  $ matchesSchema (T.CreateDoctorRequest "Dr A")
+    prop "CreatePatientRequest" $ matchesSchema (T.CreatePatientRequest "Patient P")
+    prop "CreateHealthcareServiceRequest" $ forAll arbitrary $ \d ->
+      matchesSchema (T.CreateHealthcareServiceRequest "Consultation" (T.fromDomainDuration d))
+    prop "SubmitIntakeRequestRequest" $ \pid ->
+      matchesSchema (T.SubmitIntakeRequestRequest (T.fromDomainPatientId pid) "needs care")
+    prop "AcceptSubmittedIntakeRequestRequest" $ forAll genAnyTriaged $ \tr ->
+      matchesSchema (T.AcceptSubmittedIntakeRequestRequest
+        (T.fromDomainHealthcareServiceId tr.healthcareServiceId)
+        (T.fromDomainIntakeRequestPriority tr.priority)
+        (T.fromDomainDoctorRequirement tr.doctorRequirement))
+    prop "RejectSubmittedIntakeRequestRequest" $ matchesSchema (T.RejectSubmittedIntakeRequestRequest "no")
+    prop "MatchAcceptedIntakeRequestToSlotRequest" $ \slid ->
+      matchesSchema (T.MatchAcceptedIntakeRequestToSlotRequest (T.fromDomainSlotId slid))
+    prop "WithdrawIntakeRequestRequest" $ forAll genNote (matchesSchema . T.WithdrawIntakeRequestRequest)
+    prop "CancellationRequest" $ forAll genCancellationRequest matchesSchema
+    prop "CloseReasonRequest"  $ forAll genCloseReasonRequest matchesSchema
+    prop "CloseAppointedIntakeRequestRequest" $
+      forAll genCloseReasonRequest (matchesSchema . T.CloseAppointedIntakeRequestRequest)
+    prop "CreateAvailableSlotRequest" $ forAll genAnySlot $ \slot ->
+      matchesSchema (T.CreateAvailableSlotRequest (T.fromDomainDoctorId slot.doctorId)
+        (T.fromDomainHealthcareServiceId slot.healthcareServiceId) slot.start)
+
+  describe "wire format: every answer's ToJSON matches its OpenAPI 3 schema" $ do
+    prop "MatchOutcome (nested envelope)" $ forAll genMatchOutcome matchesSchema
+    prop "CreateDoctorAnswer" $
+      forAll (okOf (T.fromDomainDoctor <$> genDoctor)) (matchesSchema @T.CreateDoctorAnswer . T.Answer)
+    prop "CreatePatientAnswer" $
+      forAll (okOf (T.fromDomainPatient <$> genPatient)) (matchesSchema @T.CreatePatientAnswer . T.Answer)
+    prop "CreateHealthcareServiceAnswer" $
+      forAll (okOf (T.fromDomainHealthcareService <$> genService))
+        (matchesSchema @T.CreateHealthcareServiceAnswer . T.Answer)
+    prop "SubmitIntakeRequestAnswer" $
+      forAll (orError (okOf (T.fromDomainSubmittedIntakeRequest <$> genSubmittedIntakeRequest)))
+        (matchesSchema @T.SubmitIntakeRequestAnswer . T.Answer)
+    prop "AcceptSubmittedIntakeRequestAnswer" $
+      forAll (orError (genTransition (T.fromDomainTriagedIntakeRequest <$> genAnyTriaged)))
+        (matchesSchema @T.AcceptSubmittedIntakeRequestAnswer . T.Answer)
+    prop "RejectSubmittedIntakeRequestAnswer" $
+      forAll (orError (genTransition (T.fromDomainRejectedIntakeRequest <$> genRejected)))
+        (matchesSchema @T.RejectSubmittedIntakeRequestAnswer . T.Answer)
+    prop "MatchAcceptedIntakeRequestToSlotAnswer" $
+      forAll (orError genMatchOutcome) (matchesSchema @T.MatchAcceptedIntakeRequestToSlotAnswer . T.Answer)
+    prop "WithdrawIntakeRequestAnswer" $
+      forAll (orError (genTransition (T.fromDomainWithdrawnIntakeRequest <$> genWithdrawn)))
+        (matchesSchema @T.WithdrawIntakeRequestAnswer . T.Answer)
+    prop "MarkAcceptedIntakeRequestStaleAnswer" $
+      forAll (orError (genTransition (T.fromDomainStaleIntakeRequest <$> genStale)))
+        (matchesSchema @T.MarkAcceptedIntakeRequestStaleAnswer . T.Answer)
+    prop "CloseAppointedIntakeRequestAnswer" $
+      forAll (orError (genTransition (T.fromDomainClosedIntakeRequest <$> genClosed)))
+        (matchesSchema @T.CloseAppointedIntakeRequestAnswer . T.Answer)
+    prop "MatchAvailableSlotByPriorityAnswer" $
+      forAll (orError genPriorityMatchOutcome)
+        (matchesSchema @T.MatchAvailableSlotByPriorityAnswer . T.Answer)
+    prop "CreateAvailableSlotAnswer" $
+      forAll (orError genSlotCreationOutcome) (matchesSchema @T.CreateAvailableSlotAnswer . T.Answer)
+    prop "FetchDoctorAnswer" $
+      forAll (orError (okOf (T.fromDomainDoctor <$> genDoctor))) (matchesSchema @T.FetchDoctorAnswer . T.Answer)
+    prop "FetchDoctorsAnswer" $
+      forAll (okOf (shortListOf (T.fromDomainDoctor <$> genDoctor)))
+        (matchesSchema @T.FetchDoctorsAnswer . T.Answer)
+    prop "FetchPatientAnswer" $
+      forAll (orError (okOf (T.fromDomainPatient <$> genPatient)))
+        (matchesSchema @T.FetchPatientAnswer . T.Answer)
+    prop "FetchPatientsAnswer" $
+      forAll (okOf (shortListOf (T.fromDomainPatient <$> genPatient)))
+        (matchesSchema @T.FetchPatientsAnswer . T.Answer)
+    prop "FetchHealthcareServiceAnswer" $
+      forAll (orError (okOf (T.fromDomainHealthcareService <$> genService)))
+        (matchesSchema @T.FetchHealthcareServiceAnswer . T.Answer)
+    prop "FetchHealthcareServicesAnswer" $
+      forAll (orError (okOf (shortListOf (T.fromDomainHealthcareService <$> genService))))
+        (matchesSchema @T.FetchHealthcareServicesAnswer . T.Answer)
+    prop "FetchAvailableSlotAnswer" $
+      forAll (orError (oneof [pure Nothing, Just . T.fromDomainAvailableSlot <$> genAnySlot]))
+        (matchesSchema @T.FetchAvailableSlotAnswer . T.Answer)
+    prop "FetchIntakeRequestAnswer" $
+      forAll (orError (okOf (T.fromDomainIntakeRequest <$> genIntakeRequest)))
+        (matchesSchema @T.FetchIntakeRequestAnswer . T.Answer)
+    prop "FetchSubmittedIntakeRequestsAnswer" $
+      forAll (orError (okOf (shortListOf (T.fromDomainSubmittedIntakeRequest <$> genSubmittedIntakeRequest))))
+        (matchesSchema @T.FetchSubmittedIntakeRequestsAnswer . T.Answer)
+    prop "FetchAcceptedIntakeRequestsAnswer" $
+      forAll (orError (okOf (shortListOf (T.fromDomainTriagedIntakeRequest <$> genAnyTriaged))))
+        (matchesSchema @T.FetchAcceptedIntakeRequestsAnswer . T.Answer)
+    prop "FetchAppointedIntakeRequestsAnswer" $
+      forAll (orError (okOf (shortListOf (T.fromDomainAppointedIntakeRequest <$> genAppointed))))
+        (matchesSchema @T.FetchAppointedIntakeRequestsAnswer . T.Answer)
+    prop "FetchRejectedIntakeRequestsByRejectedAtAnswer" $
+      forAll (orError (okOf (shortListOf (T.fromDomainRejectedIntakeRequest <$> genRejected))))
+        (matchesSchema @T.FetchRejectedIntakeRequestsByRejectedAtAnswer . T.Answer)
+    prop "FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer" $
+      forAll (orError (okOf (shortListOf (T.fromDomainWithdrawnIntakeRequest <$> genWithdrawn))))
+        (matchesSchema @T.FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer . T.Answer)
+    prop "FetchStaleIntakeRequestsByStaleAtAnswer" $
+      forAll (orError (okOf (shortListOf (T.fromDomainStaleIntakeRequest <$> genStale))))
+        (matchesSchema @T.FetchStaleIntakeRequestsByStaleAtAnswer . T.Answer)
+    prop "FetchClosedIntakeRequestsByStartAnswer" $
+      forAll (orError (okOf (shortListOf (T.fromDomainClosedIntakeRequest <$> genClosed))))
+        (matchesSchema @T.FetchClosedIntakeRequestsByStartAnswer . T.Answer)
+    prop "FetchDoctorCalendarEntriesOverlappingAnswer" $
+      forAll (orError (okOf (map T.fromDomainDoctorCalendarEntry <$> genDoctorCalendarEntries)))
+        (matchesSchema @T.FetchDoctorCalendarEntriesOverlappingAnswer . T.Answer)

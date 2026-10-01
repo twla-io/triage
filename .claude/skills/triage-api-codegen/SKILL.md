@@ -1,6 +1,6 @@
 ---
 name: triage-api-codegen
-description: Generate the HTTP API — src/Transport.hs (JSON DTOs) and src/Api.hs (Servant routes and handlers) — from triage's Domain.hs and Service.hs. Use this skill whenever designing, generating, or extending API endpoints, routes, request/response bodies, JSON encodings or Swagger schemas for the triage domain model. Trigger this even if the user just says "build the API" or "add an endpoint for X" without mentioning Domain.hs explicitly. Do not use this skill for database schema, Persistence or Service generation (triage-db-codegen, triage-service-codegen) or for the UI (triage-ui-codegen).
+description: Generate the HTTP API — src/Transport.hs (JSON DTOs) and src/Api.hs (Servant routes and handlers) — from triage's Domain.hs and Service.hs. Use this skill whenever designing, generating, or extending API endpoints, routes, request/response bodies, JSON encodings or OpenAPI schemas for the triage domain model. Trigger this even if the user just says "build the API" or "add an endpoint for X" without mentioning Domain.hs explicitly. Do not use this skill for database schema, Persistence or Service generation (triage-db-codegen, triage-service-codegen) or for the UI (triage-ui-codegen).
 ---
 
 # triage-api-codegen
@@ -35,6 +35,14 @@ This skill says only how those become JSON and routes. It names no Domain type o
 - **An enumeration** is an object with only `"type"`.
 - **No key is `null` for "hasn't reached this stage yet"**: a case's object has exactly its own keys. A `Maybe` field's key is always present; an absent value is `null`.
 
+### `schemas-follow-cases`
+The spec is OpenAPI 3 (`openapi3`, `servant-openapi3`), served at `/openapi.json`, with Swagger UI at `/swagger-ui`. Every schema states exactly what `ToJSON` produces:
+- **A record** is an object schema with exactly its keys, all required. A `Maybe` field's key is required and its schema is `nullable: true`.
+- **A sum type** is `oneOf` one named schema per case, `<Type><Constructor>`, with `discriminator: {propertyName: "type"}`. Each case's schema has `type` as a one-value enum plus exactly that case's keys (stages flattened, per `tagged-flat-serialization`). Cases are never merged into one object. A case whose keys depend on a nested tag (a flattened field whose sum's cases carry different stages) is itself `oneOf` its variants, named `<Type><Constructor><InnerConstructor>`; a sum containing such a case has no `discriminator`, since one can only map to an object schema.
+- **An enumeration** is one object schema whose `type` is an enum of its constructors.
+- **Each answer** (`<Function>Answer`) is `oneOf` one schema per outcome tag, `{outcome: <that tag>, detail: <that payload's schema, or null>}`, with `discriminator: {propertyName: "outcome"}`. So `detail` is typed per outcome.
+- **Names:** each answer case's schema is `<Function>Answer<Constructor>` (e.g. `FetchDoctorAnswerOk`); a nested answer type keeps its own name (`<Type><Constructor>`). A request variant of a type that loses a time the server records is `<Type>Request`, its cases `<Type>Request<Constructor>`.
+
 ### `opaque-uuid-ids`
 Every ID is a plain UUID string, never wrapped. Distinct ID types stay distinct in the schema and in path parameter names.
 
@@ -42,7 +50,7 @@ Every ID is a plain UUID string, never wrapped. Distinct ID types stay distinct 
 - One DTO per `Domain.hs` type that crosses the wire, named `<Type>DTO`, with hand-written `ToJSON`, `FromJSON` and `ToSchema`. Never `Generic`-derived, and never an instance on a `Domain.hs` type.
 - `toDomain<Type>` / `fromDomain<Type>` convert at the boundary. A sealed type is decoded only through its smart constructor; a refusal is a parse failure (`400`).
 - A request body is a `<Function>Request` type, named after its Service function, holding exactly that function's caller-supplied facts; a function with none takes no body. A `Domain.hs` value the caller supplies whole but that contains a time the server records gets a request type without that time, converted once the handler has it.
-- **Check:** a test validates every body type's `ToJSON` against its `ToSchema` (`triage-test`).
+- **Check:** a test validates every DTO's and every answer's `ToJSON` against its schema (`triage-test`); a sum type's value must match exactly one case. `openapi3`'s validator ignores `nullable`, so the test accepts `null` for a `Maybe` field itself; the published spec stays standard OpenAPI 3.0.
 
 ## Routes (`Api.hs`)
 
@@ -79,7 +87,7 @@ Every time a Service function takes as "when this happened" is supplied by the h
 | `200` | Service ran and answered: success, every outcome, and every `ServiceError` except a decode failure, discriminated in the body |
 | `500` | outside the domain's vocabulary: a decode failure, a database failure, anything unexpected |
 
-An id that doesn't exist is a `200` with its not-found answer, never a `404`: Service ran a query to find that out. A `500` body is plain text and exposes no internals.
+An id that doesn't exist is a `200` with its not-found answer, never a `404`: Service ran a query to find that out. A `500` body is plain text and exposes no internals. Every `500` is written to stderr with its cause (for a decode failure, the `DecodeError`), in one place every handler passes through; no other path may answer `500`.
 
 ### The response envelope
 - **Every** `200` body, for mutations and reads alike, is `{"outcome": <tag>, "detail": <payload or null>}`, so a client parses every answer the same way.
@@ -92,7 +100,7 @@ The rendering of each Service answer type is written once, as one exhaustive fun
 - **Framework:** Servant: routes and handlers correspond at compile time.
 - **One module, `Api.hs`,** with the API type grouped per resource (one sub-API per table, composed with `:<|>`). Each resource's route type, handlers and server sit together in a banner-commented section, because Servant matches handlers to routes by position and small groups contain a misordering.
 - **Handlers** run in `AppM = ReaderT ConnectionPool Handler`, with no environment record; `hoistServer` supplies the pool once.
-- **Configuration:** `TRIAGE_DB_URL` (default `postgresql://localhost/triage`) and `TRIAGE_PORT` (default 8080; a malformed value fails at startup). The pool holds 10 connections with a 60-second idle timeout. CORS allows the frontend's origin. Swagger UI is at `/swagger-ui`, and the spec at `/swagger.json`.
+- **Configuration:** `TRIAGE_DB_URL` (default `postgresql://localhost/triage`) and `TRIAGE_PORT` (default 8080; a malformed value fails at startup). The pool holds 10 connections with a 60-second idle timeout. CORS allows the frontend's origin. Swagger UI is at `/swagger-ui`, and the OpenAPI 3 spec at `/openapi.json`.
 - **`main` only serves.** Migrations are a separate, manual step.
 
 ## When unsure
