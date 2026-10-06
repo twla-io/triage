@@ -19,15 +19,17 @@ module Main (main) where
 
 import Prelude hiding (id)
 
+import Control.Concurrent         (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception          (bracket, try)
 import Data.Maybe                 (fromMaybe)
 import Data.Pool                  (defaultPoolConfig, destroyAllResources, newPool, withResource)
 import Data.String                (fromString)
 import Data.Time                  (UTCTime (..), addUTCTime, fromGregorian)
 import Data.UUID.V4               (nextRandom)
-import Database.PostgreSQL.Simple (Connection, SqlError (..), close, connectPostgreSQL,
-                                   execute, execute_)
+import Database.PostgreSQL.Simple (Connection, Only (..), SqlError (..), begin, close,
+                                   connectPostgreSQL, execute, execute_, query_)
 import System.Environment         (lookupEnv)
+import System.Timeout             (timeout)
 import Test.Hspec
 
 import qualified Data.UUID  as UUID
@@ -118,6 +120,18 @@ appoint pool fx at = do
   slot <- slotAt pool fx at
   Right (IntakeRequestMatchedToSlot a) <- S.matchAcceptedIntakeRequestToSlot pool t.submitted.id slot.id
   pure (t, slot, a)
+
+-- Waits until a session is queued for a lock on intake_requests. pg_locks is
+-- live, unlike pg_stat_activity, which is fixed for the rest of a transaction.
+waitForBlockedRead :: Connection -> IO ()
+waitForBlockedRead c = go (50 :: Int)
+  where
+    go 0 = expectationFailure "the calendar read never blocked on intake_requests"
+    go n = do
+      [Only blocked] <- query_ c
+        "SELECT EXISTS (SELECT 1 FROM pg_locks \
+        \WHERE relation = 'intake_requests'::regclass AND NOT granted)"
+      if blocked then pure () else threadDelay 100000 >> go (n - 1)
 
 stored :: ConnectionPool -> IntakeRequestId -> IO IntakeRequest
 stored pool rid = withResource pool $ \c -> do
@@ -251,6 +265,27 @@ spec pool = do
       _         <- slotAt pool fx (minutes 120 t0)
       calendar  <- S.fetchDoctorCalendarOverlapping pool t0 (minutes 120 t0)
       doctorCalendarEntries calendar `shouldBe` [Appointment a, Slot slot]
+
+    it "the calendar read sees one moment while a match commits between its queries" $ do
+      fx             <- fixture pool
+      t              <- accept pool fx AnyDoctor
+      slot           <- slotAt pool fx t0
+      Just appointed <- pure (matchIntakeRequestToSlot slot t)
+      result         <- newEmptyMVar
+      withResource pool $ \gate -> do
+        -- Holds the read's second query (intake_requests) after its first
+        -- (available_slots) has seen the slot.
+        begin gate
+        _ <- execute_ gate "LOCK TABLE intake_requests IN ACCESS EXCLUSIVE MODE"
+        _ <- forkIO $
+          withResource pool (\c -> P.fetchDoctorCalendarOverlapping c t0 (minutes 30 t0))
+            >>= putMVar result
+        waitForBlockedRead gate
+        -- Inside the open transaction, the write's own BEGIN only warns; its
+        -- COMMIT commits the match and releases the lock at once.
+        P.persistAppointedIntakeRequest gate slot appointed `shouldReturn` P.AppointedClaimed
+      Just calendar <- timeout 5000000 (takeMVar result)
+      fmap doctorCalendarEntries calendar `shouldBe` Right [Slot slot]
 
   describe "match" $ do
     it "books the request and consumes the slot" $ do

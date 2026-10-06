@@ -33,7 +33,7 @@ Run successfully when this file was last updated (2026-09-30):
     a real PostgreSQL (`test-db/Spec.hs`): creates a throwaway database,
     applies `migrations/0001_init.sql`, drops it afterwards. Needs a local
     server the current user can create databases on; extra libpq keywords
-    via `TRIAGE_TEST_PG`. Run 2026-10-06: 34 examples, 0 failures.
+    via `TRIAGE_TEST_PG`. Run 2026-10-06: 35 examples, 0 failures.
   - `cabal test triage-schema-test` — the CHECK constraints on
     `intake_requests` against a real PostgreSQL, raw SQL only (no
     dependency on the library): each case's column shape from a

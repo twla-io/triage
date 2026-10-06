@@ -173,7 +173,7 @@ bottom.
 
 **Rejected:** one SQL statement (`UNION ALL`): it always sees one snapshot, but slots and requests have different columns, so the query and its decoding get awkward; reading through the `doctor_calendar` shadow table: its job is enforcing the rule, and reading it is a performance change, made only when measured.
 
-**Not yet done:** a deterministic test: run the read's first query, commit a match on a second connection, run the second query, and check that the calendar still decodes.
+**Tested** (`triage-db-test`, "the calendar read sees one moment while a match commits between its queries"): a second connection locks `intake_requests`, so the read's second query waits after its first has seen the slot; the match then commits and releases the lock at once. The read must return the slot alone. Without the `REPEATABLE READ` transaction it returns `DoctorCalendarRefused`, the original bug (checked by removing it).
 
 ## Stored facts are referenced by id, never accepted from the caller (2026-09-27)
 
