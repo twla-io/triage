@@ -163,6 +163,13 @@ genDoctorCalendarEntries = do
   n       <- choose (0, 4)
   vectorOf n (elements doctors >>= genDoctorCalendarEntryFor)
 
+-- A calendar from generated entries; the overlapping ones are dropped, not discarded.
+genDoctorCalendar :: Gen DoctorCalendar
+genDoctorCalendar = do
+  entries <- genDoctorCalendarEntries
+  let kept = foldl (\ks e -> if isJust (mkDoctorCalendar (e : ks)) then e : ks else ks) [] entries
+  maybe (error "kept entries overlap") pure (mkDoctorCalendar kept)
+
 doctorCalendarEntryDoctorOf :: DoctorCalendarEntry -> DoctorId
 doctorCalendarEntryDoctorOf (Slot s)        = s.doctorId
 doctorCalendarEntryDoctorOf (Appointment a) = a.doctorId
@@ -577,6 +584,14 @@ main = hspec $ do
         Just calendar -> sortOn key (doctorCalendarEntries calendar) === sortOn key entries
         Nothing       -> property Discard
 
+    prop "doctorCalendarEntries returns entries in order of start" $ do
+      entries <- genDoctorCalendarEntries
+      pure $ case mkDoctorCalendar entries of
+        Just calendar ->
+          let starts = map doctorCalendarEntryStart (doctorCalendarEntries calendar)
+          in property (and (zipWith (<=) starts (drop 1 starts)))
+        Nothing -> property Discard
+
   describe "addAvailableSlot" $ do
     prop "succeeds exactly when the calendar's entries plus the slot still form a calendar" $ do
       entries <- genDoctorCalendarEntries
@@ -652,6 +667,7 @@ main = hspec $ do
     prop "AvailableSlot"          $ forAll genAnySlot (matchesSchema . T.fromDomainAvailableSlot)
     prop "DoctorCalendarEntry"    $ forAll genDoctorCalendarEntries
                                       (conjoin . map (matchesSchema . T.fromDomainDoctorCalendarEntry))
+    prop "DoctorCalendar"         $ forAll genDoctorCalendar (matchesSchema . T.fromDomainDoctorCalendar)
 
   describe "wire format: every request body's ToJSON matches its OpenAPI 3 schema" $ do
     prop "CreateDoctorRequest"  $ matchesSchema (T.CreateDoctorRequest "Dr A")
@@ -744,6 +760,5 @@ main = hspec $ do
       forAll (shortListOf genStale) (matchesSchema . A.renderFetchStaleIntakeRequestsByStaleAtAnswer)
     prop "FetchClosedIntakeRequestsByStartAnswer" $
       forAll (shortListOf genClosed) (matchesSchema . A.renderFetchClosedIntakeRequestsByStartAnswer)
-    prop "FetchDoctorCalendarEntriesOverlappingAnswer" $
-      forAll genDoctorCalendarEntries
-        (matchesSchema . A.renderFetchDoctorCalendarEntriesOverlappingAnswer)
+    prop "FetchDoctorCalendarOverlappingAnswer" $
+      forAll genDoctorCalendar (matchesSchema . A.renderFetchDoctorCalendarOverlappingAnswer)

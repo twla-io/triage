@@ -27,18 +27,18 @@ Run successfully when this file was last updated (2026-09-30):
 - `cabal test` — runs the three suites below.
   - `cabal test triage-test` — hspec/QuickCheck: pure `Domain` properties
     plus a check that every DTO's, request body's and answer's `ToJSON`
-    matches its own OpenAPI 3 schema. No database needed. Run 2026-10-01:
-    85 examples, 0 failures.
+    matches its own OpenAPI 3 schema. No database needed. Run 2026-10-06:
+    87 examples, 0 failures.
   - `cabal test triage-db-test` — the SQL behind Persistence/Service against
     a real PostgreSQL (`test-db/Spec.hs`): creates a throwaway database,
     applies `migrations/0001_init.sql`, drops it afterwards. Needs a local
     server the current user can create databases on; extra libpq keywords
-    via `TRIAGE_TEST_PG`. Run 2026-10-01: 32 examples, 0 failures.
+    via `TRIAGE_TEST_PG`. Run 2026-10-06: 34 examples, 0 failures.
   - `cabal test triage-schema-test` — the CHECK constraints on
     `intake_requests` against a real PostgreSQL, raw SQL only (no
     dependency on the library): each case's column shape from a
     classification table written from `Domain.hs`. `TRIAGE_SCHEMA_FILE`
-    overrides the schema file. Run 2026-10-01: 20 examples, 0 failures.
+    overrides the schema file. Run 2026-10-06: 20 examples, 0 failures.
 - `cd frontend && npm run build` (`tsc -b && vite build`)
 
 Inferred from configuration, not run:
@@ -52,7 +52,7 @@ Inferred from configuration, not run:
   `VITE_API_BASE_URL`, default `http://localhost:8080`.
 - `cd frontend && npm run generate-types` — with the backend running,
   regenerates `src/api/types.ts` from its `/openapi.json`
-  (openapi-typescript v7). Run 2026-10-01. Don't hand-edit `types.ts`.
+  (openapi-typescript v7). Run 2026-10-06. Don't hand-edit `types.ts`.
 - `docker build .` — backend image only; frontend hosting is undecided.
 
 ## Modules and dependencies
@@ -82,7 +82,7 @@ Direct imports between internal modules (no cycles):
   `AddAvailableSlotOutcome`). A request found
   past the state an operation expects is `MovedOn`/`IntakeRequestMovedOn`;
   one in a state that can't follow it is `IntakeRequestInWrongState`. Also
-  exposes read pass-throughs and the `DoctorCalendarEntry` view.
+  exposes read pass-throughs, including the `DoctorCalendar` over a range.
 - **`src/Transport.hs`** — aeson DTO twin types with hand-written
   `ToJSON`/`FromJSON`/`ToSchema` and JSON-shaped `toDomainX`/`fromDomainX`.
   Domain types carry no JSON instances.

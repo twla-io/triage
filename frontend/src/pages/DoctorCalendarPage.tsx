@@ -37,7 +37,7 @@ export function DoctorCalendarPage() {
       <QueryView query={calendar}>
         {(answer) => (
           <RecordList>
-            {answer.detail.map((entry) => (
+            {answer.detail.doctorCalendarEntries.map((entry) => (
               <RecordCard
                 key={`${entry.type}:${entry.id}`}
                 header={<CaseBadge type={entry.type} />}

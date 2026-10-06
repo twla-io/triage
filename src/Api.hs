@@ -48,7 +48,7 @@ module Api
   , renderFetchWithdrawnIntakeRequestsByWithdrawnAtAnswer
   , renderFetchStaleIntakeRequestsByStaleAtAnswer
   , renderFetchClosedIntakeRequestsByStartAnswer
-  , renderFetchDoctorCalendarEntriesOverlappingAnswer
+  , renderFetchDoctorCalendarOverlappingAnswer
   ) where
 
 import Control.Exception          (SomeException, displayException, try)
@@ -341,10 +341,10 @@ renderFetchClosedIntakeRequestsByStartAnswer
 renderFetchClosedIntakeRequestsByStartAnswer =
   FetchClosedIntakeRequestsByStartAnswer . ok . map fromDomainClosedIntakeRequest
 
-renderFetchDoctorCalendarEntriesOverlappingAnswer
-  :: [DoctorCalendarEntry] -> FetchDoctorCalendarEntriesOverlappingAnswer
-renderFetchDoctorCalendarEntriesOverlappingAnswer =
-  FetchDoctorCalendarEntriesOverlappingAnswer . ok . map fromDomainDoctorCalendarEntry
+renderFetchDoctorCalendarOverlappingAnswer
+  :: DoctorCalendar -> FetchDoctorCalendarOverlappingAnswer
+renderFetchDoctorCalendarOverlappingAnswer =
+  FetchDoctorCalendarOverlappingAnswer . ok . fromDomainDoctorCalendar
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DOCTORS — /doctors
@@ -551,14 +551,14 @@ intakeRequestsServer =
 -- ═══════════════════════════════════════════════════════════════════════════
 
 type DoctorCalendarApi = "doctor-calendar" :>
-  Range FetchDoctorCalendarEntriesOverlappingAnswer
+  Range FetchDoctorCalendarOverlappingAnswer
 
 doctorCalendarServer :: ServerT DoctorCalendarApi AppM
-doctorCalendarServer = fetchDoctorCalendarEntriesOverlappingH
+doctorCalendarServer = fetchDoctorCalendarOverlappingH
   where
-    fetchDoctorCalendarEntriesOverlappingH from to = service $ \pool ->
-      renderFetchDoctorCalendarEntriesOverlappingAnswer
-        <$> Service.fetchDoctorCalendarEntriesOverlapping pool from to
+    fetchDoctorCalendarOverlappingH from to = service $ \pool ->
+      renderFetchDoctorCalendarOverlappingAnswer
+        <$> Service.fetchDoctorCalendarOverlapping pool from to
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- API

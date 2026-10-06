@@ -235,6 +235,23 @@ spec pool = do
       slot <- slotAt pool fx t0
       slot.duration `shouldBe` fx.service.duration
 
+    it "a slot overlapping another doctor's entry is still created" $ do
+      fx      <- fixture pool
+      _       <- slotAt pool fx t0
+      doctorB <- S.createDoctor pool "Dr B"
+      Right (AvailableSlotAdded _) <- S.createAvailableSlot pool doctorB.id fx.service.id (minutes 15 t0)
+      pure ()
+
+  describe "doctor calendar" $ do
+    it "holds every entry overlapping the range, in order of start; touching ones are left out" $ do
+      fx        <- fixture pool
+      _         <- slotAt pool fx (minutes (-30) t0)
+      (_, _, a) <- appoint pool fx t0
+      slot      <- slotAt pool fx (minutes 60 t0)
+      _         <- slotAt pool fx (minutes 120 t0)
+      calendar  <- S.fetchDoctorCalendarOverlapping pool t0 (minutes 120 t0)
+      doctorCalendarEntries calendar `shouldBe` [Appointment a, Slot slot]
+
   describe "match" $ do
     it "books the request and consumes the slot" $ do
       fx           <- fixture pool

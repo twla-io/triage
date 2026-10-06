@@ -161,7 +161,7 @@ export function AvailableSlotSelect(props: IdControlProps) {
   const services = useHealthcareServices()
   const doctorName = (id: string) => doctors.data?.detail.find((d) => d.id === id)?.name ?? id
   const serviceName = (id: string) => services.data?.detail.find((s) => s.id === id)?.name ?? id
-  const options = calendar.data?.detail.flatMap((entry) => {
+  const options = calendar.data?.detail.doctorCalendarEntries.flatMap((entry) => {
     switch (entry.type) {
       case 'slot':
         return [

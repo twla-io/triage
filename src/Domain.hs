@@ -451,8 +451,10 @@ newtype DoctorCalendar =
 mkDoctorCalendar :: [DoctorCalendarEntry] -> Maybe DoctorCalendar
 mkDoctorCalendar = foldM addDoctorCalendarEntry (DoctorCalendar Map.empty)
 
+-- In order of start; entries starting together keep doctor order.
 doctorCalendarEntries :: DoctorCalendar -> [DoctorCalendarEntry]
-doctorCalendarEntries (DoctorCalendar calendar) = concatMap Map.elems (Map.elems calendar)
+doctorCalendarEntries (DoctorCalendar calendar) =
+  sortOn doctorCalendarEntryStart (concatMap Map.elems (Map.elems calendar))
 
 -- A new slot for this doctor at this time, lasting as long as its service.
 -- Nothing if it would overlap one of the doctor's entries.

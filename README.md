@@ -109,7 +109,7 @@ Constructors are hidden only where there's an invariant to protect:
   which creates a slot lasting as long as its service; both enforce the
   no-overlap invariant for the value they build. Its entries are read
   through the exported read-only accessor `doctorCalendarEntries ::
-  DoctorCalendar -> [DoctorCalendarEntry]`.
+  DoctorCalendar -> [DoctorCalendarEntry]`, in order of start.
 
 Every other type (`IntakeRequestPriority`, `RoutineDue`, `AvailableSlot`,
 `DoctorCalendarEntry`, `SubmittedIntakeRequest`, `TriagedIntakeRequest`,

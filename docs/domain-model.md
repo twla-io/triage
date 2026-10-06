@@ -323,7 +323,7 @@ interval, so matching cannot create an overlap and
 `matchIntakeRequestToSlot` takes no calendar.
 The calendar is read through `doctorCalendarEntries`, as `RoutineWindow` is
 read through its accessors: sealing limits how a calendar is built, not how
-it is read.
+it is read. It returns the entries in order of start.
 
 A `DoctorCalendar` value only proves that *its own* entries don't overlap,
 not that it matches what is stored right now. Stored data is protected by

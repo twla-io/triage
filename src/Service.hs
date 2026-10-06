@@ -57,13 +57,13 @@ module Service
   , fetchWithdrawnIntakeRequestsByWithdrawnAt
   , fetchStaleIntakeRequestsByStaleAt
   , fetchClosedIntakeRequestsByStart
-  , fetchDoctorCalendarEntriesOverlapping
+  , fetchDoctorCalendarOverlapping
   ) where
 
 import Control.Exception          (Exception, throwIO)
 import Data.Pool                  (withResource)
 import Data.Text                  (Text)
-import Data.Time                  (UTCTime)
+import Data.Time                  (UTCTime, addUTCTime)
 import Data.UUID.V4               (nextRandom)
 import Database.PostgreSQL.Simple (Connection)
 
@@ -212,9 +212,10 @@ submitIntakeRequest pool patient requestNarrative requestCreatedAt = withResourc
       Persistence.insertSubmittedIntakeRequest conn request
       pure (Right request)
 
--- Grows the sealed DoctorCalendar. Gap: another slot or appointment for the
--- doctor can be stored between the calendar read and the insert; the
--- EXCLUDE on doctor_calendar catches it, as the same outcome.
+-- Grows the sealed DoctorCalendar, read over the new slot's interval;
+-- addAvailableSlot decides which of its entries matter. Gap: another slot or
+-- appointment for the doctor can be stored between the calendar read and the
+-- insert; the EXCLUDE on doctor_calendar catches it, as the same outcome.
 createAvailableSlot
   :: ConnectionPool -> DoctorId -> HealthcareServiceId -> UTCTime
   -> IO (Either CreateAvailableSlotError AddAvailableSlotOutcome)
@@ -226,7 +227,8 @@ createAvailableSlot pool doctor serviceId slotStart = withResource pool $ \conn 
     (_, Nothing) ->
       pure (Left (CreateAvailableSlotHealthcareServiceNotFound (HealthcareServiceNotFound serviceId)))
     (Just _, Just service) -> do
-      calendar <- decoded (Persistence.fetchDoctorCalendarOverlapping conn doctor slotStart service.duration)
+      let slotEnd = addUTCTime (durationToNominalDiffTime service.duration) slotStart
+      calendar <- decoded (Persistence.fetchDoctorCalendarOverlapping conn slotStart slotEnd)
       uuid <- nextRandom
       case addAvailableSlot calendar (SlotId uuid) doctor service slotStart of
         Nothing -> pure (Right AvailableSlotOverlapsDoctorCalendar)
@@ -498,7 +500,7 @@ fetchClosedIntakeRequestsByStart
 fetchClosedIntakeRequestsByStart pool from to = withResource pool $ \conn ->
   decoded (Persistence.fetchClosedIntakeRequestsByStart conn from to)
 
-fetchDoctorCalendarEntriesOverlapping
-  :: ConnectionPool -> UTCTime -> UTCTime -> IO [DoctorCalendarEntry]
-fetchDoctorCalendarEntriesOverlapping pool from to = withResource pool $ \conn ->
-  decoded (Persistence.fetchDoctorCalendarEntriesOverlapping conn from to)
+fetchDoctorCalendarOverlapping
+  :: ConnectionPool -> UTCTime -> UTCTime -> IO DoctorCalendar
+fetchDoctorCalendarOverlapping pool from to = withResource pool $ \conn ->
+  decoded (Persistence.fetchDoctorCalendarOverlapping conn from to)

@@ -74,7 +74,6 @@ module Persistence
   , fetchStaleIntakeRequestsByStaleAt
   , fetchClosedIntakeRequestsByStart
   , fetchDoctorCalendarOverlapping
-  , fetchDoctorCalendarEntriesOverlapping
   ) where
 
 import Control.Exception                     (Exception, catchJust, handle, throwIO)
@@ -82,11 +81,10 @@ import Control.Monad                         (unless, when)
 import Data.Char                             (isUpper, toLower)
 import Data.Foldable                         (traverse_)
 import Data.Int                              (Int16, Int64)
-import Data.List                             (sortOn)
 import Data.Maybe                            (isJust)
 import Data.Pool                             (Pool)
 import Data.Text                             (Text)
-import Data.Time                             (UTCTime, addUTCTime)
+import Data.Time                             (UTCTime)
 import Data.UUID                             (UUID)
 import Database.PostgreSQL.Simple
   ( Connection, Only (..), Query, SqlError (..), execute, query, query_, withTransaction, (:.) (..) )
@@ -906,34 +904,12 @@ fetchClosedIntakeRequestsByStart conn from to =
 
 -- ── DoctorCalendar ─────────────────────────────────────────────────────────
 
--- The slice of the doctor's calendar a new entry at [start, start + duration)
--- is judged against, rebuilt from the source tables through mkDoctorCalendar.
+-- Every doctor's entries overlapping [from, to), in one snapshot, rebuilt
+-- through mkDoctorCalendar. The one read of the calendar: callers pass their
+-- range, slot creation the new slot's interval.
 fetchDoctorCalendarOverlapping
-  :: Connection -> DoctorId -> UTCTime -> Duration -> IO (Either DecodeError DoctorCalendar)
-fetchDoctorCalendarOverlapping conn (DoctorId doctor) from lasting = do
-  let to = addUTCTime (durationToNominalDiffTime lasting) from
-  (slotRows, appointmentRows) <- withTransactionLevel RepeatableRead conn $ do
-    slotRows <- query conn
-      ("SELECT " <> availableSlotColumns <> " FROM available_slots \
-       \WHERE doctor_id = ? \
-       \AND tstzrange(start, start + make_interval(mins => duration)) && tstzrange(?, ?) \
-       \ORDER BY start")
-      (doctor, from, to)
-    appointmentRows <- query conn
-      ("SELECT " <> intakeRequestColumns <> " FROM intake_requests \
-       \WHERE state = 'appointed' AND doctor_id = ? \
-       \AND tstzrange(start, start + make_interval(mins => duration)) && tstzrange(?, ?) \
-       \ORDER BY start")
-      (doctor, from, to)
-    pure (slotRows, appointmentRows)
-  pure $ do
-    entries <- calendarEntries slotRows appointmentRows
-    maybe (Left DoctorCalendarRefused) Right (mkDoctorCalendar entries)
-
--- Every doctor's entries overlapping [from, to), sorted by start.
-fetchDoctorCalendarEntriesOverlapping
-  :: Connection -> UTCTime -> UTCTime -> IO (Either DecodeError [DoctorCalendarEntry])
-fetchDoctorCalendarEntriesOverlapping conn from to = do
+  :: Connection -> UTCTime -> UTCTime -> IO (Either DecodeError DoctorCalendar)
+fetchDoctorCalendarOverlapping conn from to = do
   (slotRows, appointmentRows) <- withTransactionLevel RepeatableRead conn $ do
     slotRows <- query conn
       ("SELECT " <> availableSlotColumns <> " FROM available_slots \
@@ -947,7 +923,9 @@ fetchDoctorCalendarEntriesOverlapping conn from to = do
        \ORDER BY start")
       (from, to)
     pure (slotRows, appointmentRows)
-  pure (sortOn doctorCalendarEntryStart <$> calendarEntries slotRows appointmentRows)
+  pure $ do
+    entries <- calendarEntries slotRows appointmentRows
+    maybe (Left DoctorCalendarRefused) Right (mkDoctorCalendar entries)
 
 calendarEntries
   :: [AvailableSlotRow] -> [IntakeRequestRow] -> Either DecodeError [DoctorCalendarEntry]

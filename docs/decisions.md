@@ -153,9 +153,9 @@ bottom.
 
 - `DoctorCalendarEntry = Slot AvailableSlot | Appointment AppointedIntakeRequest` lives in `Domain.hs`, and the rule is stated over it.
 - `DoctorCalendar` is sealed and practice-wide (`Map DoctorId (Map UTCTime DoctorCalendarEntry)`), matching the single `doctor_calendar` table.
-- There are two ways in. `mkDoctorCalendar :: [DoctorCalendarEntry] -> Maybe DoctorCalendar` rebuilds a calendar from stored entries. `addAvailableSlot` is the only domain operation that adds time. Appointments arrive by matching, which takes over the slot's exact interval, so `matchIntakeRequestToSlot` takes no calendar.
-- `Service.createAvailableSlot` fetches the doctor's entries overlapping the new slot (`fetchDoctorCalendarOverlapping`, which reads the source tables in one `REPEATABLE READ` snapshot, per `one-snapshot-per-read`), checks `addAvailableSlot`, then inserts. A failed check and an `EXCLUDE` violation both answer `AvailableSlotOverlapsDoctorCalendar`.
-- Stored entries that already overlap fail decoding (`OverlappingDoctorCalendar`), which surfaces as a 500.
+- There are two ways in. `mkDoctorCalendar :: [DoctorCalendarEntry] -> Maybe DoctorCalendar` rebuilds a calendar from stored entries. `addAvailableSlot` is the only domain operation that adds time. Appointments arrive by matching, which takes over the slot's exact interval, so `matchIntakeRequestToSlot` takes no calendar. One way out: the read-only accessor `doctorCalendarEntries`.
+- `Service.createAvailableSlot` fetches the calendar over the new slot's interval (`fetchDoctorCalendarOverlapping`, the one calendar read; see "Callers read the sealed collection, not its elements"), checks `addAvailableSlot`, then inserts. A failed check and an `EXCLUDE` violation both answer `AvailableSlotOverlapsDoctorCalendar`.
+- Stored entries that already overlap fail decoding (`DoctorCalendarRefused`), which surfaces as a 500.
 
 **Rejected:**
 
@@ -169,7 +169,7 @@ bottom.
 
 **Found:** `fetchDoctorCalendar`, from earlier AI-generated code, read a doctor's slots and appointed requests in two queries under `READ COMMITTED`. A match committing between them deletes a slot and adds an appointment over the same interval: the first query saw the slot, the second the appointment, so the rebuilt calendar held two overlapping entries. `mkDoctorCalendar` refused it, and creating a slot failed with a 500 (`OverlappingDoctorCalendar`), although the stored data was valid. No test or report found this. A clean-room agent, deriving the reads from rules, asked when the smart constructor could refuse data that the database already guarantees valid; the only answer was a read that mixes two moments.
 
-**Decided:** a read built from several queries runs them in one `REPEATABLE READ` transaction (`one-snapshot-per-read`, in `triage-db-codegen`). This applies to `fetchDoctorCalendarOverlapping` and `fetchDoctorCalendarEntriesOverlapping`.
+**Decided:** a read built from several queries runs them in one `REPEATABLE READ` transaction (`one-snapshot-per-read`, in `triage-db-codegen`). This applies to `fetchDoctorCalendarOverlapping`, the one calendar read.
 
 **Rejected:** one SQL statement (`UNION ALL`): it always sees one snapshot, but slots and requests have different columns, so the query and its decoding get awkward; reading through the `doctor_calendar` shadow table: its job is enforcing the rule, and reading it is a performance change, made only when measured.
 
@@ -323,6 +323,19 @@ After a lost write, Service reads the request once more, and that read always fi
 - Outcome names are derived from the Domain function a use case calls: `<DomainFunction>Outcome`, success as its past participle (`AvailableSlotAdded`, `IntakeRequestMatchedToSlot`), a decline over stored candidates `No<Subject><Verb>` (`NoIntakeRequestMatched`), a refusal of the caller's inputs `<Subject>DoesNot<Verb><Object>` (`IntakeRequestDoesNotMatchSlot`). A refusal caused by stored data is an outcome, never an error. Persistence's write outcomes follow `<TargetStage>ClaimOutcome` and `<Element>InsertOutcome = <Element>Inserted | <Element>Overlaps<Collection>`. These replaced names that had been chosen once and copied (`MatchOutcome`, `SlotCreated`, `PriorityMatchOutcome`, …): a clean-room run of the db and service skills reproduced every behaviour but could only match those names by having read this file.
 
 **Rejected:** the uniform `ServiceError` (the types were untrue); one sum per use case with prefixed constructors carrying raw ids, the tag made by stripping the prefix from a string; type-level error sets (machinery a 2–3 doctor practice doesn't justify); listing reachable errors by reading function bodies (nothing would catch it going wrong); raising decode failures in Persistence (it would change the db layer and its tests for nothing).
+
+## Callers read the sealed collection, not its elements (2026-10-06)
+
+**Found:** the calendar page read `[DoctorCalendarEntry]` (`fetchDoctorCalendarEntriesOverlapping`), never replayed through `mkDoctorCalendar`, so a read that mixed two moments or got the interval arithmetic wrong would have shown overlapping entries without an error. Only slot creation went through the type. The list predates the type: `fetchCalendarView` (`6fca20f`, 2026-07-13) was "a display composition with no lifecycle or invariant", which stopped being true when `DoctorCalendar` was sealed (`5ea1396`, 2026-09-27) and nobody revisited the view. The generic-skill rewrite (`529dc21`) then wrote the leftover down as a rule, "a sealed value is opaque, so callers get its elements instead", although `sealed-value-decomposition` in the same skill says a missing accessor is a gap in `Domain.hs`, never to be worked around. `DoctorCalendar` had no accessor, so it looked opaque.
+
+**Decided:**
+- `Domain.hs` exports `doctorCalendarEntries :: DoctorCalendar -> [DoctorCalendarEntry]`. Sealing limits how a value is built, not how it is read (as with `RoutineWindow`'s accessors).
+- One read: `fetchDoctorCalendarOverlapping :: Connection -> UTCTime -> UTCTime -> IO (Either DecodeError DoctorCalendar)`, every doctor's entries overlapping `[from, to)`, one snapshot, replayed through `mkDoctorCalendar`. The calendar page passes its range; slot creation passes the new slot's interval. Service returns `DoctorCalendar`; Transport takes it apart through the accessor, which returns entries in order of start (the UI never sorts).
+- Which entries matter for a new slot (the same doctor's) is decided only by `Domain.hs` (`addAvailableSlot`), not repeated in SQL.
+- What the replay checks on a read is our read code, not the data (the `EXCLUDE` already guarantees that): a refusal means the read is wrong. It proves no overlap, not completeness; a read that drops entries still passes, which `triage-db-test` covers.
+- On the wire, `DoctorCalendar` is an object keyed by its accessor, `{"doctorCalendarEntries": [...]}`, by the existing key rule (`triage-api-codegen`), as `RoutineWindow` is. The contract and `types.ts` then name `DoctorCalendar`, so the claim reaches the UI.
+
+**Rejected:** two reads, a per-doctor slice for slot creation and a range read for callers (option A): both replay the same way and differ only in a `doctor_id = ?` filter, which restates in SQL a rule `Domain.hs` already holds, and two reads can drift apart, as the view and the slice did. Cost of the one read: slot creation also loads other doctors' entries in a window one slot long, a handful of rows at 2–3 doctors. A bare list on the wire: it needs an exception to the key rule, drops the type's name at the contract, and can't gain a field without breaking clients.
 
 ## Open questions (from 2026-06-26 session — not yet resolved)
 

@@ -159,7 +159,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json;charset=utf-8": components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswer"];
+                        "application/json;charset=utf-8": components["schemas"]["FetchDoctorCalendarOverlappingAnswer"];
                     };
                 };
                 /** @description Invalid `to` or `from` */
@@ -1440,6 +1440,9 @@ export interface components {
             id: components["schemas"]["DoctorId"];
             name: string;
         };
+        DoctorCalendar: {
+            doctorCalendarEntries: components["schemas"]["DoctorCalendarEntry"][];
+        };
         DoctorCalendarEntry: components["schemas"]["DoctorCalendarEntrySlot"] | components["schemas"]["DoctorCalendarEntryAppointment"];
         DoctorCalendarEntryAppointment: {
             /** Format: date-time */
@@ -1558,9 +1561,9 @@ export interface components {
              */
             outcome: "ok";
         };
-        FetchDoctorCalendarEntriesOverlappingAnswer: components["schemas"]["FetchDoctorCalendarEntriesOverlappingAnswerOk"];
-        FetchDoctorCalendarEntriesOverlappingAnswerOk: {
-            detail: components["schemas"]["DoctorCalendarEntry"][];
+        FetchDoctorCalendarOverlappingAnswer: components["schemas"]["FetchDoctorCalendarOverlappingAnswerOk"];
+        FetchDoctorCalendarOverlappingAnswerOk: {
+            detail: components["schemas"]["DoctorCalendar"];
             /**
              * @description discriminator enum property added by openapi-typescript
              * @enum {string}

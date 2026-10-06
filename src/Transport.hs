@@ -75,6 +75,8 @@ module Transport
   , toDomainAvailableSlot, fromDomainAvailableSlot
   , DoctorCalendarEntryDTO (..)
   , toDomainDoctorCalendarEntry, fromDomainDoctorCalendarEntry
+  , DoctorCalendarDTO
+  , toDomainDoctorCalendar, fromDomainDoctorCalendar
 
     -- ── Requests ─────────────────────────────────────────────────────────
   , CreateDoctorRequest (..)
@@ -121,7 +123,7 @@ module Transport
   , FetchWithdrawnIntakeRequestsByWithdrawnAtAnswer (..)
   , FetchStaleIntakeRequestsByStaleAtAnswer (..)
   , FetchClosedIntakeRequestsByStartAnswer (..)
-  , FetchDoctorCalendarEntriesOverlappingAnswer (..)
+  , FetchDoctorCalendarOverlappingAnswer (..)
   ) where
 
 import Control.Lens            ((&), (.~), (?~))
@@ -1314,6 +1316,35 @@ fromDomainDoctorCalendarEntry = \case
   Slot s        -> DoctorCalendarEntrySlot (fromDomainAvailableSlot s)
   Appointment a -> DoctorCalendarEntryAppointment (fromDomainAppointedIntakeRequest a)
 
+-- Sealed: holds a calendar mkDoctorCalendar accepted; decoding goes through it.
+newtype DoctorCalendarDTO = DoctorCalendarDTO DoctorCalendar
+  deriving (Show, Eq)
+
+doctorCalendarPairs :: DoctorCalendarDTO -> [Pair]
+doctorCalendarPairs (DoctorCalendarDTO c) =
+  ["doctorCalendarEntries" .= map fromDomainDoctorCalendarEntry (doctorCalendarEntries c)]
+
+parseDoctorCalendar :: Object -> Parser DoctorCalendarDTO
+parseDoctorCalendar o = do
+  entries <- o .: "doctorCalendarEntries"
+  maybe (fail "two entries of a doctor overlap") (pure . DoctorCalendarDTO)
+    (mkDoctorCalendar (map toDomainDoctorCalendarEntry entries))
+
+doctorCalendarProps :: Decl Props
+doctorCalendarProps = sequence [field "doctorCalendarEntries" (arrayOf <$> ref @DoctorCalendarEntryDTO)]
+
+instance ToJSON DoctorCalendarDTO where toJSON = object . doctorCalendarPairs
+instance FromJSON DoctorCalendarDTO where
+  parseJSON = strictObject "DoctorCalendar" parseDoctorCalendar doctorCalendarPairs
+instance ToSchema DoctorCalendarDTO where
+  declareNamedSchema _ = recordSchema "DoctorCalendar" doctorCalendarProps
+
+toDomainDoctorCalendar :: DoctorCalendarDTO -> DoctorCalendar
+toDomainDoctorCalendar (DoctorCalendarDTO c) = c
+
+fromDomainDoctorCalendar :: DoctorCalendar -> DoctorCalendarDTO
+fromDomainDoctorCalendar = DoctorCalendarDTO
+
 -- ═══════════════════════════════════════════════════════════════════════════
 -- REQUESTS — one per Service function with caller-supplied facts; keys are
 -- the Domain.hs fields the values land in
@@ -1852,11 +1883,11 @@ instance ToSchema FetchClosedIntakeRequestsByStartAnswer where
   declareNamedSchema _ = answerSchema "FetchClosedIntakeRequestsByStart"
     [okCase (listOf @ClosedIntakeRequestDTO)]
 
-newtype FetchDoctorCalendarEntriesOverlappingAnswer =
-  FetchDoctorCalendarEntriesOverlappingAnswer Envelope
+newtype FetchDoctorCalendarOverlappingAnswer =
+  FetchDoctorCalendarOverlappingAnswer Envelope
   deriving (Show, Eq)
-instance ToJSON FetchDoctorCalendarEntriesOverlappingAnswer where
-  toJSON (FetchDoctorCalendarEntriesOverlappingAnswer e) = toJSON e
-instance ToSchema FetchDoctorCalendarEntriesOverlappingAnswer where
-  declareNamedSchema _ = answerSchema "FetchDoctorCalendarEntriesOverlapping"
-    [okCase (listOf @DoctorCalendarEntryDTO)]
+instance ToJSON FetchDoctorCalendarOverlappingAnswer where
+  toJSON (FetchDoctorCalendarOverlappingAnswer e) = toJSON e
+instance ToSchema FetchDoctorCalendarOverlappingAnswer where
+  declareNamedSchema _ = answerSchema "FetchDoctorCalendarOverlapping"
+    [okCase (ref @DoctorCalendarDTO)]

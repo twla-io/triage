@@ -210,4 +210,28 @@ below.
 
 **Rejected:** listing the reachable tags by reading function bodies (derived from code rather than types; nothing would catch it going wrong).
 
+## Doctor calendar: the no-overlap rule is declared in Domain.hs and enforced by the database (2026-09-27)
+
+**Superseded (2026-10-06):** by "Callers read the sealed collection, not its elements" in `decisions.md`: slot creation now reads the calendar over the new slot's interval for every doctor, through the one calendar read, and the calendar has a read-only accessor. Kept here for history.
+
+**Problem:** the rule once lived only in the `EXCLUDE` constraint, invisible to anyone reading the spec.
+
+**Why Domain.hs can declare it but not enforce it:** it spans every stored entry of a doctor, and a `DoctorCalendar` value is only a snapshot of what was read. Enforcing the rule with a pure check alone would be the check-then-insert race above.
+
+**Decided:**
+
+- `DoctorCalendarEntry = Slot AvailableSlot | Appointment AppointedIntakeRequest` lives in `Domain.hs`, and the rule is stated over it.
+- `DoctorCalendar` is sealed and practice-wide (`Map DoctorId (Map UTCTime DoctorCalendarEntry)`), matching the single `doctor_calendar` table.
+- There are two ways in. `mkDoctorCalendar :: [DoctorCalendarEntry] -> Maybe DoctorCalendar` rebuilds a calendar from stored entries. `addAvailableSlot` is the only domain operation that adds time. Appointments arrive by matching, which takes over the slot's exact interval, so `matchIntakeRequestToSlot` takes no calendar.
+- `Service.createAvailableSlot` fetches the doctor's entries overlapping the new slot (`fetchDoctorCalendarOverlapping`, which reads the source tables in one `REPEATABLE READ` snapshot, per `one-snapshot-per-read`), checks `addAvailableSlot`, then inserts. A failed check and an `EXCLUDE` violation both answer `AvailableSlotOverlapsDoctorCalendar`.
+- Stored entries that already overlap fail decoding (`OverlappingDoctorCalendar`), which surfaces as a 500.
+
+**Rejected:**
+
+- `DoctorCalendar` as the enforcement (load, check, save): the race above. A versioned aggregate would close the race, but it gives appointments two owners and is enforced by convention.
+- A calendar per doctor: `addAvailableSlot` would need a second failure reason.
+- A fetch window of "start minus the longest duration": it hard-codes a 60-minute maximum outside `Domain.hs`.
+
+**General rule:** `Domain.hs` declares every invariant. One within a single value maps to a `CHECK`; one spanning rows maps to `EXCLUDE` or `UNIQUE`, and only the latter depends on the database to hold for stored data.
+
 ---
