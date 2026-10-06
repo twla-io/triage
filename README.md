@@ -85,7 +85,8 @@ post-booking slot state, no freeing, and no sealed "proof" wrapper.
 
 **Doctor Calendar** — `DoctorCalendarEntry = Slot AvailableSlot | Appointment
 AppointedIntakeRequest`: everything that occupies a doctor's time.
-`DoctorCalendar`: all doctors' entries, where no two entries of the same
+`DoctorCalendar` (sealed, read through `doctorCalendarEntries`): all
+doctors' entries, where no two entries of the same
 doctor overlap; entries occupy half-open intervals `[start, end)`, so
 touching is not overlapping. A slot is the only thing ever added to a
 calendar; appointments arrive by matching, which takes over the slot's exact
@@ -106,7 +107,9 @@ Constructors are hidden only where there's an invariant to protect:
   `addAvailableSlot :: DoctorCalendar -> SlotId -> DoctorId ->
   HealthcareService -> UTCTime -> Maybe (AvailableSlot, DoctorCalendar)`,
   which creates a slot lasting as long as its service; both enforce the
-  no-overlap invariant for the value they build.
+  no-overlap invariant for the value they build. Its entries are read
+  through the exported read-only accessor `doctorCalendarEntries ::
+  DoctorCalendar -> [DoctorCalendarEntry]`.
 
 Every other type (`IntakeRequestPriority`, `RoutineDue`, `AvailableSlot`,
 `DoctorCalendarEntry`, `SubmittedIntakeRequest`, `TriagedIntakeRequest`,

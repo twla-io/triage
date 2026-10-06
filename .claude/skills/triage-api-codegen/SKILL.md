@@ -68,7 +68,7 @@ Every public `Service.hs` function gets exactly one endpoint, derived from its k
 | read all | `GET /<table>` |
 | read by case | `GET /<table>/<case>` |
 | read a terminal case by range | `GET /<table>/<case>?from=…&to=…` |
-| read a sealed collection's elements | `GET /<collection>?from=…&to=…`, the collection type's name in kebab-case |
+| read a sealed collection | `GET /<collection>?from=…&to=…`, the collection type's name in kebab-case |
 
 A narrower read's filters are query parameters. Path segments only ever identify a resource; a path parameter is named after its ID type in lowerCamelCase (e.g. `{intakeRequestId}`).
 

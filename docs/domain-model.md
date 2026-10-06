@@ -301,6 +301,7 @@ data DoctorCalendarEntry
   | Appointment AppointedIntakeRequest
 
 mkDoctorCalendar :: [DoctorCalendarEntry] -> Maybe DoctorCalendar
+doctorCalendarEntries :: DoctorCalendar -> [DoctorCalendarEntry]
 addAvailableSlot
   :: DoctorCalendar -> SlotId -> DoctorId -> HealthcareService -> UTCTime
   -> Maybe (AvailableSlot, DoctorCalendar)
@@ -320,6 +321,9 @@ the slot's duration is always the service's.
 Appointments arrive by matching, which takes over the slot's exact
 interval, so matching cannot create an overlap and
 `matchIntakeRequestToSlot` takes no calendar.
+The calendar is read through `doctorCalendarEntries`, as `RoutineWindow` is
+read through its accessors: sealing limits how a calendar is built, not how
+it is read.
 
 A `DoctorCalendar` value only proves that *its own* entries don't overlap,
 not that it matches what is stored right now. Stored data is protected by

@@ -64,6 +64,7 @@ module Domain
   , doctorCalendarEntryStart
   , DoctorCalendar             -- sealed: a doctor's entries never overlap
   , mkDoctorCalendar
+  , doctorCalendarEntries
   , addAvailableSlot
 
   -- ── Protocol ─────────────────────────────────────────────────────────────
@@ -415,6 +416,7 @@ data AvailableSlot = AvailableSlot
 -- addAvailableSlot: a slot is the only thing ever added to a calendar;
 -- appointments arrive by matching, which takes over its slot's exact
 -- interval. Both enforce the no-overlap invariant for the value they build.
+-- Read it via doctorCalendarEntries; reading can't break the invariant.
 -- A value cannot prove it matches what is currently stored, so stored data
 -- needs this same invariant enforced where it lives.
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -448,6 +450,9 @@ newtype DoctorCalendar =
 
 mkDoctorCalendar :: [DoctorCalendarEntry] -> Maybe DoctorCalendar
 mkDoctorCalendar = foldM addDoctorCalendarEntry (DoctorCalendar Map.empty)
+
+doctorCalendarEntries :: DoctorCalendar -> [DoctorCalendarEntry]
+doctorCalendarEntries (DoctorCalendar calendar) = concatMap Map.elems (Map.elems calendar)
 
 -- A new slot for this doctor at this time, lasting as long as its service.
 -- Nothing if it would overlap one of the doctor's entries.

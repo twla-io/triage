@@ -145,7 +145,8 @@ protection. Currently two sealed cases:
   read-only accessors `routineNotBefore`/`routineNotAfter` let other layers
   encode it.
 - `DoctorCalendar` — built only via `mkDoctorCalendar` and grown only via
-  `addAvailableSlot` (no two entries of a doctor overlap). This invariant
+  `addAvailableSlot` (no two entries of a doctor overlap); read through
+  `doctorCalendarEntries`. This invariant
   spans stored rows, so the database (`doctor_calendar`'s `EXCLUDE`) is
   what enforces it for stored data; the type declares it.
 

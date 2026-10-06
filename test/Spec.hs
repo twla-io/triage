@@ -15,6 +15,7 @@ import Prelude hiding (id)
 import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
+import Data.List (sortOn)
 import Data.Maybe (isJust)
 
 import Control.Lens ((%~), (&), (.~), (?~), (^.), _Just)
@@ -561,13 +562,20 @@ main = hspec $ do
       let input = if reversed then [loser, winner] else [winner, loser]
       pure $ fmap (.triaged) (matchByPriority slot input) === Just winner
 
-  describe "mkDoctorCalendar" $
+  describe "mkDoctorCalendar" $ do
     prop "succeeds exactly when no two entries of the same doctor overlap" $ do
       entries <- genDoctorCalendarEntries
       let pairs = [ (a, b) | (i, a) <- zip [0 :: Int ..] entries
                            , (j, b) <- zip [0 ..] entries, i < j ]
       pure $ isJust (mkDoctorCalendar entries)
          === not (any (uncurry overlapsNaive) pairs)
+
+    prop "doctorCalendarEntries gives back exactly the entries it was built from" $ do
+      entries <- genDoctorCalendarEntries
+      let key e = (doctorCalendarEntryDoctorOf e, doctorCalendarEntryStart e)
+      pure $ case mkDoctorCalendar entries of
+        Just calendar -> sortOn key (doctorCalendarEntries calendar) === sortOn key entries
+        Nothing       -> property Discard
 
   describe "addAvailableSlot" $ do
     prop "succeeds exactly when the calendar's entries plus the slot still form a calendar" $ do

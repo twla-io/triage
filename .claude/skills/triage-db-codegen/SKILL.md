@@ -122,12 +122,11 @@ A transition that writes more than one table runs in one `withTransaction`, owne
 ### `reads-follow-cases`
 Generate the reads `Domain.hs` determines:
 - **by id:** one per entity table;
-- **all:** one per entity that is neither a sum type nor an element of a sealed collection (whose elements are read by time range);
+- **all:** one per entity that is neither a sum type nor an element of a sealed collection (those are read through the collection, by time range);
 - **by case:** for each case of an entity's sum type, all rows in that case, decoded as the case's payload type. A terminal case (nothing leaves it) is read by time range only, over a timestamp its stage adds to every row, else over the timestamp of the nearest stage it embeds;
-- **the sealed collection's slice:** for judging a new element, the part the invariant needs: the element's grouping key, and entries whose extent overlaps the new element's. Rebuilt through its smart constructor (`sealed-type-replay`), from its source tables; its shadow table only enforces the invariant. Reading through the shadow table is a performance change, made only when measured. The whole collection is never read.
-- **the collection's elements:** for callers, since a sealed value is opaque: the elements whose extent overlaps a time range `[from, to)`, from its source tables in one snapshot, sorted by start.
+- **the sealed collection over a range:** the entries whose extent overlaps a time range `[from, to)`, from its source tables in one snapshot (`one-snapshot-per-read`), rebuilt through its smart constructor (`sealed-type-replay`). It is the only read of the collection: callers read it, and a use case growing the collection passes the new element's extent as the range. Its shadow table only enforces the invariant; reading through it is a performance change, made only when measured. The whole collection is never read.
 
-Read names, shared with `triage-service-codegen` (plurals are English plurals): by id `fetch<Entity>`; all `fetch<Entity>s`; by case `fetch<Case><Entity>s`; terminal range `fetch<Case><Entity>sBy<Field>`, two bounds, half-open `[from, to)`; the collection's slice `fetch<Collection>Overlapping`, taking the grouping key and the new element's extent; its elements `fetch<Element>sOverlapping`, taking the range.
+Read names, shared with `triage-service-codegen` (plurals are English plurals): by id `fetch<Entity>`; all `fetch<Entity>s`; by case `fetch<Case><Entity>s`; terminal range `fetch<Case><Entity>sBy<Field>`, two bounds, half-open `[from, to)`; the collection over a range `fetch<Collection>Overlapping`, two bounds, half-open `[from, to)`.
 
 A narrower read (one owner, one service) exists only when a Service use case needs it, and is added then, through `triage-service-codegen`. It is named after the case it returns plus its filter, takes one parameter per value it narrows by, and decodes through the same case decoder.
 

@@ -46,7 +46,7 @@ Client state for a value of a sum type is that type's union from `types.ts`, nev
 A form's controls are its request type's fields, labelled by their names humanized (`mustBeSeenBy` → "Must be seen by"):
 - `Text` → text input; `Maybe` → the same control, optional.
 - `UTCTime` → date-time picker.
-- an ID → a select over that entity's collection read. An ID of an element of a sealed collection → a select over the collection's elements read (with `one-range-rule`'s week picker inside the form), keeping only that element's case. An option is labelled by the entity's `name`, or, if it has none, by its non-ID fields with IDs shown as names.
+- an ID → a select over that entity's collection read. An ID of an element of a sealed collection → a select over the sealed collection's read, through its accessor's key (with `one-range-rule`'s week picker inside the form), keeping only that element's case. An option is labelled by the entity's `name`, or, if it has none, by its non-ID fields with IDs shown as names.
 - an enumeration (derives `Enum, Bounded`) → a select over all its constructors.
 - a sum type → a select of its constructors that reveals exactly the chosen case's controls; never independent optional fields whose combination encodes the case.
 - a time the server records is not a field (the API leaves it out).
