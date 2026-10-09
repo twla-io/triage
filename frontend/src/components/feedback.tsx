@@ -23,7 +23,7 @@ export function ErrorBanner({ error }: { error: Error }) {
   )
 }
 
-// A non-success answer, or a warning a decision requires, is yellow.
+// A warning a decision requires is yellow, like a non-success answer's notification.
 export function Notice({ children }: { children: ReactNode }) {
   return (
     <Alert color="yellow" variant="light">

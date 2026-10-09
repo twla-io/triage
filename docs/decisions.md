@@ -349,6 +349,14 @@ After a lost write, Service reads the request once more, and that read always fi
 
 **Rejected:** a name type per entity (`DoctorName`, …): the same invariant three times, protecting against a mix-up no function allows. Applying the existing "innermost name wins" rule to `Name`: it would give a `name_text` column and `{"name": {"nameText": …}}` on the wire. Also making `rejectionReason`, `narrative` and the notes non-blank: not discussed, left for its own decision.
 
+## A non-success answer is a notification at the app's root (2026-10-09)
+
+**Found:** an exploratory browser pass showed a `movedOn` on withdraw, and an `availableSlotConsumed` on match-by-priority, looking like success. The notice was shown inside the action's modal, a child of the entity's card. Invalidating every query after the answer refetched the list, the entity had left it (that is what a notice usually means: the stored state isn't what the caller expected), and the card unmounted with the modal and the notice. Errors were unaffected: a 400 or 500 changes nothing, so the card stays. Each rule in `triage-ui-codegen` was right alone; the skill never said where an outcome is shown.
+
+**Decided:** any `200` answer closes the form; a non-success tag is a notification at the app's root (`@mantine/notifications`, already mounted), titled with the action's label, staying until dismissed. Its sentences are unchanged. Invalidating every query after every answer stays. A non-`200` stays an error banner inside the form.
+
+**Rejected:** a modal owned by the page instead of the card (keeps the notice inline, but leaves a form open for an entity no longer on the page, for an action that no longer applies, and needs per-page modal state); invalidating only when the modal closes (lists show stale data while the notice is up, and narrowing invalidation is a performance change, not a design one). Naming the entity in the notification (e.g. by patient): new text per entity that no one asked for; the title gives the action only.
+
 ## Open questions (from 2026-06-26 session — not yet resolved)
 
 - `SlotEvent` vocabulary: does it live in Domain (as a description of what

@@ -1,8 +1,9 @@
 import type { FormEvent, ReactNode } from 'react'
 import { Button, Group, Modal, Stack } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
+import { notifications } from '@mantine/notifications'
 import type { UseMutationResult } from '@tanstack/react-query'
-import { ErrorBanner, Notice } from './feedback'
+import { ErrorBanner } from './feedback'
 import type { Outcome } from './outcomes'
 
 // An action is a button that opens its form, titled with the same word.
@@ -20,8 +21,10 @@ export function ActionButton({ label, children }: { label: string; children: (cl
   )
 }
 
-// Submits `variables` (null while the form is incomplete). The success tag closes
-// the form; every other tag is shown inline, and a failure is an error banner.
+// Submits `variables` (null while the form is incomplete). Any answer closes the form;
+// a non-success tag is a notification at the app's root, since the refresh after the
+// answer can remove this form's card. A failure is an error banner in the form.
+// `mutateAsync`, not `mutate`'s callbacks: those don't run once the form has unmounted.
 export function AnswerForm<V, A>({
   label,
   mutation,
@@ -37,23 +40,24 @@ export function AnswerForm<V, A>({
   onDone: () => void
   children?: ReactNode
 }) {
-  const outcome = mutation.data === undefined ? null : describe(mutation.data)
-
   function submit(event: FormEvent) {
     event.preventDefault()
     if (variables === null) return
-    mutation.mutate(variables, {
-      onSuccess: (answer) => {
-        if (describe(answer).kind === 'success') onDone()
+    mutation.mutateAsync(variables).then(
+      (answer) => {
+        const outcome = describe(answer)
+        if (outcome.kind === 'notice')
+          notifications.show({ title: label, message: outcome.text, color: 'yellow', autoClose: false })
+        onDone()
       },
-    })
+      () => {}, // shown as `mutation.error`
+    )
   }
 
   return (
     <form onSubmit={submit}>
       <Stack>
         {children}
-        {outcome?.kind === 'notice' && <Notice>{outcome.text}</Notice>}
         {mutation.error && <ErrorBanner error={mutation.error} />}
         <Group justify="flex-end">
           <Button type="submit" variant="default" disabled={variables === null} loading={mutation.isPending}>

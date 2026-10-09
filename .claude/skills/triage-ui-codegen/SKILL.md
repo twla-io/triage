@@ -56,7 +56,7 @@ A sealed type's rule (its smart constructor's condition) is never re-implemented
 ## Answers
 
 ### `show-every-outcome`
-Every mutation and read answers `200` with `{"outcome", "detail"}`. The success tag (`ok`, or the use case's success tag) closes the form; every other tag is shown inline, as one sentence per kind, filled from the tag and its `detail`:
+Every mutation and read answers `200` with `{"outcome", "detail"}`. Any `200` answer closes the form. The success tag (`ok`, or the use case's success tag) shows nothing more. Every other tag is shown as a notification at the app's root that stays until dismissed, titled with the action's label, as one sentence per kind, filled from the tag and its `detail`. It lives at the root because the refresh after an answer can remove the entity it's about from the page, and anything shown inside that entity's card goes with it:
 
 | Tag shape | Text |
 |---|---|
