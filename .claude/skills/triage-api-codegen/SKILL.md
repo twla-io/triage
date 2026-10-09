@@ -21,7 +21,7 @@ This skill says only how those become JSON and routes. It names no Domain type o
 ## Wire format (`Transport.hs`)
 
 ### `names-come-from-domain`
-- **Keys** are `Domain.hs` names: a record field's name, a sealed type's read-only accessor's name, or for a single-field constructor, the constructor's name in lowerCamelCase. The innermost name above a value wins; an ID newtype is not a name, nor is a sealed newtype over one value (it is the value itself, encoded through its accessor and decoded through its smart constructor).
+- **Keys** are `Domain.hs` names: a record field's name, a sealed type's read-only accessor's name, or for a single-field constructor, the constructor's name in lowerCamelCase. The innermost name above a value wins; an ID newtype is not a name, nor is a sealed newtype over one value (it is the value itself, encoded through its accessor and decoded through its smart constructor; on the wire its value's type, inline, with no named schema; its rule is checked by its smart constructor and reported as a 400).
 - **A request body's keys** are the names of the `Domain.hs` fields their values land in, not Service's parameter names. An ID with no field of its own takes its ID type's name in lowerCamelCase (e.g. `slotId`).
 - **Discriminator values** are constructor names in lowerCamelCase.
 - There is no independent wire vocabulary: a rename in `Domain.hs` changes the wire, and every client is regenerated from the API's schema.
