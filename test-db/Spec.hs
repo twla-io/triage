@@ -21,9 +21,11 @@ import Prelude hiding (id)
 
 import Control.Concurrent         (forkIO, newEmptyMVar, putMVar, takeMVar, threadDelay)
 import Control.Exception          (bracket, try)
+import Control.Monad              (forM_)
 import Data.Maybe                 (fromMaybe)
 import Data.Pool                  (defaultPoolConfig, destroyAllResources, newPool, withResource)
 import Data.String                (fromString)
+import Data.Text                  (Text)
 import Data.Time                  (UTCTime (..), addUTCTime, fromGregorian)
 import Data.UUID.V4               (nextRandom)
 import Database.PostgreSQL.Simple (Connection, Only (..), SqlError (..), begin, close,
@@ -88,9 +90,13 @@ data Fixture = Fixture
 
 fixture :: ConnectionPool -> IO Fixture
 fixture pool =
-  Fixture <$> S.createDoctor pool "Dr A"
-          <*> S.createPatient pool "Patient P"
-          <*> S.createHealthcareService pool "Consultation" HalfAnHour
+  Fixture <$> S.createDoctor pool (named "Dr A")
+          <*> S.createPatient pool (named "Patient P")
+          <*> S.createHealthcareService pool (named "Consultation") HalfAnHour
+
+-- A fixture's name: mkName on a literal that isn't blank.
+named :: Text -> Name
+named t = fromMaybe (error ("mkName refused " ++ show t)) (mkName t)
 
 t0 :: UTCTime
 t0 = UTCTime (fromGregorian 2026 10 1) (9 * 3600)
@@ -252,7 +258,7 @@ spec pool = do
     it "a slot overlapping another doctor's entry is still created" $ do
       fx      <- fixture pool
       _       <- slotAt pool fx t0
-      doctorB <- S.createDoctor pool "Dr B"
+      doctorB <- S.createDoctor pool (named "Dr B")
       Right (AvailableSlotAdded _) <- S.createAvailableSlot pool doctorB.id fx.service.id (minutes 15 t0)
       pure ()
 
@@ -323,7 +329,7 @@ spec pool = do
 
     it "a request and slot that don't fit are the caller's mistake" $ do
       fx    <- fixture pool
-      other <- S.createHealthcareService pool "Other service" HalfAnHour
+      other <- S.createHealthcareService pool (named "Other service") HalfAnHour
       s     <- submit pool fx
       Right (Transitioned t) <-
         S.acceptSubmittedIntakeRequest pool s.id other.id (Routine RoutineAnytime) AnyDoctor t0
@@ -443,3 +449,13 @@ spec pool = do
       case result of
         Left e  -> sqlState e `shouldBe` "23514"   -- check_violation
         Right n -> expectationFailure ("the update was accepted (" ++ show n ++ " row)")
+
+    it "a name can't be empty or only whitespace" $ do
+      _ <- fixture pool
+      forM_ ["doctors", "patients", "healthcare_services"] $ \table ->
+        forM_ ["", " \t\n"] $ \blank -> do
+          result <- try (withResource pool (\c ->
+            execute c (fromString ("UPDATE " ++ table ++ " SET name = ?")) (Only (blank :: String))))
+          case result of
+            Left e  -> sqlState e `shouldBe` "23514"   -- check_violation
+            Right n -> expectationFailure (table ++ ": the update was accepted (" ++ show n ++ " row)")

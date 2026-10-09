@@ -172,21 +172,21 @@ reread conn requestId =
 -- CREATION
 -- ═══════════════════════════════════════════════════════════════════════════
 
-createDoctor :: ConnectionPool -> Text -> IO Doctor
+createDoctor :: ConnectionPool -> Name -> IO Doctor
 createDoctor pool doctorName = withResource pool $ \conn -> do
   uuid <- nextRandom
   let doctor = Doctor { id = DoctorId uuid, name = doctorName }
   Persistence.insertDoctor conn doctor
   pure doctor
 
-createPatient :: ConnectionPool -> Text -> IO Patient
+createPatient :: ConnectionPool -> Name -> IO Patient
 createPatient pool patientName = withResource pool $ \conn -> do
   uuid <- nextRandom
   let patient = Patient { id = PatientId uuid, name = patientName }
   Persistence.insertPatient conn patient
   pure patient
 
-createHealthcareService :: ConnectionPool -> Text -> Duration -> IO HealthcareService
+createHealthcareService :: ConnectionPool -> Name -> Duration -> IO HealthcareService
 createHealthcareService pool serviceName serviceDuration = withResource pool $ \conn -> do
   uuid <- nextRandom
   let service = HealthcareService
@@ -199,7 +199,7 @@ submitIntakeRequest
   :: ConnectionPool -> PatientId -> Text -> UTCTime
   -> IO (Either PatientNotFound SubmittedIntakeRequest)
 submitIntakeRequest pool patient requestNarrative requestCreatedAt = withResource pool $ \conn ->
-  Persistence.fetchPatient conn patient >>= \case
+  decoded (Persistence.fetchPatient conn patient) >>= \case
     Nothing -> pure (Left (PatientNotFound patient))
     Just _  -> do
       uuid <- nextRandom
@@ -220,7 +220,7 @@ createAvailableSlot
   :: ConnectionPool -> DoctorId -> HealthcareServiceId -> UTCTime
   -> IO (Either CreateAvailableSlotError AddAvailableSlotOutcome)
 createAvailableSlot pool doctor serviceId slotStart = withResource pool $ \conn -> do
-  doctorFound  <- Persistence.fetchDoctor conn doctor
+  doctorFound  <- decoded (Persistence.fetchDoctor conn doctor)
   serviceFound <- decoded (Persistence.fetchHealthcareService conn serviceId)
   case (doctorFound, serviceFound) of
     (Nothing, _) -> pure (Left (CreateAvailableSlotDoctorNotFound (DoctorNotFound doctor)))
@@ -253,7 +253,8 @@ acceptSubmittedIntakeRequest pool requestId serviceId tier requirement acceptedA
     serviceFound <- decoded (Persistence.fetchHealthcareService conn serviceId)
     doctorMissing <- case requirement of
       AnyDoctor             -> pure Nothing
-      SpecificDoctor doctor -> maybe (Just doctor) (const Nothing) <$> Persistence.fetchDoctor conn doctor
+      SpecificDoctor doctor ->
+        maybe (Just doctor) (const Nothing) <$> decoded (Persistence.fetchDoctor conn doctor)
     case (requestFound, serviceFound, doctorMissing) of
       (Nothing, _, _) ->
         pure (Left (AcceptSubmittedIntakeRequestIntakeRequestNotFound (IntakeRequestNotFound requestId)))
@@ -438,17 +439,19 @@ matchAvailableSlotByPriority pool slotId = withResource pool $ \conn ->
 
 fetchDoctor :: ConnectionPool -> DoctorId -> IO (Either DoctorNotFound Doctor)
 fetchDoctor pool doctor = withResource pool $ \conn ->
-  maybe (Left (DoctorNotFound doctor)) Right <$> Persistence.fetchDoctor conn doctor
+  maybe (Left (DoctorNotFound doctor)) Right
+    <$> decoded (Persistence.fetchDoctor conn doctor)
 
 fetchDoctors :: ConnectionPool -> IO [Doctor]
-fetchDoctors pool = withResource pool Persistence.fetchDoctors
+fetchDoctors pool = withResource pool (decoded . Persistence.fetchDoctors)
 
 fetchPatient :: ConnectionPool -> PatientId -> IO (Either PatientNotFound Patient)
 fetchPatient pool patient = withResource pool $ \conn ->
-  maybe (Left (PatientNotFound patient)) Right <$> Persistence.fetchPatient conn patient
+  maybe (Left (PatientNotFound patient)) Right
+    <$> decoded (Persistence.fetchPatient conn patient)
 
 fetchPatients :: ConnectionPool -> IO [Patient]
-fetchPatients pool = withResource pool Persistence.fetchPatients
+fetchPatients pool = withResource pool (decoded . Persistence.fetchPatients)
 
 fetchHealthcareService
   :: ConnectionPool -> HealthcareServiceId -> IO (Either HealthcareServiceNotFound HealthcareService)

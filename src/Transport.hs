@@ -29,6 +29,8 @@ module Transport
     -- ── DTOs ─────────────────────────────────────────────────────────────
   , DurationDTO (..)
   , toDomainDuration, fromDomainDuration
+  , NameDTO
+  , toDomainName, fromDomainName
   , DoctorDTO (..)
   , toDomainDoctor, fromDomainDoctor
   , PatientDTO (..)
@@ -371,12 +373,35 @@ fromDomainDuration = \case
   OneHour         -> DurationOneHour
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- NAME — a sealed newtype over one value is the value itself: a plain string,
+-- encoded through nameText and decoded through mkName
+-- ═══════════════════════════════════════════════════════════════════════════
+
+-- Sealed: holds a name mkName accepted; decoding goes through it.
+newtype NameDTO = NameDTO Name deriving (Show, Eq)
+
+instance ToJSON NameDTO where toJSON (NameDTO n) = toJSON (nameText n)
+instance FromJSON NameDTO where
+  parseJSON v = do
+    t <- parseJSON v
+    maybe (fail "name is empty or only whitespace") (pure . NameDTO) (mkName t)
+-- Unnamed, so every use is inlined as a plain string.
+instance ToSchema NameDTO where
+  declareNamedSchema _ = pure (NamedSchema Nothing (mempty & O.type_ ?~ OpenApiString))
+
+toDomainName :: NameDTO -> Name
+toDomainName (NameDTO n) = n
+
+fromDomainName :: Name -> NameDTO
+fromDomainName = NameDTO
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- DOCTOR / PATIENT / HEALTHCARE SERVICE
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data DoctorDTO = DoctorDTO
   { id   :: DoctorIdDTO
-  , name :: Text
+  , name :: NameDTO
   }
   deriving (Show, Eq)
 
@@ -387,21 +412,21 @@ parseDoctor :: Object -> Parser DoctorDTO
 parseDoctor o = DoctorDTO <$> o .: "id" <*> o .: "name"
 
 doctorProps :: Decl Props
-doctorProps = sequence [field "id" (ref @DoctorIdDTO), plain "name" stringS]
+doctorProps = sequence [field "id" (ref @DoctorIdDTO), field "name" (ref @NameDTO)]
 
 instance ToJSON DoctorDTO where toJSON = object . doctorPairs
 instance FromJSON DoctorDTO where parseJSON = strictObject "Doctor" parseDoctor doctorPairs
 instance ToSchema DoctorDTO where declareNamedSchema _ = recordSchema "Doctor" doctorProps
 
 toDomainDoctor :: DoctorDTO -> Doctor
-toDomainDoctor d = Doctor { id = toDomainDoctorId d.id, name = d.name }
+toDomainDoctor d = Doctor { id = toDomainDoctorId d.id, name = toDomainName d.name }
 
 fromDomainDoctor :: Doctor -> DoctorDTO
-fromDomainDoctor d = DoctorDTO { id = fromDomainDoctorId d.id, name = d.name }
+fromDomainDoctor d = DoctorDTO { id = fromDomainDoctorId d.id, name = fromDomainName d.name }
 
 data PatientDTO = PatientDTO
   { id   :: PatientIdDTO
-  , name :: Text
+  , name :: NameDTO
   }
   deriving (Show, Eq)
 
@@ -412,21 +437,21 @@ parsePatient :: Object -> Parser PatientDTO
 parsePatient o = PatientDTO <$> o .: "id" <*> o .: "name"
 
 patientProps :: Decl Props
-patientProps = sequence [field "id" (ref @PatientIdDTO), plain "name" stringS]
+patientProps = sequence [field "id" (ref @PatientIdDTO), field "name" (ref @NameDTO)]
 
 instance ToJSON PatientDTO where toJSON = object . patientPairs
 instance FromJSON PatientDTO where parseJSON = strictObject "Patient" parsePatient patientPairs
 instance ToSchema PatientDTO where declareNamedSchema _ = recordSchema "Patient" patientProps
 
 toDomainPatient :: PatientDTO -> Patient
-toDomainPatient p = Patient { id = toDomainPatientId p.id, name = p.name }
+toDomainPatient p = Patient { id = toDomainPatientId p.id, name = toDomainName p.name }
 
 fromDomainPatient :: Patient -> PatientDTO
-fromDomainPatient p = PatientDTO { id = fromDomainPatientId p.id, name = p.name }
+fromDomainPatient p = PatientDTO { id = fromDomainPatientId p.id, name = fromDomainName p.name }
 
 data HealthcareServiceDTO = HealthcareServiceDTO
   { id       :: HealthcareServiceIdDTO
-  , name     :: Text
+  , name     :: NameDTO
   , duration :: DurationDTO
   }
   deriving (Show, Eq)
@@ -441,7 +466,7 @@ parseHealthcareService o =
 healthcareServiceProps :: Decl Props
 healthcareServiceProps = sequence
   [ field "id" (ref @HealthcareServiceIdDTO)
-  , plain "name" stringS
+  , field "name" (ref @NameDTO)
   , field "duration" (ref @DurationDTO)
   ]
 
@@ -453,11 +478,11 @@ instance ToSchema HealthcareServiceDTO where
 
 toDomainHealthcareService :: HealthcareServiceDTO -> HealthcareService
 toDomainHealthcareService s = HealthcareService
-  { id = toDomainHealthcareServiceId s.id, name = s.name, duration = toDomainDuration s.duration }
+  { id = toDomainHealthcareServiceId s.id, name = toDomainName s.name, duration = toDomainDuration s.duration }
 
 fromDomainHealthcareService :: HealthcareService -> HealthcareServiceDTO
 fromDomainHealthcareService s = HealthcareServiceDTO
-  { id = fromDomainHealthcareServiceId s.id, name = s.name, duration = fromDomainDuration s.duration }
+  { id = fromDomainHealthcareServiceId s.id, name = fromDomainName s.name, duration = fromDomainDuration s.duration }
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- DOCTOR REQUIREMENT
@@ -1351,7 +1376,7 @@ fromDomainDoctorCalendar = DoctorCalendarDTO
 -- ═══════════════════════════════════════════════════════════════════════════
 
 newtype CreateDoctorRequest = CreateDoctorRequest
-  { name :: Text
+  { name :: NameDTO
   }
   deriving (Show, Eq)
 
@@ -1362,10 +1387,10 @@ instance ToJSON CreateDoctorRequest where toJSON = object . createDoctorPairs
 instance FromJSON CreateDoctorRequest where
   parseJSON = strictObject "CreateDoctorRequest" (\o -> CreateDoctorRequest <$> o .: "name") createDoctorPairs
 instance ToSchema CreateDoctorRequest where
-  declareNamedSchema _ = recordSchema "CreateDoctorRequest" (sequence [plain "name" stringS])
+  declareNamedSchema _ = recordSchema "CreateDoctorRequest" (sequence [field "name" (ref @NameDTO)])
 
 newtype CreatePatientRequest = CreatePatientRequest
-  { name :: Text
+  { name :: NameDTO
   }
   deriving (Show, Eq)
 
@@ -1376,10 +1401,10 @@ instance ToJSON CreatePatientRequest where toJSON = object . createPatientPairs
 instance FromJSON CreatePatientRequest where
   parseJSON = strictObject "CreatePatientRequest" (\o -> CreatePatientRequest <$> o .: "name") createPatientPairs
 instance ToSchema CreatePatientRequest where
-  declareNamedSchema _ = recordSchema "CreatePatientRequest" (sequence [plain "name" stringS])
+  declareNamedSchema _ = recordSchema "CreatePatientRequest" (sequence [field "name" (ref @NameDTO)])
 
 data CreateHealthcareServiceRequest = CreateHealthcareServiceRequest
-  { name     :: Text
+  { name     :: NameDTO
   , duration :: DurationDTO
   }
   deriving (Show, Eq)
@@ -1394,7 +1419,7 @@ instance FromJSON CreateHealthcareServiceRequest where
     createHealthcareServicePairs
 instance ToSchema CreateHealthcareServiceRequest where
   declareNamedSchema _ = recordSchema "CreateHealthcareServiceRequest" $
-    sequence [plain "name" stringS, field "duration" (ref @DurationDTO)]
+    sequence [field "name" (ref @NameDTO), field "duration" (ref @DurationDTO)]
 
 data SubmitIntakeRequestRequest = SubmitIntakeRequestRequest
   { patientId :: PatientIdDTO

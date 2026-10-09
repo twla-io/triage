@@ -6,14 +6,16 @@ CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 CREATE TABLE doctors (
   id   UUID PRIMARY KEY,
-  name TEXT NOT NULL
+  name TEXT NOT NULL,
+  CONSTRAINT doctors_name CHECK (name ~ '[^[:space:]]')
 );
 
 -- ── Patient ─────────────────────────────────────────────────────────────────
 
 CREATE TABLE patients (
   id   UUID PRIMARY KEY,
-  name TEXT NOT NULL
+  name TEXT NOT NULL,
+  CONSTRAINT patients_name CHECK (name ~ '[^[:space:]]')
 );
 
 -- ── HealthcareService ───────────────────────────────────────────────────────
@@ -22,6 +24,7 @@ CREATE TABLE healthcare_services (
   id       UUID PRIMARY KEY,
   name     TEXT NOT NULL,
   duration SMALLINT NOT NULL,
+  CONSTRAINT healthcare_services_name     CHECK (name ~ '[^[:space:]]'),
   CONSTRAINT healthcare_services_duration CHECK (duration IN (15, 30, 60))
 );
 

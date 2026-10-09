@@ -111,6 +111,7 @@ data DecodeError
   = UnknownStoredValue Text Text      -- ^ column, stored value
   | MissingValue Text                 -- ^ column required by the row's case is NULL
   | UnexpectedValue Text              -- ^ column the row's case leaves NULL is set
+  | NameRefused Text                  -- ^ mkName refused the stored text
   | RoutineWindowRefused UTCTime UTCTime  -- ^ mkRoutineWindow refused (not before, not after)
   | DoctorCalendarRefused             -- ^ mkDoctorCalendar refused the stored entries
   deriving (Show, Eq)
@@ -314,17 +315,23 @@ stateOf = \case
 -- DECODING
 -- ═══════════════════════════════════════════════════════════════════════════
 
-toDomainDoctor :: DoctorRow -> Doctor
-toDomainDoctor row = Doctor { id = DoctorId row.id, name = row.name }
+toDomainName :: Text -> Either DecodeError Name
+toDomainName stored = maybe (Left (NameRefused stored)) Right (mkName stored)
 
-toDomainPatient :: PatientRow -> Patient
-toDomainPatient row = Patient { id = PatientId row.id, name = row.name }
+toDomainDoctor :: DoctorRow -> Either DecodeError Doctor
+toDomainDoctor row =
+  (\doctorName -> Doctor { id = DoctorId row.id, name = doctorName }) <$> toDomainName row.name
+
+toDomainPatient :: PatientRow -> Either DecodeError Patient
+toDomainPatient row =
+  (\patientName -> Patient { id = PatientId row.id, name = patientName }) <$> toDomainName row.name
 
 toDomainHealthcareService :: HealthcareServiceRow -> Either DecodeError HealthcareService
 toDomainHealthcareService row = do
+  serviceName     <- toDomainName row.name
   serviceDuration <- toDomainDuration row.duration
   pure HealthcareService
-    { id = HealthcareServiceId row.id, name = row.name, duration = serviceDuration }
+    { id = HealthcareServiceId row.id, name = serviceName, duration = serviceDuration }
 
 toDomainAvailableSlot :: AvailableSlotRow -> Either DecodeError AvailableSlot
 toDomainAvailableSlot row = do
@@ -562,15 +569,15 @@ toDomainIntakeRequest row = case row.state of
 -- ═══════════════════════════════════════════════════════════════════════════
 
 fromDomainDoctor :: Doctor -> (UUID, Text)
-fromDomainDoctor doctor = let DoctorId uuid = doctor.id in (uuid, doctor.name)
+fromDomainDoctor doctor = let DoctorId uuid = doctor.id in (uuid, nameText doctor.name)
 
 fromDomainPatient :: Patient -> (UUID, Text)
-fromDomainPatient patient = let PatientId uuid = patient.id in (uuid, patient.name)
+fromDomainPatient patient = let PatientId uuid = patient.id in (uuid, nameText patient.name)
 
 fromDomainHealthcareService :: HealthcareService -> (UUID, Text, Int16)
 fromDomainHealthcareService service =
   let HealthcareServiceId uuid = service.id
-  in (uuid, service.name, fromDomainDuration service.duration)
+  in (uuid, nameText service.name, fromDomainDuration service.duration)
 
 fromDomainAvailableSlot :: AvailableSlot -> (UUID, UUID, UUID, UTCTime, Int16)
 fromDomainAvailableSlot slot =
@@ -779,14 +786,14 @@ persistClosedIntakeRequest conn request = do
 
 -- ── By id ──────────────────────────────────────────────────────────────────
 
-fetchDoctor :: Connection -> DoctorId -> IO (Maybe Doctor)
+fetchDoctor :: Connection -> DoctorId -> IO (Either DecodeError (Maybe Doctor))
 fetchDoctor conn (DoctorId uuid) =
-  fmap toDomainDoctor . single <$>
+  traverse toDomainDoctor . single <$>
     query conn ("SELECT " <> doctorColumns <> " FROM doctors WHERE id = ?") (Only uuid)
 
-fetchPatient :: Connection -> PatientId -> IO (Maybe Patient)
+fetchPatient :: Connection -> PatientId -> IO (Either DecodeError (Maybe Patient))
 fetchPatient conn (PatientId uuid) =
-  fmap toDomainPatient . single <$>
+  traverse toDomainPatient . single <$>
     query conn ("SELECT " <> patientColumns <> " FROM patients WHERE id = ?") (Only uuid)
 
 fetchHealthcareService
@@ -817,14 +824,14 @@ single = \case
 
 -- ── All (entities that are neither sum types nor sealed-collection elements)
 
-fetchDoctors :: Connection -> IO [Doctor]
+fetchDoctors :: Connection -> IO (Either DecodeError [Doctor])
 fetchDoctors conn =
-  map toDomainDoctor <$>
+  traverse toDomainDoctor <$>
     query_ conn ("SELECT " <> doctorColumns <> " FROM doctors ORDER BY name")
 
-fetchPatients :: Connection -> IO [Patient]
+fetchPatients :: Connection -> IO (Either DecodeError [Patient])
 fetchPatients conn =
-  map toDomainPatient <$>
+  traverse toDomainPatient <$>
     query_ conn ("SELECT " <> patientColumns <> " FROM patients ORDER BY name")
 
 fetchHealthcareServices :: Connection -> IO (Either DecodeError [HealthcareService])

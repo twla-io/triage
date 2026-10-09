@@ -360,7 +360,7 @@ doctorsServer :: ServerT DoctorsApi AppM
 doctorsServer = createDoctorH :<|> fetchDoctorsH :<|> fetchDoctorH
   where
     createDoctorH req = service $ \pool ->
-      renderCreateDoctorAnswer <$> Service.createDoctor pool req.name
+      renderCreateDoctorAnswer <$> Service.createDoctor pool (toDomainName req.name)
     fetchDoctorsH = service $ \pool ->
       renderFetchDoctorsAnswer <$> Service.fetchDoctors pool
     fetchDoctorH doctor = service $ \pool ->
@@ -380,7 +380,7 @@ patientsServer :: ServerT PatientsApi AppM
 patientsServer = createPatientH :<|> fetchPatientsH :<|> fetchPatientH
   where
     createPatientH req = service $ \pool ->
-      renderCreatePatientAnswer <$> Service.createPatient pool req.name
+      renderCreatePatientAnswer <$> Service.createPatient pool (toDomainName req.name)
     fetchPatientsH = service $ \pool ->
       renderFetchPatientsAnswer <$> Service.fetchPatients pool
     fetchPatientH patient = service $ \pool ->
@@ -402,7 +402,7 @@ healthcareServicesServer =
   where
     createHealthcareServiceH req = service $ \pool ->
       renderCreateHealthcareServiceAnswer
-        <$> Service.createHealthcareService pool req.name (toDomainDuration req.duration)
+        <$> Service.createHealthcareService pool (toDomainName req.name) (toDomainDuration req.duration)
     fetchHealthcareServicesH = service $ \pool ->
       renderFetchHealthcareServicesAnswer <$> Service.fetchHealthcareServices pool
     fetchHealthcareServiceH serviceId = service $ \pool ->

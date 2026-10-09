@@ -18,7 +18,7 @@ Derive `migrations/` and `src/Persistence.hs` from `src/Domain.hs`.
 ## Names
 
 ### `names-come-from-domain`
-1. **Values.** A value is named by its record field, or by its constructor if the constructor has exactly one field; a sealed type's values, by its exported read-only accessors. A value takes the innermost name above it. An ID newtype is not a name: it is the value itself, and gives the foreign key; a column holding one ends in `_id` (unless its name already does).
+1. **Values.** A value is named by its record field, or by its constructor if the constructor has exactly one field; a sealed type's values, by its exported read-only accessors. A value takes the innermost name above it. An ID newtype is not a name: it is the value itself, and gives the foreign key; a column holding one ends in `_id` (unless its name already does). A sealed newtype over one value is not a name either: it is the value itself, encoded through its accessor and decoded through its smart constructor; its invariant is a `CHECK` on the column named above it.
 2. **Columns.** A column is its value's name in snake_case. Records nested in a row are flattened into it, with no prefix. Within one table, values with the same name share one column. `Domain.hs` uses the same name only for the same fact.
 3. **Tables.** A table is named after the collection its rows form. If `Domain.hs` has a type whose elements are exactly these rows, the table takes its name in snake_case. Otherwise it takes the row type's name, pluralized.
 4. **Stored enumeration values** are constructor names in snake_case.
@@ -67,6 +67,7 @@ An `Ord` instance is evaluated in memory. Add a rank column only when a query mu
 ### `cross-table-invariants-need-a-shadow-table`
 Only a sealed type's invariant becomes a constraint.
 - **Single value:** an invariant a sealed type declares over one value becomes a `CHECK`.
+- **Translating the condition:** the `CHECK` is the smart constructor's condition, operator for operator. A `Data.Char` class predicate becomes its POSIX bracket class in a regex: `isSpace` → `[:space:]`, `isDigit` → `[:digit:]`, `isAlpha` → `[:alpha:]`, `isUpper` → `[:upper:]`, `isLower` → `[:lower:]`. A quantifier over the text becomes a regex match: `T.any p` → `col ~ '[[:p:]]'`, and `not (T.all p)` → `col ~ '[^[:p:]]'`. Postgres's classes depend on the locale and may accept a few Unicode characters that `Data.Char` rejects. This is acceptable, because decoding goes back through the smart constructor, so the `CHECK` may be looser but never stricter.
 - **Collection:** one declared over a collection of stored rows (a sealed collection type) becomes an `EXCLUDE` or `UNIQUE` constraint. A check in Service is never enough.
 - **Across two tables:** when the collection's rows live in two tables, a trigger-maintained shadow table, named after the collection type, holds one row per element. Its columns are fixed by convention:
   - the key the invariant groups by, named as that value;

@@ -337,6 +337,18 @@ After a lost write, Service reads the request once more, and that read always fi
 
 **Rejected:** two reads, a per-doctor slice for slot creation and a range read for callers (option A): both replay the same way and differ only in a `doctor_id = ?` filter, which restates in SQL a rule `Domain.hs` already holds, and two reads can drift apart, as the view and the slice did. Cost of the one read: slot creation also loads other doctors' entries in a window one slot long, a handful of rows at 2–3 doctors. A bare list on the wire: it needs an exception to the key rule, drops the type's name at the contract, and can't gain a field without breaking clients.
 
+## Names are never blank: a sealed `Name` (2026-10-09)
+
+**Found:** manual testing showed a doctor with no name. `name` was plain `Text` on `Doctor`, `Patient` and `HealthcareService`; the database's `NOT NULL` and Transport's string check let `""` and `"   "` through, and `POST /doctors` passed them straight to `createDoctor`.
+
+**Decided:**
+- `Domain.hs` exports a sealed `newtype Name`, built only via `mkName :: Text -> Maybe Name` (refuses text that is empty or only whitespace, by `isSpace`) and read through `nameText`. One type for all three entities: the invariant is the same, and nothing takes a name as an argument, so there is nothing to mix up.
+- No trimming: a name is stored as typed. Normalising is a separate decision.
+- A sealed newtype over one value is not a name downstream, as an ID newtype isn't: it is the value itself (`triage-db-codegen`, `triage-api-codegen`). The column and key stay `name`; the database adds `CHECK (name ~ '[^[:space:]]')`, derived from `mkName`'s condition by `triage-db-codegen`'s rule for translating a smart constructor's condition (`not (T.all isSpace t)` → `col ~ '[^[:space:]]'`). That rule was added because the first generation could only take the regex from this file. Postgres's `[[:space:]]` may accept a few Unicode spaces `isSpace` rejects, so the database is the looser of the two; such a row could only come from raw SQL and fails loudly on decode.
+- Patient's `name` keeps its open question below: this types the field, it doesn't decide that it stays.
+
+**Rejected:** a name type per entity (`DoctorName`, …): the same invariant three times, protecting against a mix-up no function allows. Applying the existing "innermost name wins" rule to `Name`: it would give a `name_text` column and `{"name": {"nameText": …}}` on the wire. Also making `rejectionReason`, `narrative` and the notes non-blank: not discussed, left for its own decision.
+
 ## Open questions (from 2026-06-26 session — not yet resolved)
 
 - `SlotEvent` vocabulary: does it live in Domain (as a description of what

@@ -255,8 +255,10 @@ keys tie does input-list order decide.
 build a window with `routineNotBefore > routineNotAfter`, a range that can
 never match anything. `mkRoutineWindow :: UTCTime -> UTCTime -> Maybe
 RoutineWindow` is the only way to construct one, and enforces
-`routineNotBefore <= routineNotAfter`. The only other sealed type is
-`DoctorCalendar` (see "Doctor calendar" below); see `CLAUDE.md`'s "Sealing
+`routineNotBefore <= routineNotAfter`. The other sealed types are
+`DoctorCalendar` (see "Doctor calendar" below) and `Name` (a doctor's,
+patient's or service's name: `mkName` refuses empty or whitespace-only
+text, `nameText` reads it); see `CLAUDE.md`'s "Sealing
 in Domain.hs" section for the full statement of that rule. It has no record
 fields — record-update syntax would bypass `mkRoutineWindow` — so its two
 values are read through the named, read-only accessors `routineNotBefore`

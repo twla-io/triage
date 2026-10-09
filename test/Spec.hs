@@ -16,10 +16,11 @@ import Test.Hspec
 import Test.Hspec.QuickCheck (prop)
 import Test.QuickCheck
 import Data.List (sortOn)
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 
 import Control.Lens ((%~), (&), (.~), (?~), (^.), _Just)
-import Data.Aeson (ToJSON, Value (Null), toJSON)
+import Data.Aeson (FromJSON, Key, ToJSON, Value (Null), object, parseJSON, toJSON, (.=))
+import Data.Aeson.Types (parseEither)
 import Data.OpenApi
   ( AdditionalProperties (..), OpenApiItems (..), Referenced (..), Schema, ToSchema, declareSchema
   , additionalProperties, allOf, anyOf, enum_, items, not_, nullable, oneOf, properties )
@@ -120,10 +121,14 @@ genTriagedRequestFor sid = do
   prio        <- genPriority
   acceptIntakeRequest baseRequest sid prio AnyDoctor <$> genMoment
 
+-- A fixture's name: mkName on a literal that isn't blank.
+named :: Text -> Name
+named t = fromMaybe (error ("mkName refused " ++ show t)) (mkName t)
+
 genService :: Gen HealthcareService
 genService = do
   sid <- arbitrary
-  HealthcareService sid "a service" <$> arbitrary
+  HealthcareService sid (named "a service") <$> arbitrary
 
 -- Built from explicit parts rather than record updates: start/doctorId/
 -- duration are shared field names across AvailableSlot and
@@ -270,10 +275,10 @@ genIntakeRequest = oneof
   ]
 
 genDoctor :: Gen Doctor
-genDoctor = (\did -> Doctor did "Dr A") <$> arbitrary
+genDoctor = (\did -> Doctor did (named "Dr A")) <$> arbitrary
 
 genPatient :: Gen Patient
-genPatient = (\pid -> Patient pid "Patient P") <$> arbitrary
+genPatient = (\pid -> Patient pid (named "Patient P")) <$> arbitrary
 
 -- Request bodies.
 
@@ -670,10 +675,10 @@ main = hspec $ do
     prop "DoctorCalendar"         $ forAll genDoctorCalendar (matchesSchema . T.fromDomainDoctorCalendar)
 
   describe "wire format: every request body's ToJSON matches its OpenAPI 3 schema" $ do
-    prop "CreateDoctorRequest"  $ matchesSchema (T.CreateDoctorRequest "Dr A")
-    prop "CreatePatientRequest" $ matchesSchema (T.CreatePatientRequest "Patient P")
+    prop "CreateDoctorRequest"  $ matchesSchema (T.CreateDoctorRequest (T.fromDomainName (named "Dr A")))
+    prop "CreatePatientRequest" $ matchesSchema (T.CreatePatientRequest (T.fromDomainName (named "Patient P")))
     prop "CreateHealthcareServiceRequest" $ forAll arbitrary $ \d ->
-      matchesSchema (T.CreateHealthcareServiceRequest "Consultation" (T.fromDomainDuration d))
+      matchesSchema (T.CreateHealthcareServiceRequest (T.fromDomainName (named "Consultation")) (T.fromDomainDuration d))
     prop "SubmitIntakeRequestRequest" $ \pid ->
       matchesSchema (T.SubmitIntakeRequestRequest (T.fromDomainPatientId pid) "needs care")
     prop "AcceptSubmittedIntakeRequestRequest" $ forAll genAnyTriaged $ \tr ->
@@ -692,6 +697,23 @@ main = hspec $ do
     prop "CreateAvailableSlotRequest" $ forAll genAnySlot $ \slot ->
       matchesSchema (T.CreateAvailableSlotRequest (T.fromDomainDoctorId slot.doctorId)
         (T.fromDomainHealthcareServiceId slot.healthcareServiceId) slot.start)
+
+  describe "wire format: a blank name is refused when decoding" $ do
+    let blanks = ["", " ", "\t\n  "] :: [Text]
+        refused :: forall a. (FromJSON a, Eq a, Show a) => Proxy a -> [(Key, Value)] -> Text -> Expectation
+        refused _ others blank =
+          parseEither (parseJSON @a) (object (("name" .= blank) : others))
+            `shouldBe` Left "Error in $.name: name is empty or only whitespace"
+        anId = toJSON UUID.nil
+        aDuration = toJSON (T.fromDomainDuration HalfAnHour)
+    it "CreateDoctorRequest" $ mapM_ (refused (Proxy @T.CreateDoctorRequest) []) blanks
+    it "CreatePatientRequest" $ mapM_ (refused (Proxy @T.CreatePatientRequest) []) blanks
+    it "CreateHealthcareServiceRequest" $
+      mapM_ (refused (Proxy @T.CreateHealthcareServiceRequest) [("duration", aDuration)]) blanks
+    it "Doctor" $ mapM_ (refused (Proxy @T.DoctorDTO) [("id", anId)]) blanks
+    it "Patient" $ mapM_ (refused (Proxy @T.PatientDTO) [("id", anId)]) blanks
+    it "HealthcareService" $
+      mapM_ (refused (Proxy @T.HealthcareServiceDTO) [("id", anId), ("duration", aDuration)]) blanks
 
   describe "wire format: every answer's ToJSON matches its OpenAPI 3 schema" $ do
     prop "CreateDoctorAnswer" $ forAll genDoctor (matchesSchema . A.renderCreateDoctorAnswer)

@@ -19,6 +19,9 @@ are generated from.
 **Duration** — `Duration = QuarterOfAnHour | HalfAnHour | OneHour`, deriving
 `Enum, Bounded`.
 
+**Name** — `Name` (sealed, read through `nameText`): the `name` of a
+`Doctor`, `Patient` or `HealthcareService`; never empty or only whitespace.
+
 **Doctor / Patient** — `Doctor`, `Patient`: `id` and `name` only, deliberately
 minimal — expected to move to a separate system later.
 
@@ -97,6 +100,9 @@ stored data needs the same invariant enforced where it lives.
 
 Constructors are hidden only where there's an invariant to protect:
 
+- `Name` — construct only via `mkName :: Text -> Maybe Name` (refuses text
+  that is empty or only whitespace); read through the exported read-only
+  accessor `nameText :: Name -> Text`.
 - `RoutineWindow` — construct only via `mkRoutineWindow :: UTCTime ->
   UTCTime -> Maybe RoutineWindow` (enforces `routineNotBefore <=
   routineNotAfter`); it has no record fields, since record update would

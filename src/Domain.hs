@@ -21,6 +21,11 @@ module Domain
   , Duration (..)
   , durationToNominalDiffTime
 
+  -- ── Name ─────────────────────────────────────────────────────────────────
+  , Name                         -- sealed: not empty or only whitespace
+  , mkName
+  , nameText
+
   -- ── Doctor / Patient ─────────────────────────────────────────────────────
   , Doctor (..)
   , Patient (..)
@@ -75,6 +80,7 @@ module Domain
   ) where
 
 import Control.Monad   (foldM)
+import Data.Char       (isSpace)
 import Data.List       (sortOn)
 import Data.Map.Strict (Map)
 import Data.Maybe      (listToMaybe, mapMaybe)
@@ -83,6 +89,7 @@ import Data.Time       (NominalDiffTime, UTCTime, addUTCTime)
 import Data.UUID       (UUID)
 
 import qualified Data.Map.Strict as Map
+import qualified Data.Text       as T
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- ID WRAPPERS
@@ -110,19 +117,36 @@ durationToNominalDiffTime HalfAnHour      = 1800
 durationToNominalDiffTime OneHour         = 3600
 
 -- ═══════════════════════════════════════════════════════════════════════════
+-- NAME
+-- Name's constructor excluded from exports — use mkName (refuses text that
+-- is empty or only whitespace).
+-- ═══════════════════════════════════════════════════════════════════════════
+
+newtype Name = Name Text
+  deriving (Show, Eq)
+
+mkName :: Text -> Maybe Name
+mkName t
+  | T.all isSpace t = Nothing
+  | otherwise       = Just (Name t)
+
+nameText :: Name -> Text
+nameText (Name t) = t
+
+-- ═══════════════════════════════════════════════════════════════════════════
 -- DOCTOR / PATIENT
 -- Deliberately minimal — expected to move to a separate system later.
 -- ═══════════════════════════════════════════════════════════════════════════
 
 data Doctor = Doctor
   { id   :: DoctorId
-  , name :: Text
+  , name :: Name
   }
   deriving (Show, Eq)
 
 data Patient = Patient
   { id   :: PatientId
-  , name :: Text
+  , name :: Name
   }
   deriving (Show, Eq)
 
@@ -135,7 +159,7 @@ data Patient = Patient
 
 data HealthcareService = HealthcareService
   { id       :: HealthcareServiceId
-  , name     :: Text
+  , name     :: Name
   , duration :: Duration
   }
   deriving (Show, Eq)

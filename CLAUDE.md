@@ -27,18 +27,18 @@ Run successfully when this file was last updated (2026-09-30):
 - `cabal test` — runs the three suites below.
   - `cabal test triage-test` — hspec/QuickCheck: pure `Domain` properties
     plus a check that every DTO's, request body's and answer's `ToJSON`
-    matches its own OpenAPI 3 schema. No database needed. Run 2026-10-06:
-    87 examples, 0 failures.
+    matches its own OpenAPI 3 schema. No database needed. Run 2026-10-09:
+    93 examples, 0 failures.
   - `cabal test triage-db-test` — the SQL behind Persistence/Service against
     a real PostgreSQL (`test-db/Spec.hs`): creates a throwaway database,
     applies `migrations/0001_init.sql`, drops it afterwards. Needs a local
     server the current user can create databases on; extra libpq keywords
-    via `TRIAGE_TEST_PG`. Run 2026-10-06: 35 examples, 0 failures.
+    via `TRIAGE_TEST_PG`. Run 2026-10-09: 36 examples, 0 failures.
   - `cabal test triage-schema-test` — the CHECK constraints on
     `intake_requests` against a real PostgreSQL, raw SQL only (no
     dependency on the library): each case's column shape from a
     classification table written from `Domain.hs`. `TRIAGE_SCHEMA_FILE`
-    overrides the schema file. Run 2026-10-06: 20 examples, 0 failures.
+    overrides the schema file. Run 2026-10-09: 20 examples, 0 failures.
 - `cd frontend && npm run build` (`tsc -b && vite build`)
 
 Inferred from configuration, not run:
@@ -101,7 +101,7 @@ or protects against races. Enforcement is split:
 - **Types / smart constructors (Domain):** each lifecycle stage embeds its
   predecessor whole, so an `AppointedIntakeRequest` can't be built without
   a `TriagedIntakeRequest`. `mkRoutineWindow` enforces
-  `routineNotBefore <= routineNotAfter`.
+  `routineNotBefore <= routineNotAfter`; `mkName` refuses a blank name.
   `mkDoctorCalendar`/`addAvailableSlot` enforce no overlap per doctor
   within a `DoctorCalendar` value; `addAvailableSlot` creates a new slot
   with its service's duration. Types do *not* prove a value matches
@@ -138,7 +138,12 @@ or protects against races. Enforcement is split:
 ## Sealing in Domain.hs — selective, and that's the point
 
 Constructors are hidden only where an identified invariant needs
-protection. Currently two sealed cases:
+protection. Currently three sealed cases:
+- `Name` (the `name` of `Doctor`, `Patient` and `HealthcareService`) —
+  built only via `mkName`, which refuses text that is empty or only
+  whitespace; read through `nameText`. A sealed newtype over one value is
+  the value itself downstream, as an ID newtype is: column and key stay
+  `name`, with a `CHECK` in the database.
 - `RoutineWindow` (carried by `RoutineDue`'s `RoutineWithin`) — built only
   via `mkRoutineWindow` (`routineNotBefore <= routineNotAfter`). It has no
   record fields, since record update would bypass the check; the named,
