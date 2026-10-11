@@ -1,15 +1,19 @@
-/* Palette ported from the standalone HTML mockup, exposed under its
-   original variable names too (not just consumed into the Mantine theme in
-   theme.ts) so any one-off styling can reference them directly. */
+/* "Ink & mono": IBM Plex Sans for text, IBM Plex Mono as the monospace face
+   (theme.ts names both, with system fallbacks). */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+/* The palette, exposed under named variables too (not just consumed into
+   the Mantine theme in theme.ts) so any one-off styling can reference
+   them directly. */
 :root {
   --surface-2: #ffffff;
-  --surface-1: #f5f4f0;
-  --surface-0: #ececea;
-  --text-primary: #1a1a18;
-  --text-secondary: #5f5e5a;
-  --text-muted: #888780;
-  --border: #d3d1c7;
-  --border-strong: #b4b2a9;
+  --surface-1: #fafaf9;
+  --surface-0: #f0f0ee;
+  --text-primary: #16181c;
+  --text-secondary: #3d4148;
+  --text-muted: #6b6f76;
+  --border: #e3e3e0;
+  --border-strong: #b9b9b4;
   --bg-success: #eaf3de;
   --text-success: #27500a;
   --bg-accent: #e6f1fb;
@@ -19,7 +23,11 @@
   --border-danger: #f09595;
   --bg-warning: #faeeda;
   --text-warning: #633806;
-  --radius: 8px;
+  --radius: 6px;
+  --ink: #16181c;
+  --ink-raised: #2a2d33;
+  --ink-hover: #22252a;
+  --ink-text: #c9ccd1;
 }
 
 /* Outermost layer -- visible behind the app shell (overscroll bounce, any
@@ -31,11 +39,34 @@ body {
 
 /* Paper (and everything built on it -- the "card" throughout this app)
    defaults to --mantine-color-body, which theme.ts points at surface-1 so
-   AppShell's navbar/main read as the page wash. Cards need to sit one
+   AppShell's main reads as the page wash. Cards need to sit one
    level up from that, at surface-2, so they're called out here via
    Mantine's documented static class hook rather than by touching
    --mantine-color-body globally (that would flatten the app shell and its
    cards to the same surface). */
 .mantine-Paper-root {
   background-color: var(--surface-2);
+}
+
+/* The navbar is ink: a charcoal rail with light links. The active link is
+   one step lighter, in white, marked by a bar on its leading edge. */
+.mantine-AppShell-navbar {
+  background-color: var(--ink);
+  border-right-color: var(--ink);
+}
+
+.mantine-AppShell-navbar .mantine-NavLink-root {
+  color: var(--ink-text);
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.mantine-AppShell-navbar .mantine-NavLink-root:hover {
+  background-color: var(--ink-hover);
+}
+
+.mantine-AppShell-navbar .mantine-NavLink-root[data-active] {
+  background-color: var(--ink-raised);
+  color: #ffffff;
+  box-shadow: inset 2px 0 0 #ffffff;
 }

@@ -1,8 +1,8 @@
 import { createTheme, defaultVariantColorsResolver, type CSSVariablesResolver, type MantineColorsTuple } from '@mantine/core'
 
-// Palette ported verbatim from the standalone HTML mockup. Only index 1 (bg)
-// and index 9 (text) of each semantic tuple are literal mockup values --
-// the rest are hand-interpolated stops so Mantine's non-light/filled
+// Semantic palette: only index 1 (bg) and index 9 (text) of each tuple are
+// the literal tint values (SEMANTIC_TINTS below) -- the rest are
+// hand-interpolated stops so Mantine's non-light/filled
 // variants (outline/subtle/etc, and any hover state) still have something
 // coherent to draw on.
 const danger: MantineColorsTuple = [
@@ -17,9 +17,9 @@ const accent: MantineColorsTuple = [
   '#f1f7fd', '#e6f1fb', '#c9e0f6', '#a4cbef', '#78b1e6',
   '#4f96da', '#2f7ac8', '#1c62ac', '#134b88', '#0c447c',
 ]
-// Not in the mockup: the middle of the rank scale (red > orange > green)
-// needs a hue of its own, distinct from the warning tint that yellow
-// feedback uses. Interpolated between danger and warning.
+// The middle of the rank scale (red > orange > green) needs a hue of its
+// own, distinct from the warning tint that yellow feedback uses.
+// Interpolated between danger and warning.
 const rankMiddle: MantineColorsTuple = [
   '#fef6f0', '#fde8d7', '#f9cfae', '#f3b27f', '#ea9152',
   '#dc7230', '#c25a1c', '#9f4614', '#7f370f', '#6b2d0a',
@@ -29,9 +29,10 @@ const warning: MantineColorsTuple = [
   '#c88f34', '#ac7424', '#8c5c1a', '#714910', '#633806',
 ]
 
+// "Ink & mono" neutrals: cool, near-colorless greys under a charcoal ink.
 // Mantine's internals (Paper/AppShell borders, Input's default border,
 // --mantine-color-dimmed) all key off the built-in `gray` scale rather than
-// a bespoke set of variables, so the neutral tokens are ported by
+// a bespoke set of variables, so the neutral tokens are set by
 // redefining `gray` itself instead of chasing every individual CSS
 // variable. surface-0/1/2 sit at 2/1/0 (lightest first, Mantine
 // convention); border/border-strong at 3-4/5; text-muted/secondary/primary
@@ -39,28 +40,27 @@ const warning: MantineColorsTuple = [
 // `--mantine-color-dimmed: var(--mantine-color-gray-6)`, so text-muted
 // becomes the dimmed color for free.
 const gray: MantineColorsTuple = [
-  '#f8f7f4', // 0
-  '#f5f4f0', // 1  surface-1
-  '#ececea', // 2  surface-0
-  '#d3d1c7', // 3  border (Paper/AppShell/Divider default border)
-  '#d3d1c7', // 4  border (Input default border)
-  '#b4b2a9', // 5  border-strong
-  '#888780', // 6  text-muted (-> --mantine-color-dimmed)
-  '#726f68', // 7
-  '#5f5e5a', // 8  text-secondary
-  '#1a1a18', // 9  text-primary
+  '#fcfcfb', // 0
+  '#fafaf9', // 1  surface-1
+  '#f0f0ee', // 2  surface-0
+  '#e3e3e0', // 3  border (Paper/AppShell/Divider default border)
+  '#d4d4d0', // 4  border (Input default border)
+  '#b9b9b4', // 5  border-strong
+  '#6b6f76', // 6  text-muted (-> --mantine-color-dimmed)
+  '#575b62', // 7
+  '#3d4148', // 8  text-secondary
+  '#16181c', // 9  text-primary (ink)
 ]
 
-// bg/text pairs exactly as given by the mockup, for the light/filled
-// variant resolver below -- kept separate from the interpolated tuples
-// above so "light" Alerts/Buttons/Badges render the *exact* mockup
-// color, not an approximation of it.
+// bg/text pairs for the light/filled variant resolver below -- kept
+// separate from the interpolated tuples above so "light"
+// Alerts/Buttons/Badges render the exact tint, not an approximation of it.
 const SEMANTIC_TINTS: Record<string, { bg: string; text: string; border?: string; hover: string }> = {
   red: { bg: '#fcebeb', text: '#791f1f', border: '#f09595', hover: danger[2] },
   green: { bg: '#eaf3de', text: '#27500a', hover: success[2] },
   blue: { bg: '#e6f1fb', text: '#0c447c', hover: accent[2] },
   // orange is the rank scale's middle and must not look like feedback;
-  // yellow is the mockup's one warning tint, used for feedback.
+  // yellow is the one warning tint, used for feedback.
   orange: { bg: '#fde8d7', text: '#6b2d0a', hover: rankMiddle[2] },
   yellow: { bg: '#faeeda', text: '#633806', hover: warning[2] },
 }
@@ -73,12 +73,22 @@ const FILLED_BACKGROUND: Record<string, string> = {
   yellow: warning[6],
 }
 
+const sans = '"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif'
+const mono = '"IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace'
+
 export const theme = createTheme({
-  black: '#1a1a18', // text-primary -- flows into --mantine-color-text
+  black: '#16181c', // text-primary -- flows into --mantine-color-text
+  fontFamily: sans,
+  fontFamilyMonospace: mono,
+  headings: { fontFamily: sans, fontWeight: '600' },
   primaryColor: 'blue', // redefined to the accent family below
   primaryShade: 6,
-  defaultRadius: '8px',
+  defaultRadius: '6px',
   colors: { red: danger, green: success, blue: accent, orange: rankMiddle, yellow: warning, gray },
+  components: {
+    Button: { defaultProps: { radius: '4px' } },
+    Badge: { defaultProps: { radius: '3px' } },
+  },
   variantColorResolver: (input) => {
     const tint = typeof input.color === 'string' ? SEMANTIC_TINTS[input.color] : undefined
     if (tint) {
@@ -107,13 +117,14 @@ export const theme = createTheme({
 })
 
 // The one CSS variable with no theme-level field of its own: Paper/AppShell
-// both read --mantine-color-body directly, but the mockup wants them at
-// different surface levels (AppShell = surface-1, Paper = surface-2) -- see
-// theme.css's .mantine-Paper-root override for the other half of this.
+// both read --mantine-color-body directly, but they sit at different
+// surface levels (AppShell main = surface-1, Paper = surface-2) -- see
+// theme.css's .mantine-Paper-root override for the other half of this, and
+// for the charcoal navbar.
 export const cssVariablesResolver: CSSVariablesResolver = () => ({
   variables: {},
   light: {
-    '--mantine-color-body': '#f5f4f0', // surface-1
+    '--mantine-color-body': '#fafaf9', // surface-1
   },
   dark: {},
 })
