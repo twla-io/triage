@@ -459,3 +459,31 @@ spec pool = do
           case result of
             Left e  -> sqlState e `shouldBe` "23514"   -- check_violation
             Right n -> expectationFailure (table ++ ": the update was accepted (" ++ show n ++ " row)")
+
+    it "an appointed request inserted directly over a slot is rejected" $ do
+      fx  <- fixture pool
+      _   <- slotAt pool fx t0
+      rid <- nextRandom
+      let PatientId pid           = fx.patient.id
+          HealthcareServiceId sid = fx.service.id
+          DoctorId did            = fx.doctor.id
+      result <- try (withResource pool (\c ->
+        execute c
+          "INSERT INTO intake_requests (id, state, patient_id, narrative, created_at, \
+          \healthcare_service_id, priority, triaged_at, doctor_id, start, duration) \
+          \VALUES (?, 'appointed', ?, 'needs care', ?, ?, 'routine', ?, ?, ?, 30)"
+          (rid, pid, t0, sid, t0, did, t0)))
+      case result of
+        Left e  -> sqlState e `shouldBe` "23P01"   -- exclusion_violation
+        Right n -> expectationFailure ("the insert was accepted (" ++ show n ++ " row)")
+
+    it "moving an appointment onto a slot is rejected" $ do
+      fx        <- fixture pool
+      (_, _, a) <- appoint pool fx t0
+      _         <- slotAt pool fx (minutes 60 t0)
+      let IntakeRequestId rid = a.triaged.submitted.id
+      result <- try (withResource pool (\c ->
+        execute c "UPDATE intake_requests SET start = ? WHERE id = ?" (minutes 60 t0, rid)))
+      case result of
+        Left e  -> sqlState e `shouldBe` "23P01"   -- exclusion_violation
+        Right n -> expectationFailure ("the update was accepted (" ++ show n ++ " row)")

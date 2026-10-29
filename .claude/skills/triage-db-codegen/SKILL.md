@@ -79,7 +79,7 @@ Only a sealed type's invariant becomes a constraint.
 
 The triggers must keep the shadow table equal to the collection after every write, not only the writes `Persistence.hs` makes: like the CHECKs, they are the backstop for writes that bypass it. A source row belongs to the collection while its case's payload is the element constructor's field type; a later stage that only embeds it does not. Each source table gets a trigger on `INSERT`, and also on `UPDATE` where the table is updated, with no column list, so a new column can't be missed. On every insert or update it removes the row's entry and adds it back if the new row belongs to the collection, never testing what the row changed from. A deleted source row loses its entry through `ON DELETE CASCADE`. Domain time intervals are half-open, `[start, end)`, which is `tstzrange`'s default.
 
-**Check:** a DB test writes a violating row directly, bypassing Domain, and expects the database to reject it.
+**Check:** a DB test writes a violating row directly, bypassing Domain, and expects the database to reject it; for a shadow table, one such test for each way a source row can enter or move within the collection: an insert in the element's case, and an update that changes its extent without changing its case.
 
 ## Row lifetime
 
