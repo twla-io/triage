@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { Group, Paper, Stack, Title } from '@mantine/core'
+import { Group, ScrollArea, Stack, Table, Text, Title } from '@mantine/core'
+import type { Row } from './values'
 
 export function Page({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
   return (
@@ -25,22 +26,48 @@ export function Section({ title, controls, children }: { title: string; controls
   )
 }
 
-export function RecordList({ children }: { children: ReactNode }) {
-  return <Stack gap="xs">{children}</Stack>
-}
-
-export function RecordCard({ header, actions, children }: { header?: ReactNode; actions?: ReactNode; children: ReactNode }) {
+// A list of records as a table: one row per record, one column per field, headed by the
+// fields' humanized names. A record's actions go in the last column.
+export function RecordTable<T>({
+  records,
+  rowKey,
+  rows,
+  actions,
+}: {
+  records: T[]
+  rowKey: (record: T) => string
+  rows: (record: T) => Row[]
+  actions?: (record: T) => ReactNode[]
+}) {
+  if (records.length === 0) return <Text size="sm" c="dimmed">Nothing here.</Text>
   return (
-    <Paper withBorder p="sm">
-      <Stack gap="xs">
-        {(header || actions) && (
-          <Group justify="space-between">
-            <Group gap="xs">{header}</Group>
-            <Group gap="xs">{actions}</Group>
-          </Group>
-        )}
-        {children}
-      </Stack>
-    </Paper>
+    <ScrollArea type="auto">
+      <Table withTableBorder highlightOnHover verticalSpacing="xs">
+        <Table.Thead>
+          <Table.Tr>
+            {rows(records[0]).map((row) => (
+              <Table.Th key={row.key}>{row.label}</Table.Th>
+            ))}
+            {actions && <Table.Th />}
+          </Table.Tr>
+        </Table.Thead>
+        <Table.Tbody>
+          {records.map((record) => (
+            <Table.Tr key={rowKey(record)}>
+              {rows(record).map((row) => (
+                <Table.Td key={row.key}>{row.node}</Table.Td>
+              ))}
+              {actions && (
+                <Table.Td>
+                  <Group gap="xs" wrap="nowrap">
+                    {actions(record)}
+                  </Group>
+                </Table.Td>
+              )}
+            </Table.Tr>
+          ))}
+        </Table.Tbody>
+      </Table>
+    </ScrollArea>
   )
 }

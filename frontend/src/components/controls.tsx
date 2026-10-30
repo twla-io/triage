@@ -29,6 +29,7 @@ export function TextControl({
   return (
     <TextInput
       label={humanize(name)}
+      required
       description={description}
       value={value}
       onChange={(event) => onChange(event.currentTarget.value)}

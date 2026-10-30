@@ -10,6 +10,7 @@ import {
   RejectSubmittedIntakeRequestForm,
   WithdrawIntakeRequestForm,
 } from './intakeRequestForms'
+import { Fields, intakeRequestRows } from './values'
 
 const accept = actionLabel('AcceptSubmittedIntakeRequest', 'IntakeRequest', 'Submitted')
 const reject = actionLabel('RejectSubmittedIntakeRequest', 'IntakeRequest', 'Submitted')
@@ -22,34 +23,35 @@ const close = actionLabel('CloseAppointedIntakeRequest', 'IntakeRequest', 'Appoi
 // cases they lead to; terminal cases are read-only.
 export function intakeRequestActions(request: Schemas['IntakeRequest']): ReactNode[] {
   const id = request.id
+  const summary = <Fields rows={intakeRequestRows(request)} />
   switch (request.type) {
     case 'submitted':
       return [
-        <ActionButton key={reject} label={reject}>
+        <ActionButton key={reject} label={reject} summary={summary}>
           {(done) => <RejectSubmittedIntakeRequestForm id={id} label={reject} onDone={done} />}
         </ActionButton>,
-        <ActionButton key={accept} label={accept}>
+        <ActionButton key={accept} label={accept} summary={summary}>
           {(done) => <AcceptSubmittedIntakeRequestForm id={id} label={accept} onDone={done} />}
         </ActionButton>,
-        <ActionButton key={withdraw} label={withdraw}>
+        <ActionButton key={withdraw} label={withdraw} summary={summary}>
           {(done) => <WithdrawIntakeRequestForm id={id} label={withdraw} onDone={done} />}
         </ActionButton>,
       ]
     case 'accepted':
       return [
-        <ActionButton key={matchToSlot} label={matchToSlot}>
+        <ActionButton key={matchToSlot} label={matchToSlot} summary={summary}>
           {(done) => <MatchAcceptedIntakeRequestToSlotForm id={id} label={matchToSlot} onDone={done} />}
         </ActionButton>,
-        <ActionButton key={withdraw} label={withdraw}>
+        <ActionButton key={withdraw} label={withdraw} summary={summary}>
           {(done) => <WithdrawIntakeRequestForm id={id} label={withdraw} onDone={done} />}
         </ActionButton>,
-        <ActionButton key={markStale} label={markStale}>
+        <ActionButton key={markStale} label={markStale} summary={summary}>
           {(done) => <MarkAcceptedIntakeRequestStaleForm id={id} label={markStale} onDone={done} />}
         </ActionButton>,
       ]
     case 'appointed':
       return [
-        <ActionButton key={close} label={close}>
+        <ActionButton key={close} label={close} summary={summary}>
           {(done) => <CloseAppointedIntakeRequestForm id={id} label={close} onDone={done} />}
         </ActionButton>,
       ]

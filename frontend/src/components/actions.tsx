@@ -6,8 +6,17 @@ import type { UseMutationResult } from '@tanstack/react-query'
 import { ErrorBanner } from './feedback'
 import type { Outcome } from './outcomes'
 
-// An action is a button that opens its form, titled with the same word.
-export function ActionButton({ label, children }: { label: string; children: (close: () => void) => ReactNode }) {
+// An action is a button that opens its form, titled with the same word. The form
+// shows the record it acts on (`summary`), so the modal says what it is about.
+export function ActionButton({
+  label,
+  summary,
+  children,
+}: {
+  label: string
+  summary?: ReactNode
+  children: (close: () => void) => ReactNode
+}) {
   const [opened, { open, close }] = useDisclosure(false)
   return (
     <>
@@ -15,7 +24,12 @@ export function ActionButton({ label, children }: { label: string; children: (cl
         {label}
       </Button>
       <Modal opened={opened} onClose={close} title={label} size="lg">
-        {opened && children(close)}
+        {opened && (
+          <Stack>
+            {summary}
+            {children(close)}
+          </Stack>
+        )}
       </Modal>
     </>
   )

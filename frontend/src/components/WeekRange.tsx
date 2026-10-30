@@ -11,13 +11,13 @@ export function WeekRange({ week, onChange }: { week: Week; onChange: (week: Wee
   sunday.setDate(sunday.getDate() - 1)
   return (
     <Group gap="xs">
-      <ActionIcon variant="default" onClick={() => onChange(shiftWeek(week, -1))}>
+      <ActionIcon variant="default" aria-label="Previous week" onClick={() => onChange(shiftWeek(week, -1))}>
         <IconChevronLeft size={16} />
       </ActionIcon>
       <Text size="sm">
         {day(week.from)} – {day(sunday)}
       </Text>
-      <ActionIcon variant="default" onClick={() => onChange(shiftWeek(week, 1))}>
+      <ActionIcon variant="default" aria-label="Next week" onClick={() => onChange(shiftWeek(week, 1))}>
         <IconChevronRight size={16} />
       </ActionIcon>
     </Group>

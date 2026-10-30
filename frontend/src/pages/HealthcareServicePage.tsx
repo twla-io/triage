@@ -3,8 +3,8 @@ import { ActionButton } from '../components/actions'
 import { CreateHealthcareServiceForm } from '../components/entityForms'
 import { QueryView } from '../components/feedback'
 import { actionLabel, humanize } from '../components/humanize'
-import { Page, RecordCard, RecordList } from '../components/layout'
-import { Fields, healthcareServiceRows } from '../components/values'
+import { Page, RecordTable } from '../components/layout'
+import { healthcareServiceRows } from '../components/values'
 
 const create = actionLabel('CreateHealthcareService', 'HealthcareService')
 
@@ -21,13 +21,7 @@ export function HealthcareServicePage() {
     >
       <QueryView query={services}>
         {(answer) => (
-          <RecordList>
-            {answer.detail.map((service) => (
-              <RecordCard key={service.id}>
-                <Fields rows={healthcareServiceRows(service)} />
-              </RecordCard>
-            ))}
-          </RecordList>
+          <RecordTable records={answer.detail} rowKey={(service) => service.id} rows={healthcareServiceRows} />
         )}
       </QueryView>
     </Page>

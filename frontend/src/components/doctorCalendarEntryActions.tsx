@@ -4,6 +4,7 @@ import { ActionButton } from './actions'
 import { MatchAvailableSlotByPriorityForm } from './entityForms'
 import { actionLabel } from './humanize'
 import { intakeRequestActions } from './intakeRequestActions'
+import { availableSlotRows, Fields } from './values'
 
 const matchByPriority = actionLabel('MatchAvailableSlotByPriority', 'AvailableSlot')
 
@@ -19,7 +20,11 @@ export function doctorCalendarEntryActions(entry: Schemas['DoctorCalendarEntry']
   switch (entry.type) {
     case 'slot':
       return [
-        <ActionButton key={matchByPriority} label={matchByPriority}>
+        <ActionButton
+          key={matchByPriority}
+          label={matchByPriority}
+          summary={<Fields rows={availableSlotRows(entry)} />}
+        >
           {(done) => <MatchAvailableSlotByPriorityForm slotId={entry.id} label={matchByPriority} onDone={done} />}
         </ActionButton>,
       ]

@@ -7,20 +7,34 @@ import { doctorCalendarEntryActions } from '../components/doctorCalendarEntryAct
 import { CreateAvailableSlotForm } from '../components/entityForms'
 import { QueryView } from '../components/feedback'
 import { actionLabel, humanize } from '../components/humanize'
-import { Page, RecordCard, RecordList } from '../components/layout'
-import { appointedRows, availableSlotRows, CaseBadge, Fields, type Row } from '../components/values'
+import { Page, RecordTable, Section } from '../components/layout'
+import { appointedRows, availableSlotRows } from '../components/values'
 import { WeekRange } from '../components/WeekRange'
 
 // AvailableSlot has no collection read of its own: slots are shown, and created, here.
 const create = actionLabel('CreateAvailableSlot', 'AvailableSlot')
 
-function entryRows(entry: Schemas['DoctorCalendarEntry']): Row[] {
-  switch (entry.type) {
-    case 'slot':
-      return availableSlotRows(entry)
-    case 'appointment':
-      return appointedRows(entry)
-  }
+// The calendar's one read, split by case; each part keeps the read's order.
+function slotsOf(entries: Schemas['DoctorCalendarEntry'][]) {
+  return entries.flatMap((entry) => {
+    switch (entry.type) {
+      case 'slot':
+        return [entry]
+      case 'appointment':
+        return []
+    }
+  })
+}
+
+function appointmentsOf(entries: Schemas['DoctorCalendarEntry'][]) {
+  return entries.flatMap((entry) => {
+    switch (entry.type) {
+      case 'slot':
+        return []
+      case 'appointment':
+        return [entry]
+    }
+  })
 }
 
 export function DoctorCalendarPage() {
@@ -35,19 +49,29 @@ export function DoctorCalendarPage() {
     >
       <WeekRange week={week} onChange={setWeek} />
       <QueryView query={calendar}>
-        {(answer) => (
-          <RecordList>
-            {answer.detail.doctorCalendarEntries.map((entry) => (
-              <RecordCard
-                key={`${entry.type}:${entry.id}`}
-                header={<CaseBadge type={entry.type} />}
-                actions={doctorCalendarEntryActions(entry)}
-              >
-                <Fields rows={entryRows(entry)} />
-              </RecordCard>
-            ))}
-          </RecordList>
-        )}
+        {(answer) => {
+          const entries = answer.detail.doctorCalendarEntries
+          return (
+            <>
+              <Section title={humanize('Slot')}>
+                <RecordTable
+                  records={slotsOf(entries)}
+                  rowKey={(entry) => entry.id}
+                  rows={availableSlotRows}
+                  actions={doctorCalendarEntryActions}
+                />
+              </Section>
+              <Section title={humanize('Appointment')}>
+                <RecordTable
+                  records={appointmentsOf(entries)}
+                  rowKey={(entry) => entry.id}
+                  rows={appointedRows}
+                  actions={doctorCalendarEntryActions}
+                />
+              </Section>
+            </>
+          )
+        }}
       </QueryView>
     </Page>
   )

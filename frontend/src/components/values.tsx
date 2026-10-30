@@ -86,7 +86,6 @@ export function Fields({ rows }: { rows: Row[] }) {
 const text = (value: string) => value
 const optionalText = (value: string | null) => value
 const time = (value: string) => <Time value={value} />
-const ownId = (value: string) => value
 const doctor = (id: Schemas['DoctorId']) => <DoctorName id={id} />
 const patient = (id: Schemas['PatientId']) => <PatientName id={id} />
 const healthcareService = (id: Schemas['HealthcareServiceId']) => <HealthcareServiceName id={id} />
@@ -105,15 +104,22 @@ function routineDueRows(value: Schemas['RoutineDue']): Row[] {
   }
 }
 
-function routineDue(value: Schemas['RoutineDue']): ReactNode {
+// A sum type's case on one line: its badge, then its own values, each labelled.
+function caseLine(badge: ReactNode, rows: Row[]): ReactNode {
   return (
-    <Stack gap={4}>
-      <Group>
-        <CaseBadge type={value.type} />
-      </Group>
-      <Fields rows={routineDueRows(value)} />
-    </Stack>
+    <Group gap="xs" component="span">
+      {badge}
+      {rows.map((row) => (
+        <Text key={row.key} size="sm" component="span">
+          {row.label}: {row.node}
+        </Text>
+      ))}
+    </Group>
   )
+}
+
+function routineDue(value: Schemas['RoutineDue']): ReactNode {
+  return caseLine(<CaseBadge type={value.type} />, routineDueRows(value))
 }
 
 function priorityRows(value: Priority): Row[] {
@@ -128,14 +134,7 @@ function priorityRows(value: Priority): Row[] {
 }
 
 function priority(value: Priority): ReactNode {
-  return (
-    <Stack gap={4}>
-      <Group>
-        <PriorityBadge type={value.type} />
-      </Group>
-      <Fields rows={priorityRows(value)} />
-    </Stack>
-  )
+  return caseLine(<PriorityBadge type={value.type} />, priorityRows(value))
 }
 
 function doctorRequirementRows(value: Schemas['DoctorRequirement']): Row[] {
@@ -148,14 +147,7 @@ function doctorRequirementRows(value: Schemas['DoctorRequirement']): Row[] {
 }
 
 function doctorRequirement(value: Schemas['DoctorRequirement']): ReactNode {
-  return (
-    <Stack gap={4}>
-      <Group>
-        <CaseBadge type={value.type} />
-      </Group>
-      <Fields rows={doctorRequirementRows(value)} />
-    </Stack>
-  )
+  return caseLine(<CaseBadge type={value.type} />, doctorRequirementRows(value))
 }
 
 function closeReasonRows(value: Schemas['CloseReason']): Row[] {
@@ -174,31 +166,23 @@ function closeReasonRows(value: Schemas['CloseReason']): Row[] {
 }
 
 function closeReason(value: Schemas['CloseReason']): ReactNode {
-  return (
-    <Stack gap={4}>
-      <Group>
-        <CaseBadge type={value.type} />
-      </Group>
-      <Fields rows={closeReasonRows(value)} />
-    </Stack>
-  )
+  return caseLine(<CaseBadge type={value.type} />, closeReasonRows(value))
 }
 
 export function doctorRows(value: Schemas['Doctor']): Row[] {
-  return [field(value, 'id', ownId), field(value, 'name', text)]
+  return [field(value, 'name', text)]
 }
 
 export function patientRows(value: Schemas['Patient']): Row[] {
-  return [field(value, 'id', ownId), field(value, 'name', text)]
+  return [field(value, 'name', text)]
 }
 
 export function healthcareServiceRows(value: Schemas['HealthcareService']): Row[] {
-  return [field(value, 'id', ownId), field(value, 'name', text), field(value, 'duration', enumeration)]
+  return [field(value, 'name', text), field(value, 'duration', enumeration)]
 }
 
 export function availableSlotRows(value: Schemas['AvailableSlot']): Row[] {
   return [
-    field(value, 'id', ownId),
     field(value, 'doctorId', doctor),
     field(value, 'healthcareServiceId', healthcareService),
     field(value, 'start', time),
@@ -207,12 +191,7 @@ export function availableSlotRows(value: Schemas['AvailableSlot']): Row[] {
 }
 
 function submittedRows(value: Schemas['SubmittedIntakeRequest']): Row[] {
-  return [
-    field(value, 'id', ownId),
-    field(value, 'patientId', patient),
-    field(value, 'narrative', text),
-    field(value, 'createdAt', time),
-  ]
+  return [field(value, 'patientId', patient), field(value, 'narrative', text), field(value, 'createdAt', time)]
 }
 
 function rejectedRows(value: Schemas['RejectedIntakeRequest']): Row[] {
@@ -238,15 +217,30 @@ export function appointedRows(value: Schemas['AppointedIntakeRequest']): Row[] {
   ]
 }
 
+// The triage fields, optional: only a withdrawal from Accepted carries them. Each union
+// member is assignable to this, so the union is viewed without narrowing it.
+type WithdrawnTriage = Partial<Omit<Schemas['WithdrawnIntakeRequestFromAccepted'], 'withdrawnFrom'>>
+
+// A row for an optional field: blank when the field is absent.
+function optional<V>(render: (value: V) => ReactNode) {
+  return (value: V | undefined): ReactNode => (value === undefined ? null : render(value))
+}
+
 function withdrawnRows(value: Schemas['WithdrawnIntakeRequest']): Row[] {
+  const triage: WithdrawnTriage = value
   const withdrawal = [
     field(value, 'withdrawnFrom', enumeration),
     field(value, 'withdrawnAt', time),
     field(value, 'withdrawalNote', optionalText),
   ]
-  // TypeScript can't narrow a union by a nested tag (withdrawnFrom.type); the
-  // fromAccepted case is the one member that carries the triaged fields.
-  return 'triagedAt' in value ? [...triagedRows(value), ...withdrawal] : [...submittedRows(value), ...withdrawal]
+  return [
+    ...submittedRows(value),
+    field(triage, 'healthcareServiceId', optional(healthcareService)),
+    field(triage, 'priority', optional(priority)),
+    field(triage, 'doctorRequirement', optional(doctorRequirement)),
+    field(triage, 'triagedAt', optional(time)),
+    ...withdrawal,
+  ]
 }
 
 function staleRows(value: Schemas['StaleIntakeRequest']): Row[] {

@@ -3,8 +3,8 @@ import { ActionButton } from '../components/actions'
 import { CreateDoctorForm } from '../components/entityForms'
 import { QueryView } from '../components/feedback'
 import { actionLabel, humanize } from '../components/humanize'
-import { Page, RecordCard, RecordList } from '../components/layout'
-import { doctorRows, Fields } from '../components/values'
+import { Page, RecordTable } from '../components/layout'
+import { doctorRows } from '../components/values'
 
 const create = actionLabel('CreateDoctor', 'Doctor')
 
@@ -18,15 +18,7 @@ export function DoctorPage() {
       }
     >
       <QueryView query={doctors}>
-        {(answer) => (
-          <RecordList>
-            {answer.detail.map((doctor) => (
-              <RecordCard key={doctor.id}>
-                <Fields rows={doctorRows(doctor)} />
-              </RecordCard>
-            ))}
-          </RecordList>
-        )}
+        {(answer) => <RecordTable records={answer.detail} rowKey={(doctor) => doctor.id} rows={doctorRows} />}
       </QueryView>
     </Page>
   )

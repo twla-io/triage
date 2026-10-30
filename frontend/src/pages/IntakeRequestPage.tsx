@@ -15,8 +15,8 @@ import { QueryView } from '../components/feedback'
 import { actionLabel, humanize } from '../components/humanize'
 import { intakeRequestActions } from '../components/intakeRequestActions'
 import { SubmitIntakeRequestForm } from '../components/intakeRequestForms'
-import { Page, RecordCard, RecordList, Section } from '../components/layout'
-import { CaseBadge, Fields, intakeRequestRows } from '../components/values'
+import { Page, RecordTable, Section } from '../components/layout'
+import { intakeRequestRows } from '../components/values'
 import { WeekRange } from '../components/WeekRange'
 
 type IntakeRequest = Schemas['IntakeRequest']
@@ -34,13 +34,12 @@ const asClosed = (r: Schemas['ClosedIntakeRequest']): Schemas['IntakeRequestClos
 
 function IntakeRequestList({ requests }: { requests: IntakeRequest[] }) {
   return (
-    <RecordList>
-      {requests.map((request) => (
-        <RecordCard key={request.id} header={<CaseBadge type={request.type} />} actions={intakeRequestActions(request)}>
-          <Fields rows={intakeRequestRows(request)} />
-        </RecordCard>
-      ))}
-    </RecordList>
+    <RecordTable
+      records={requests}
+      rowKey={(request) => request.id}
+      rows={intakeRequestRows}
+      actions={intakeRequestActions}
+    />
   )
 }
 
