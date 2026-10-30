@@ -357,6 +357,44 @@ After a lost write, Service reads the request once more, and that read always fi
 
 **Rejected:** a modal owned by the page instead of the card (keeps the notice inline, but leaves a form open for an entity no longer on the page, for an action that no longer applies, and needs per-page modal state); invalidating only when the modal closes (lists show stale data while the notice is up, and narrowing invalidation is a performance change, not a design one). Naming the entity in the notification (e.g. by patient): new text per entity that no one asked for; the title gives the action only.
 
+## Empty lists and week arrows say what they are (2026-10-30)
+
+**Found:** a list with no records showed only its title, the same as a list still loading, so a staff member couldn't tell "nothing here" from "not yet loaded". The week arrows are icon-only, so a screen reader announced them with no name.
+
+**Decided:**
+- A list with no records shows the text "Nothing here." in place of its records.
+- The previous-week arrow's accessible name is "Previous week"; the next-week arrow's is "Next week".
+
+**Rejected:** a count in each section header ("Submitted (0)") in place of the text: it answers "empty or loading" but gives no accessible name to the arrows, and the arrows need one either way. Leaving both unlabelled: a real gap for screen-reader users, and the strict reading of `triage-ui-codegen` only forbids text no decision states, which this entry now does.
+
+## Records don't show their own id (2026-10-30)
+
+**Found:** every record card showed its own id as an "Id" row, and the action modal's summary repeated it. Staff never act on a UUID: the actions carry the id to the server without anyone reading it. On a list of records the row is the largest source of noise.
+
+**Decided:** a record's own id is not shown on cards or in action summaries. Its other fields are shown as before. An id of another entity (a foreign key) still shows as that entity's name, and the id stays in the request each action sends.
+
+**Rejected:** showing the id only in the action summary: it identifies the record for a staff member, but no one has asked to quote an id, and keeping it in one place only makes the two views disagree.
+
+## Record lists are tables, one column per field (2026-10-30)
+
+**Found:** each record was a card of stacked label/value rows, about nine lines for an intake request. A list of a dozen requests ran the length of several screens, and the intake request page has seven such lists.
+
+**Decided:**
+- Every list of records is a table: one row per record, one column per field, in `Domain.hs` field order. Each column's header is the field's humanized name, as the label already is.
+- A field whose value is a sum type is one column. Its cell shows the case's badge and the case's own values on one line (for example "Urgent, 14 Oct, 17:00").
+- The actions are the last column, with the buttons for the record's case as now.
+- Columns are not dropped: a value shows its fields (`triage-ui-codegen`). A table that scrolls sideways on a narrow screen is the cost.
+
+**Rejected:** a grid of cards (two per row): each card still shows every field, so the page stays long. Dropping fields to fit: it breaks the rule that a value shows its fields, and a choice of which fields to drop needs its own decision.
+
+## The calendar page has a section per entry case (2026-10-30)
+
+**Found:** the calendar page listed slots and appointments in one list, each card badged with its case. The two cases have different fields (a slot has a doctor, service, start and duration; an appointment has every intake request field), so as a table one list would show most cells blank in every row.
+
+**Decided:** the calendar page has two sections, Slots then Appointments, in `Domain.hs` constructor order. Each is a table with its own columns. Both are split from the one calendar read for the week, by the entry's case tag, so the read is not repeated. Each section keeps the read's order (`lists-keep-server-order`); the UI does not sort.
+
+**Rejected:** one table with a case column (most cells blank, and the columns of both cases compete for width); keeping the mixed list (it conflicts with one table per list).
+
 ## Open questions (from 2026-06-26 session — not yet resolved)
 
 - `SlotEvent` vocabulary: does it live in Domain (as a description of what
